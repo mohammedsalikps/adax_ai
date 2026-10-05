@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { Writable } from 'node:stream'
-import { MANA_NO_ANSWER, MANA_NO_KNOWLEDGE_SOURCE, MANA_NOT_ESTABLISHED, MANA_OUT_OF_SCOPE, MANA_READ_ONLY, MANA_UNAVAILABLE, MANA_UNVERIFIED, MANA_WITHHELD, ManaConversationState, ManaPlan } from '@adaxai/contracts'
+import { MANA_NO_ANSWER, MANA_NO_KNOWLEDGE_SOURCE, MANA_NOT_ESTABLISHED, MANA_OUT_OF_SCOPE, MANA_READ_ONLY, MANA_UNAVAILABLE, MANA_UNVERIFIED, MANA_WITHHELD, ManaConversationState, ManaPlan, VITALS, type VitalKind } from '@adaxai/contracts'
+import { eq } from 'drizzle-orm'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { RuleFactExtractor } from '../src/ai/extract/rules.ts'
 import { Gate } from '../src/ai/llm/gate.ts'
@@ -9,12 +10,15 @@ import { MANA_PLAN_PROMPT } from '../src/ai/prompts.ts'
 import type { AiProviders } from '../src/ai/providers.ts'
 import { AiProviderError } from '../src/ai/providers.ts'
 import { REPO_ROOT } from '../src/config.ts'
+import { CONFLICT_RULES_VERSION } from '../src/consultation-context/conflicts.ts'
+import { SUMMARY_COMPOSER_VERSION } from '../src/consultation-context/summary.ts'
+import { auscultationRecordings, deviceAssignments, devices, files, observations, thermalCaptures, thermalRois } from '../src/db/schema.ts'
 import { buildManaWorld, createManaBase, INJECTION, type ManaWorld } from '../src/eval/mana-fixture.ts'
 import { ManaAssistantService } from '../src/mana/assistant/service.ts'
 import { loadAppSettings } from '../src/settings/load.ts'
 import type { AppSettings } from '../src/settings/schema.ts'
 import { adminQuery, call, createTestApp, login, resetDatabase, TEST_PASSWORD } from './helpers.ts'
-import { call as plannedCall, kindPlan, ManaStub, toolsPlan } from './mana-support.ts'
+import { factsIn, call as plannedCall, kindPlan, ManaStub, toolsPlan } from './mana-support.ts'
 
 // Mana AI (V4), end to end: a doctor's question goes through the server's plan, the tools, the model's answer and the checks, with an in-process
 // stand-in for the local model (a labelled test double). These tests look at what reached the model, what was read and for whom, what was stored and
@@ -139,7 +143,8 @@ describe('a question, end to end', () => {
     expect(m.answer!.findings.some((f) => f.kind === 'conflict' && /no known allergies/i.test(f.text))).toBe(true)
     expect(m.answer!.entities).toEqual([expect.objectContaining({ alias: 'P1', displayName: 'Vikram Rao' })])
     expect(m.tools).toMatchObject([{ position: 0, tool: 'get_patient_record', status: 'ok' }])
-    expect(m.model).toMatchObject({ provider: 'stub-llm', local: true, planPrompt: 'mana-assistant-plan-v2', answerPrompt: 'mana-assistant-answer-v1', tools: 'mana-tools-v1' })
+    // (mana-tools-v2: D2 added the consultation tool; v3: it leaves out what the patient's consents keep out, and a rejected point.)
+    expect(m.model).toMatchObject({ provider: 'stub-llm', local: true, planPrompt: 'mana-assistant-plan-v2', answerPrompt: 'mana-assistant-answer-v1', tools: 'mana-tools-v3' })
     expect(stub.plans).toHaveLength(1)
     expect(stub.answers).toHaveLength(1)
     expect(leaks()).toEqual([])
@@ -992,7 +997,7 @@ describe('what is kept, and what is not shown anywhere else', () => {
     const rows = await adminQuery(`select m.role, m.status, m.text, m.plan is not null has_plan, m.answer is not null has_answer, m.provider, m.model, m.locality, m.plan_prompt_id, m.answer_prompt_id, m.checks_version, m.tools_version, m.latency_ms, m.plan_run_id is not null plan_run, m.answer_run_id is not null answer_run from mana_messages m where m.conversation_id = $1 order by m.seq`, [s0.conversation.id])
     expect(rows.rows).toEqual([
       expect.objectContaining({ role: 'doctor', status: 'ready', text: question }),
-      expect.objectContaining({ role: 'mana', status: 'ready', has_plan: true, has_answer: true, provider: 'stub-llm', locality: 'local', plan_prompt_id: 'mana-assistant-plan-v2', answer_prompt_id: 'mana-assistant-answer-v1', tools_version: 'mana-tools-v1', plan_run: true, answer_run: true }),
+      expect.objectContaining({ role: 'mana', status: 'ready', has_plan: true, has_answer: true, provider: 'stub-llm', locality: 'local', plan_prompt_id: 'mana-assistant-plan-v2', answer_prompt_id: 'mana-assistant-answer-v1', tools_version: 'mana-tools-v3', plan_run: true, answer_run: true }),
     ])
     const calls = await adminQuery(`select tool, status, patient_id from mana_tool_calls where message_id = $1`, [m.id])
     expect(calls.rows).toEqual([{ tool: 'get_patient_record', status: 'ok', patient_id: world.p.vikram.id }])
@@ -1332,5 +1337,226 @@ describe('what the doctor may type', () => {
     // A tab and a line break are ordinary.
     expect((await askRaw('doctor', a.conversation.id, 'Who is\twaiting\nright now?')).statusCode).toBe(202)
     await settle('doctor', a.conversation.id)
+  })
+})
+
+// ---- D2: the consultation the conversation was opened in ----------------------------------------------------------------------------------------
+// What Vikram's open consultation holds is written straight into the test database (the routes that make these records are tested in their own files): staff
+// vital signs, a band's reading that disagrees with one of them, a simulator's reading, a stethoscope recording (with a note typed beside it) and a simulator's
+// tones, an approved thermal image and a simulated one. Everything is removed again afterwards.
+
+interface Held {
+  observations: string[]
+  devices: string[]
+  recordings: string[]
+  captures: string[]
+  files: string[]
+}
+
+async function holdConsultationRecords(): Promise<Held> {
+  const b = world.base
+  const p = world.p.vikram
+  const encounterId = world.openEncounterId
+  const visitId = p.visitId!
+  const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000)
+  const held: Held = { observations: [], devices: [], recordings: [], captures: [], files: [] }
+  const file = async (kind: string) => {
+    const [f] = await ctx.db.insert(files).values({ facilityId: b.facilityId, patientId: p.id, encounterId, kind, storageKey: `test/${crypto.randomUUID()}`, mimeType: 'application/octet-stream', sizeBytes: 1000, sha256: 'a'.repeat(64), uploadedBy: b.users.doctor }).returning({ id: files.id })
+    held.files.push(f!.id)
+    return f!.id
+  }
+  const reading = async (kind: VitalKind, value: number, minutesAgo: number, from: { deviceId: string; simulated: boolean } | null) => {
+    const by = from ? { source: 'device' as const, validationStatus: from.simulated ? 'simulated' : 'device_unverified', deviceId: from.deviceId } : { source: 'manual' as const, validationStatus: 'manual_entry', recordedBy: b.users.nurse }
+    const [o] = await ctx.db.insert(observations).values({ patientId: p.id, visitId, kind, value, unit: VITALS[kind].unit, measuredAt: ago(minutesAgo), createdAt: ago(minutesAgo), ...by }).returning({ id: observations.id })
+    held.observations.push(o!.id)
+  }
+  const band = async (label: string, integration: string) => {
+    const [d] = await ctx.db.insert(devices).values({ facilityId: b.facilityId, kind: 'wearable_band', label, serialNumber: `SN-${crypto.randomUUID().slice(0, 8)}`, integration, lastSeenAt: new Date(), createdBy: b.users.admin }).returning({ id: devices.id })
+    held.devices.push(d!.id)
+    return d!.id
+  }
+  await reading('spo2', 97, 3, null)
+  await reading('heart_rate', 88, 3, null)
+  const ward = await band('Ward band', 'gateway_api')
+  await ctx.db.insert(deviceAssignments).values({ deviceId: ward, patientId: p.id, visitId, encounterId, assignedBy: b.users.nurse, assignedAt: ago(60) })
+  await reading('spo2', 94, 2, { deviceId: ward, simulated: false })
+  const sim = await band('Sim band', 'simulator')
+  // (A device's reading is the consultation's only while the device is attached to the patient: the simulator is attached too.)
+  await ctx.db.insert(deviceAssignments).values({ deviceId: sim, patientId: p.id, visitId, encounterId, assignedBy: b.users.nurse, assignedAt: ago(60) })
+  await reading('spo2', 81, 1, { deviceId: sim, simulated: true })
+  for (const r of [
+    { site: 'mitral', durationMs: 38_000, captureMethod: 'file_upload', simulated: false, note: 'Sentinel-steth-note: soft murmur', deviceId: null },
+    { site: 'aortic', durationMs: 12_000, captureMethod: 'gateway', simulated: true, note: null, deviceId: sim },
+  ]) {
+    const [row] = await ctx.db.insert(auscultationRecordings).values({ facilityId: b.facilityId, patientId: p.id, encounterId, fileId: await file('stethoscope_audio'), dataOrigin: 'synthetic', createdBy: b.users.doctor, createdAt: ago(5), ...r }).returning({ id: auscultationRecordings.id })
+    held.recordings.push(row!.id)
+  }
+  for (const simulated of [false, true]) {
+    const [t] = await ctx.db
+      .insert(thermalCaptures)
+      .values({
+        facilityId: b.facilityId,
+        patientId: p.id,
+        encounterId,
+        rawFileId: await file('thermal_raw'),
+        matrixFileId: await file('thermal_matrix'),
+        width: 160,
+        height: 120,
+        minC: simulated ? 20.5 : 28.1,
+        maxC: simulated ? 25.5 : 34.6,
+        meanC: simulated ? 22.2 : 31.2,
+        stdC: 1.1,
+        camera: simulated ? { make: null, model: 'ADAXAI thermal simulator (SIMULATED)', dateTime: null } : { make: 'FLIR', model: 'FLIR ONE Pro', dateTime: null },
+        parameters: {},
+        extractor: simulated ? { name: 'thermal-sim', version: 'thermal-sim-v1' } : { name: 'flir-extract', version: '1.0' },
+        protocol: { bodyRegion: 'Knees', bodySite: 'knee', view: 'anterior' },
+        dataOrigin: 'synthetic',
+        captureSource: simulated ? 'simulator' : 'live_capture',
+        simulated,
+        capturedAt: simulated ? null : ago(10),
+        createdBy: b.users.doctor,
+        createdAt: ago(10),
+      })
+      .returning({ id: thermalCaptures.id })
+    held.captures.push(t!.id)
+    const stats = (min: number, max: number, mean: number) => ({ pixelCount: 400, min, max, mean, std: 0.8 })
+    await ctx.db.insert(thermalRois).values([
+      { captureId: t!.id, label: 'Left knee', shape: 'rect', x: 10, y: 10, width: 20, height: 20, stats: simulated ? stats(21, 24, 22.5) : stats(30.1, 33.9, 32), sortOrder: 0, createdBy: b.users.doctor },
+      { captureId: t!.id, label: 'Right knee', shape: 'rect', x: 60, y: 10, width: 20, height: 20, stats: simulated ? stats(20.6, 23.4, 21.9) : stats(29.8, 32.5, 31.1), sortOrder: 1, createdBy: b.users.doctor },
+    ])
+    if (!simulated) await ctx.db.update(thermalCaptures).set({ status: 'approved', reviewedBy: b.users.doctor, reviewedAt: ago(8) }).where(eq(thermalCaptures.id, t!.id))
+  }
+  return held
+}
+
+async function releaseConsultationRecords(h: Held) {
+  const ids = (list: string[]) => list.map((id) => `'${id}'`).join(', ') || 'NULL'
+  await adminQuery(`SET session_replication_role = replica;
+    DELETE FROM thermal_rois WHERE capture_id IN (${ids(h.captures)});
+    DELETE FROM thermal_captures WHERE id IN (${ids(h.captures)});
+    DELETE FROM auscultation_recordings WHERE id IN (${ids(h.recordings)});
+    DELETE FROM observations WHERE id IN (${ids(h.observations)});
+    DELETE FROM device_assignments WHERE device_id IN (${ids(h.devices)});
+    DELETE FROM devices WHERE id IN (${ids(h.devices)});
+    DELETE FROM files WHERE id IN (${ids(h.files)})`)
+}
+
+describe('the consultation the conversation was opened in (D2)', () => {
+  let held: Held
+  beforeAll(async () => {
+    held = await holdConsultationRecords()
+  })
+  afterAll(async () => {
+    if (held) await releaseConsultationRecords(held)
+  })
+
+  const QUESTIONS = [
+    ['consultation_recorded', 'What was recorded in this consultation?'],
+    ['consultation_review', 'What still needs my review?'],
+    ['consultation_missing', 'What information is missing?'],
+    ['consultation_thermal', 'Show the thermal measurements from this consultation.'],
+  ] as const
+  /** Everything a SIMULATED item of this consultation could carry: the simulator's reading, its tones, its generated temperatures, its devices. */
+  const SIMULATED_VALUES = /\b81 %|\b20\.5\b|\b25\.5\b|\b22\.2\b|\b21\.9\b|\b22\.5\b|aortic|Sim band|thermal simulator|thermal-sim/i
+
+  it('answers the four consultation questions from the consultation context, with the server’s own plans and the stand-in model', async () => {
+    const s0 = await open('doctor', { encounterId: world.openEncounterId })
+    for (const [suggestion, text] of QUESTIONS) {
+      const m = lastMana(await ask('doctor', s0.conversation.id, text, { suggestion }))
+      expect(m.status, text).toBe('ready')
+      expect(m.answer!.outcome, text).toBe('answered')
+      expect(m.tools, text).toMatchObject([{ position: 0, tool: 'consultation_context', status: 'ok' }])
+      expect(m.answer!.subjects.map((x) => x.displayName), text).toEqual(['Vikram Rao'])
+      // What the answer rests on opens in this consultation.
+      expect(m.answer!.sources.flatMap((x) => x.items).every((i) => i.link?.to === 'encounter' && i.link.id === world.openEncounterId), text).toBe(true)
+    }
+    // No model was asked what to look up; the writer was asked once per question.
+    expect(stub.plans).toHaveLength(0)
+    expect(stub.answers).toHaveLength(4)
+    const [recorded, review, missing, thermal] = stub.answers.map((a) => a.user)
+    expect(recorded).toMatch(/\(P1\) Device reading: SpO₂ 94 %\. Device reading, unverified\./)
+    expect(recorded).toMatch(/\(P1\) Vital sign: SpO₂ 97 %\. Entered by staff\./)
+    expect(recorded).toMatch(/\(P1\) Stethoscope: Recording 38 s, mitral area \(apex\)\. Recorded, not analysed\..* recording available for clinician review; not analysed\./)
+    expect(review).toMatch(/\(P1\) To review: 1 thermal image, not yet approved or rejected \(1 of them SIMULATED\)\. Fixed rules, not AI\./)
+    expect(review).toMatch(new RegExp(String.raw`FINDINGS[^]*\] conflict: Found by fixed rules \(${CONFLICT_RULES_VERSION}\), not resolved: Staff measured SpO₂ 97 % at [^;]+; a device \(unverified\) sent 94 % at `))
+    expect(missing).toMatch(/\(P1\) No conversation captured in this consultation\. Fixed rules, not AI\./)
+    expect(thermal).toMatch(/\(P1\) Thermal image of “Knee” \(approved\): whole image min 28\.1 °C, max 34\.6 °C, mean 31\.2 °C; region “Left knee” min 30\.1 °C/)
+    expect(leaks()).toEqual([])
+  })
+
+  it('gives the model nothing SIMULATED as a measurement, nor the note typed beside a recording, nor anything said about a sound', async () => {
+    const s0 = await open('doctor', { encounterId: world.openEncounterId })
+    for (const [suggestion, text] of QUESTIONS) await ask('doctor', s0.conversation.id, text, { suggestion })
+    expect(stub.answers).toHaveLength(4)
+    for (const a of stub.answers) {
+      expect(a.user).not.toMatch(SIMULATED_VALUES)
+      expect(a.user).not.toMatch(/Sentinel-steth|murmur/i)
+      // A fact that says SIMULATED at all is only the count of what waits for review; the server tells the doctor (a finding) how many items it left out.
+      expect(factsIn(a.user).filter((f) => /SIMULATED/.test(f.text)).every((f) => f.text.startsWith('To review: 1 thermal image, not yet approved or rejected (1 of them SIMULATED).'))).toBe(true)
+    }
+    expect(stub.answers[0]!.user).toMatch(/\] absent: 3 SIMULATED items are in this consultation \(made by a simulator, not measurements\)\. Mana does not use them/)
+    // And nothing of a simulated item is among what the doctor is shown the answer rests on, either.
+    const s = await getState('doctor', s0.conversation.id)
+    const shown = s.messages.filter((m) => m.role === 'mana').flatMap((m) => m.answer!.sources.map((x) => x.text))
+    expect(shown.join('\n')).not.toMatch(SIMULATED_VALUES)
+  })
+
+  it('reads a consultation only in a conversation opened in it: anywhere else the question is refused and nothing is read', async () => {
+    const general = await open('doctor')
+    const m = lastMana(await ask('doctor', general.conversation.id, 'What still needs my review?', { suggestion: 'consultation_review' }))
+    expect(m.status).toBe('refused')
+    expect(m.answer).toMatchObject({ outcome: 'refused', blocks: [], sources: [] })
+    expect(m.answer!.notice).toMatch(/not opened in a consultation/)
+    expect(m.tools).toMatchObject([{ tool: 'consultation_context', status: 'refused' }])
+    const record = await open('doctor', { patientId: world.p.vikram.id })
+    expect(lastMana(await ask('doctor', record.conversation.id, 'What information is missing?', { suggestion: 'consultation_missing' })).status).toBe('refused')
+    expect(stub.answers).toHaveLength(0)
+    // The button's words are the question: other words with the button are refused before anything is stored.
+    expect((await askRaw('doctor', general.conversation.id, 'Show me everything', { suggestion: 'consultation_thermal' })).statusCode).toBe(422)
+  })
+
+  it('is on the audit log like the other tools: who read whose consultation, with counts and never a value, a recording or an image', async () => {
+    const s0 = await open('doctor', { encounterId: world.openEncounterId })
+    const mark = await auditMark()
+    const m = lastMana(await ask('doctor', s0.conversation.id, 'What was recorded in this consultation?', { suggestion: 'consultation_recorded' }))
+    const runs = await auditRows('mana.tool_run', mark)
+    expect(runs).toEqual([expect.objectContaining({ outcome: 'success', entity_type: 'mana_message', entity_id: m.id, patient_id: world.p.vikram.id, details: expect.objectContaining({ conversationId: s0.conversation.id, tool: 'consultation_context', status: 'ok' }) })])
+    expect(await auditRows('mana.answer', mark)).toEqual([expect.objectContaining({ outcome: 'success', patient_id: world.p.vikram.id, details: expect.objectContaining({ tools: ['consultation_context:ok'], patientsRead: 1 }) })])
+    const [tc] = (await adminQuery(`select tool, status, detail, args, patient_id from mana_tool_calls where message_id = $1`, [m.id])).rows
+    expect(tc).toMatchObject({ tool: 'consultation_context', status: 'ok', patient_id: world.p.vikram.id, args: expect.objectContaining({ tool: 'consultation_context', patient: 'current', topic: 'consultation_recorded' }) })
+    expect(tc.detail).toMatch(new RegExp(String.raw`^recorded: \d+ fact\(s\), \d+ finding\(s\); \d+ item\(s\), 3 SIMULATED left out; 1 conflict\(s\), \d+ missing; ${CONFLICT_RULES_VERSION}, ${SUMMARY_COMPOSER_VERSION}$`))
+    const logged = JSON.stringify([...(await auditRows('%', mark)), tc])
+    expect(logged).not.toMatch(/94 %|97 %|88 bpm|mitral|Knee|28\.1|murmur|Ward band/)
+    expect(m.model).toMatchObject({ tools: 'mana-tools-v3', checks: 'mana-plan-checks-v3+mana-answer-checks-v4' })
+  })
+
+  it('removes a statement that calls a device reading measured, drops "unverified", or adds a finding to a recording or a thermal image', async () => {
+    stub.answer = (facts) => {
+      const ref = (re: RegExp) => facts.find((f) => re.test(f.text))!.ref
+      const device = ref(/^Device reading: SpO₂ 94 %/)
+      const steth = ref(/^Stethoscope:/)
+      return {
+        blocks: [
+          { text: 'SpO₂ 94 % from the Ward band, a device reading, unverified.', refs: [device] },
+          { text: 'SpO₂ 94 % from the Ward band.', refs: [device] },
+          { text: 'The Ward band measured SpO₂ 94 %, a device reading, unverified.', refs: [device] },
+          { text: 'The mitral recording (38 s) shows a soft murmur; not analysed.', refs: [steth] },
+        ],
+      }
+    }
+    const s0 = await open('doctor', { encounterId: world.openEncounterId })
+    const m = lastMana(await ask('doctor', s0.conversation.id, 'What was recorded in this consultation?', { suggestion: 'consultation_recorded' }))
+    expect(m.status).toBe('ready')
+    expect(m.answer!.blocks.map((x) => x.text)).toEqual(['SpO2 94 % from the Ward band, a device reading, unverified.'])
+    // The reading the band sent is one side of a disagreement the rules found: the statement that rests on it says so.
+    expect(m.answer!.blocks[0]!.flags).toContain('involves_conflict')
+    expect(m.answer!.removed).toBe(3)
+    const [row] = (await adminQuery(`select validation from mana_messages where id = $1`, [m.id])).rows
+    expect(row.validation).toMatchObject({ trust_not_said: 1, trust_raised: 1, finding_not_in_source: 1 })
+    // A thermal statement that draws a finding from the measurements goes too.
+    stub.answer = (facts) => ({ blocks: [{ text: 'The left knee is warmer than the right knee.', refs: [facts.find((f) => f.text.startsWith('Thermal image of'))!.ref] }] })
+    const t = lastMana(await ask('doctor', s0.conversation.id, 'Show the thermal measurements from this consultation.', { suggestion: 'consultation_thermal' }))
+    expect(t.status).toBe('unverified')
+    expect(t.answer!.blocks).toEqual([])
   })
 })

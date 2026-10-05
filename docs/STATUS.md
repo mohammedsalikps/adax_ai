@@ -1,6 +1,6 @@
 # ADAXAI status
 
-**Last updated:** 5 Oct 2026.
+**Last updated:** 6 Oct 2026.
 
 ADAXAI is an MVP. It is not production-ready, not a medical device, and not clinically validated. All data is synthetic. Nothing here claims legal or regulatory compliance.
 
@@ -21,6 +21,100 @@ What the Doctor App actually does today, and the plan for its first complete con
 | V5. Devices: a state on every reading (live, stale, disconnected, no data, unavailable), a gate on what a device may send, batches stored once, a simulator that cannot pass for a device, stethoscope recording in the browser | the commit titled "Doctor App slice V5" (see `git log`) |
 | D1. The doctor's consultation as one workspace: V1 to V5 for one patient and one encounter, a tablet held sideways first, one way for AI text into the note | the commit titled "D1 integrated doctor consultation" (see `git log`) |
 | V6. Thermal imaging in the consultation: a camera boundary for a FLIR ONE on a tablet (native bridge written, not compiled), captures with their provenance, a simulator, measurements, a summary the doctor reviews | the commit titled "V6 real FLIR thermal capture and analysis" (see `git log`) |
+| D2. The multimodal consultation: one context read from the records, an overview with what waits, disagreements found by fixed rules and the evidence with how far it can be trusted, a summary composed by fixed rules, Mana's consultation questions | the commit titled "D2 multimodal doctor consultation" (see `git log`) |
+
+## D2: the multimodal consultation — one context read from the records, an overview, disagreements found by rules, a summary made by rules, and Mana's consultation questions
+
+**Basis:** the owner's brief "D2: multimodal doctor consultation and unified clinical intelligence". Decisions: [ADR 0021](adr/0021-d2-multimodal-consultation-context.md); the screen: [DESIGN.md](DESIGN.md) §4i. **D2 adds one read-only route and one read-only Mana tool; no table, no migration, no model, no prompt, no new capture.** It composes what V2 to V6 and D1 keep about one consultation. **No hardware was used. It did not start V7, V8, V9 or V10**, and it did not change the nurse, patient or admin applications.
+
+**What the doctor will notice:** the consultation's tools column starts with **Overview**: what waits for their review (each count leads to where it is reviewed), where two sources disagree ("Sources disagree. Staff measured SpO₂ 98 % at 10:40; a device (unverified) sent 94 % at 10:42.", never resolved), the newest evidence with its kind, time, state, source and how far it can be trusted, what is missing, and a summary composed by fixed rules (closed until opened). In Mana, four new suggested questions about the consultation.
+
+### What is real, simulated, unverified or unavailable
+
+| Part | State in this build |
+| --- | --- |
+| The consultation context (`GET /api/encounters/:id/context`) | **Real**: built on request from the existing records, nothing stored again; tested with synthetic cases A to J and in the browser |
+| The Overview | **Real**, tested in Chromium (stand-ins for the model, speech, microphone, devices and camera) and looked at on the development stack at six sizes |
+| Disagreements (`context-conflicts-v2`) | **Fixed rules, not clinical**: thresholds chosen by engineering (SpO₂ 3 %, heart rate 15 /min, temperature 0.5 °C, respiratory rate 5 /min, within 15 minutes); shown, never resolved |
+| The summary (`multimodal-summary-v2`) | **Composed by fixed rules, not AI**; advisory; never written to the note |
+| Mana's consultation questions | **Real**, tested with a labelled stand-in model (API tests) and the suite's stand-in (browser); **asked of the real local model** (the development stack's llama.cpp server, Qwen3.5-4B Q4_K_M) on a synthetic consultation: answers in 5 to 7 seconds, one or two statements of each removed by the answer checks, the server's findings (the disagreement, the SIMULATED items left out) shown: safe but terse |
+| Wearable readings | As V5: **no device has been connected**; in the tests and screenshots the "band under test" is a device record whose gateway is the test posting fixed numbers (shown "device reading, unverified"), and the simulator band is SIMULATED (never LIVE, never in the summary's observations, never a disagreement, never given to Mana's model) |
+| Stethoscope | As V5: recordings from Chromium's synthetic audio input; **"recording available for clinician review; not analysed"**; no analysis exists |
+| Thermal | As V6: **no camera**; the simulator (SIMULATED) and a public FLIR sample file imported (labelled IMPORTED, "date taken not known") |
+| V3's consultation draft | **Unchanged** by D2 (its inputs are as at V6) |
+
+### Implemented
+
+- **Contract** (`packages/contracts/src/consultationContext.ts`): the evidence item (kind, title, detail, time, state, **trust**, source, versions, the part of the screen that says more), the trust vocabulary (*Entered by staff*, *Said in the consultation*, *Extracted from the conversation, to review*, *Fixed rules, not AI*, *AI output, to review*, *Device reading, unverified*, *SIMULATED, not a measurement*, *Recorded, not analysed*, *Measured*, *Reviewed by the doctor*), disagreements, what waits (with `unread`: kinds not read or not shown), what is missing, the summary.
+- **API** (`apps/api/src/consultation-context/`): `build.ts` (each source read on its own, bounded, for this encounter only; a source that fails is left out and said to be missing; what waits counted in full; a device's newest reading of each kind by index look-up within its assignments; device states by V5's `readingState` at the server's clock; who sees what as today: the conversation and points to doctors, the AI draft to the consultation's doctor only, Mana conversations to their doctor), `conflicts.ts` (four rules; allergies compared again with the record as it is now; a device's value never called measured), `summary.ts` (five sections, each statement with its trust and the items it rests on; no absence stated of a source not read), `routes.ts` (`encounters:read`; another facility's consultation is "not found" and audited; `encounter.context_viewed` once per user and consultation every five minutes, counts only; the window given back when the audit row could not be written; `RateLimiter.reset` added for that).
+- **Mana**: the read-only tool `consultation_context` (`mana-tools-v3`; `assistant/consultation.ts` turns the context into facts, topic by topic; nothing simulated given to the model; consents to thermal imaging and to recording applied; a rejected point never a fact), four suggested questions with fixed plans, and the answer checks `mana-answer-checks-v4` (the trust word must be said; no raising; no word added to a recording, a thermal measurement or a simulator's output, however short; "staff measured" only beside a cited staff value). The planner prompt is unchanged.
+- **Web**: `lib/consultationContext.ts` (the read every 15 seconds while visible, on focus and after an insertion; no retry of a reply the screen does not understand; pure helpers), `components/clinical/ConsultationOverview.tsx`, *Overview* first in the consultation's tools column (`ConsultationPage.tsx`, `App.tsx`), the consultation questions shown only in a conversation opened in a consultation (`ManaAssistant.tsx`).
+
+### Synthetic cases (API, `apps/api/test/consultation-context.test.ts`)
+
+| Case | What is checked |
+| --- | --- |
+| A, all modalities | conversation, points, staff vital signs, device readings, stethoscope, approved thermal image and its summary, AI draft with an accepted statement, a Mana conversation, a note insertion: every kind present, newest first, each with its trust, state and versions; the summary's five sections |
+| B, thermal unavailable | no thermal item, nothing invented; "No thermal image … (for information; not required)" |
+| C, wearable disconnected | DISCONNECTED, never LIVE |
+| D, stethoscope unavailable | none listed; nothing said of a sound anywhere |
+| E, AI unavailable | no draft item; the summary and the missing list say no AI draft was made, and why when known |
+| F, conflicting measurements | staff SpO₂ 98 against a device 94: one disagreement with both values; the agreeing reading not listed twice |
+| G, unverified readings | "device reading, unverified" everywhere, never "measured" |
+| H, simulated device and thermal data | SIMULATED items, never LIVE, never in the summary's observations, never a disagreement |
+| I, unauthorized access | another facility's consultation: 404, audited; a patient-portal session: refused |
+| J, wrong encounter | another consultation of the same patient: its thermal images and device readings contribute nothing |
+
+Also: the audit window and its return after a failed audit; failing sources (`unread`, no false all-clear); counts beyond the listed items; a confirmed point kept in the summary behind 40 newer ones; allergies compared with the current record (a recorded allergy ends the disagreement; an edited point is not judged by the extraction's reading); vital-sign sources named, never "measured"; imported and uploaded images labelled; stable device ids.
+
+### Tests
+
+- **API:** **946 passed, 1 skipped** (52 files plus the skipped one; 888 at V6). D2's own: `consultation-context.test.ts` (27: the cases A to J and the checks listed above); Mana: `mana-tools.test.ts` (39), `mana-assistant.test.ts` (75), `mana-answer.test.ts` (79), `mana.test.ts` (21), `consult.test.ts` (40), with D2's additions (the tool read-only, scoped, refused across patients, facilities and outside a consultation; consents; nothing simulated reaching the model; the trust words; nothing added to a recording or a measurement; no recording in V3's prompt or Mana's record). The only expectations changed are version strings bumped on purpose (`mana-tools-v3`, `mana-answer-checks-v4`) and the list of suggestions, extended.
+- **Web:** **78** (`consultationContext.test.ts` 13). **Thermal service** 42, **speech** 61. **Typecheck, lint** clean; **web build** succeeds.
+- **End to end:** `e2e/multimodal-consultation.spec.ts` (one consultation with every modality and the overview after each; see *Browser verification*) passes, alone (1.9 minutes) and in the full suite. **The whole suite on the final code (2 workers, nothing else running): 172 passed, 17 failed, 57 skipped (24.7 minutes). The 17 run again on their own: 16 passed; 1 failed**, `consult.spec.ts` *the doctor decides each statement*, which is **the pre-existing V3 defect** above (run at 02:52 IST; its draft called today's vital signs outdated). Classification: **16 FLAKY-ENVIRONMENT** (this machine's network stalls, see V5: page loads over 60 seconds, lists not loaded within 5 seconds; all pass alone), **1 FAIL from a pre-existing defect outside D2**, **57 SKIPPED** (tests marked desktop-only in the phone project, and the `-real` specs that need the real model and speech service). The run before the tools-column fix: 171 passed, 17 failed, 57 skipped, 1 did not run (16.3 minutes); alone, 16 passed and 2 failed (the same V3 test, and `history.spec.ts` *the allergies stay in front of the prescriber*: the layout defect above, fixed).
+- **No test used a wearable, a stethoscope, a camera or a tablet.**
+
+### Failures found during D2, and what was done
+
+- **My own browser test** assumed one penicillin point (there are two: one confirmed, one still a draft), read the overview before its next refresh, expected "READY FOR REVIEW" where a draft from a record without an allergy status is "PARTIALLY AVAILABLE", and looked for the signed note's provenance inside the note region; all four were the test's mistakes, corrected.
+- **The existing consultation tests found two things.** (1) `e2e/consult.spec.ts`, *states at five widths*: at 390 px the overview, now above the AI draft, left a checkbox of the draft half under the sticky top bar where the test scrolled, and axe measured only its uncovered part (a probe showed the checkbox at −2 px). The page is unchanged; the test now runs axe with the panel placed below the bars by `scrollIntoView({ block: 'start' })`, as D1 did for Mana; axe still checks every element. (2) `consult.spec.ts`, *the doctor decides each statement*: run just after midnight, the draft called the nurse's vital signs of today "outdated". **This is a defect from before D2** (V3, `apps/api/src/consult/validate.ts`: a record item's UTC date is compared with the facility's local day, so from 00:00 to 05:30 IST everything measured that day reads as yesterday's). **Not fixed in D2** (outside its scope); recorded here and offered as a separate task. Tests that generate a draft fail at that hour.
+- **The full suite found a layout defect that D2 exposed**: `history.spec.ts`, *the allergies stay in front of the prescriber*, failed every time on its own: scrolled to the bottom at 1280 × 720, the sticky consultation bar left the screen. A probe showed the page about 1,090 px taller than the workspace: visually hidden labels (absolutely placed, Mana's among them) escaped the tools column's scroll area, whose overflow does not clip what it is not the containing block of, and stretched the page at their place far down the column. The defect was there since D1; the overview above them made it show. Fixed by making the scroll area their containing block (`relative`, `ConsultationPage.tsx`); the test passes, and the whole suite was run again on that change.
+- **The implementers' screenshots showed** each band reading listed twice (every reading near a staff value was added, not only the compared one) and a thermal source "* (imported)" (the FLIR sample's camera model is "*"): both fixed.
+- **The first look at Mana with the real model** found nothing wrong in Mana: my screenshot script asked before the panel had opened, and then read the previous answer; corrected.
+
+### Independent review of the D2 diff (before the commit)
+
+One independent adversarial review: four reviewers (clinical-safety semantics, security and isolation, robustness and performance of the read model, the web overview), each followed by a verifier who tried to refute every finding by reading the code and running checks. Its report is model output; each finding was weighed. **26 findings were verified: 24 confirmed (2 high, 9 medium, 13 low), 2 refuted.** All 24 were fixed by three fixers on separate files, then an independent regression checker re-read every fix (each confirmed fixed with file and line), re-ran typecheck, lint, the web tests and 400 API tests, and reported four small residuals, which I fixed.
+
+- **High, fixed:** (1) the stethoscope recordings had been added to V3's draft inputs, and V3's existing checks let a model's invented sound through ("Mitral area recording suggests a murmur." kept as *inferred*, no tick): **removed**; V3's inputs are as at V6, with a test that no recording, typed note or simulated recording reaches the prompt and that an invented murmur is not kept. (2) Important points found by the default rules carried the trust "Fixed rules", so Mana could state an unreviewed or rejected point as fact: a point's trust now follows its review state (*Extracted from the conversation, to review* until decided), rejected points are left out, and Mana's checks require the word.
+- **Medium, fixed:** Mana's tool gave the model thermal measurements after consent to thermal imaging was withdrawn, and conversation points without consent to recording (both now applied, with the reason told); rejected points reached Mana as "to review"; the "nothing added" check ignored words under four letters ("hot", "red", "rub"); a disagreement quoted a device's value as "Measured"; allergy disagreements used flags frozen at extraction against the edited text and the current record; an unread source counted as "nothing waiting"; the summary stated an imported image's numbers with no IMPORTED label and with the import time as if it were the capture time.
+- **Low, fixed:** what waits counted from capped lists; an unread source stated as "none" in the summary; the live draft missed after ten failed attempts; the audit window spent before a failed audit; the device state word frozen in the summary text; legitimate answers removed ("maximum", "staff measured"); a transcript "Live" drawn in the device colours; device rows re-keyed at every read (focus lost); a reply that does not parse retried twice per read; the device query scanning every reading of the visit.
+- **Residuals the checker found, fixed by me:** the allergy comparison read at most 20 allergies; an edited allergy point was still judged by the extraction's negation; the summary's confirmed points came from the capped list; Mana still quoted the AI draft's words when consent to recording was not in place.
+
+### Remaining limitations
+
+- **No hardware**, as in V5 and V6: no wearable, stethoscope or camera was used; the browser test's devices are this test posting numbers, and its camera is the simulator and a public sample file.
+- **The thresholds of `context-conflicts-v2` are not clinically chosen**; the overview's usefulness has not been tested with doctors.
+- **Mana with the real local model is terse**: its checks remove what they cannot tie to a fact, so answers can be one line; the planner prompt does not describe the new tool (a free-text question is rarely routed to it; the four suggested questions always are).
+- **The pre-existing V3 time-zone defect** above (00:00 to 05:30 IST).
+- **`workspace.spec.ts`, *the bar of the tools column moves that column*,** failed once (the part jumped to was out of view) in a run of 15 and passed 3 times of 3 on its own; not explained. A possible cause, not shown: the overview's content arriving while the column is still scrolling to a part below it. Not fixed.
+- **The overview is read every 15 seconds** while a consultation is open (bounded queries; audited once per five minutes); it is not in the signed record's view.
+- **The note still calls every inserted text "AI-assisted"**, the thermal summary included (V6's known wording limitation).
+- **The full end-to-end suite still meets this machine's network stalls** (see V5); failed tests are run again on their own and classified below.
+
+### Browser verification
+
+| What | How | State |
+| --- | --- | --- |
+| The whole journey: sign-in, dashboard, today's patients, the consultation; the overview at the start (staff vital signs, nothing waiting, what is missing, the summary's five sections); the conversation recorded and its points waiting, a pending count leading to them; an allergy confirmed and the allergy-status disagreement; an AI draft with one accepted statement; a band under test (SpO₂ 94) and a simulator band (131) attached: the staff-versus-device disagreement, the simulator SIMULATED and never LIVE, not in the summary; Mana's two consultation questions; a stethoscope recording; a SIMULATED thermal capture and an imported sample approved, summarised, accepted and added to the Examination; the overview at the six sizes and axe; diagnosis and prescription typed by the doctor; signing; the nurse's view of the context; the audit log | `e2e/multimodal-consultation.spec.ts`, Chromium, the real API, database and thermal service | **Driven, passed.** The model, speech recogniser, microphone, stethoscope input and devices are the suite's stand-ins; the camera is the simulator and a public sample |
+| The overview on the development stack at 1024 × 768, 1180 × 820, 1280 × 800, 1366 × 1024, 1920 × 1080 and 390 × 844 | screenshots by a script (synthetic patient; band under test, simulator band, stethoscope from Chromium's fake audio input, thermal simulator and the public sample) | **Looked at**, before and after the review's fixes: no horizontal overflow at any size; the review block, the disagreement, the evidence rows with their marks, the summary |
+| Mana's consultation questions with the real local model | the development stack's llama.cpp server (Qwen3.5-4B Q4_K_M) | **Real model, synthetic consultation**: 5 to 7 seconds an answer; terse (see above) |
+| A tablet, a screen reader by hand, any hardware | — | **Not tested** |
+
+### Dev-environment actions
+
+- No migration (D2 adds no table). No backup was needed.
+- A development stack (`npm run dev`: API, web, thermal, speech and the verified local llama.cpp server with Qwen3.5-4B) had been started by one of the implementation agents at 22:06; it was used for the screenshots and Mana's real-model questions and then stopped (`taskkill` of that process tree only; PostgreSQL left running). An agent's temporary `.claude/launch.json` was removed. Synthetic patients were created through the API; nothing was downloaded; no hosted provider was called; no secret was printed.
 
 ## Slice V6: thermal imaging in the consultation — a camera boundary for a FLIR ONE on a tablet, captures with their provenance, a simulator, measurements and a summary the doctor reviews
 
@@ -1690,7 +1784,8 @@ The Doctor App is the hero product; work is organised as vertical slices through
 5. ~~**V5: devices.**~~ Done (slice V5 above): reading states (live, stale, disconnected, no data, unavailable) decided on the server's clock, "simulated" as a mark kept apart by the database, a gate on which kinds a device may send (never blood pressure), batches stored once, a gateway contract, recording in the browser ([ADR 0018](adr/0018-device-readings-states-gateway-and-simulator.md)). **No device has been connected or tested. Carried forward:** a real device and gateway, validation of readings, a quota per device, token rotation, retention of readings; **the end-to-end suite on this machine** (see V5, Tests).
 6. ~~**D1: the consultation as one workspace.**~~ Done (D1 above, [ADR 0019](adr/0019-d1-integrated-consultation-workspace.md)): V1 to V5 on one screen for one patient and one encounter; no new engine. **Carried forward:** the end-to-end suite on this machine (see V5 and D1, Tests).
 7. ~~**V6: thermal imaging in the consultation.**~~ Done (V6 above, [ADR 0020](adr/0020-v6-thermal-capture-in-the-consultation.md)); **not verified on a camera or a tablet**. **Carried forward:** compiling and running the native bridge with the FLIR SDK on a tablet and a FLIR ONE (the 15 steps in [THERMAL_CAMERA.md](THERMAL_CAMERA.md)); a thermal model only with a dataset, an evaluation and a model card.
-8. Then: the multimodal consultation (D2), prescription and documents, the consultation audit trail, handwriting.
+8. ~~**D2: the multimodal consultation.**~~ Done (D2 above, [ADR 0021](adr/0021-d2-multimodal-consultation-context.md)): one context of the consultation read from the records, the overview, disagreements and a summary by fixed rules, Mana's consultation questions. **Carried forward:** the V3 time-zone defect (00:00 to 05:30 IST), thresholds chosen by a clinical owner, a usability test with doctors.
+9. Then: prescription and documents, the consultation audit trail, handwriting.
 
 ## External needs (not blocking the MVP build)
 

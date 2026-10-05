@@ -258,6 +258,9 @@ test('states at five widths: not run, failed, unavailable, ready for review and 
       await panel(page).screenshot({ path: testInfo.outputPath(`consult-${label.replace(/\W+/g, '-')}-${size.width}-panel.png`) })
       await page.screenshot({ path: testInfo.outputPath(`consult-${label.replace(/\W+/g, '-')}-${size.width}.png`) })
     }
+    // The accessibility check runs with the panel's top below the sticky bars (the page's scroll padding, as a jump to it places it): where the
+    // scroll above happens to leave a control half under the bar, axe measures only its uncovered part (D2's overview, above this panel, moved it there).
+    await panel(page).evaluate((el) => el.scrollIntoView({ block: 'start' }))
     await expectNoAxeViolations(page)
   }
   await fit('not run')

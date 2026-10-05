@@ -252,8 +252,8 @@ a new data path or a new kind of AI output. Decisions: [ADR 0019](adr/0019-d1-in
   until the panel has answered, and says *not updated* when the panel's last read failed: the chips never guess. Its accessible name
   and tooltip give the model and the time it was last checked. There is no alerts engine; only recorded facts.
 - **The tools column** keeps its place under the bar and scrolls on its own, so the note stays in view while the doctor reads the
-  transcript or a draft, and the reverse. A bar at its top (*History, Conversation, AI draft, Mana, Devices, Thermal, More*; and *Note* on
-  phones; *Thermal* since V6) brings a part into view by scrolling the column only (the page and the note stay put) and moves focus to it; the column's
+  transcript or a draft, and the reverse. A bar at its top (*Overview, History, Conversation, AI draft, Mana, Devices, Thermal, More*; and *Note* on
+  phones; *Thermal* since V6, *Overview* since D2, §4i) brings a part into view by scrolling the column only (the page and the note stay put) and moves focus to it; the column's
   first keyboard stop is *Skip to the note*. The page's scroll padding follows the bar's height, so a focused field is never under it. **Every tool stays mounted and visible**: nothing is hidden in a tab, so a
   recording, the device readings and an AI draft keep running while the doctor writes, and nothing polls or audits behind a closed
   panel that the doctor did not open (Mana asks the server nothing until it is opened).
@@ -298,6 +298,25 @@ a new data path or a new kind of AI output. Decisions: [ADR 0019](adr/0019-d1-in
 - **Checked** by the end-to-end test in Chromium at 1280 × 800 (the workspace in each step: no camera, the simulator, a capture, a summary, an import; axe with the workspace open and no camera; no horizontal overflow with a summary on screen) and 1024 × 768 (the consultation afterwards: axe and overflow). Not checked: a tablet, a screen reader by hand, a phone width with the workspace open.
 
 **Not built:** a working live camera (the bridge has not run), the camera's battery level, an image-quality or confidence score, anything from a model, a pain score, moving an image to another patient or consultation.
+
+## 4i. The consultation's overview (D2)
+
+`components/clinical/ConsultationOverview.tsx`, reading `GET /api/encounters/:id/context` through `lib/consultationContext.ts`. Decisions: [ADR 0021](adr/0021-d2-multimodal-consultation-context.md). The overview **shows; it does not decide**: it adds no clinical wording of its own, resolves no disagreement, makes nothing more current or more trusted than the server said, and never leaves out a SIMULATED mark.
+
+| Part | Behaviour |
+| --- | --- |
+| Place | **First in the tools column** (*Overview* is the first button of the *Go to* bar, §4g), a card titled "Consultation overview" with "Read at <time>" and one line: "From this consultation’s records. Nothing here is a diagnosis or a recommendation." |
+| Needs your review | Each kind that waits is a 44px button that leads to where it is reviewed ("3 important points to review" → *Conversation*; AI draft statements → *AI draft*; thermal images and summaries → *Thermal*). "Nothing is waiting for your review." **only when every kind was counted**; when some could not be read, "Some items could not be read just now, so this list may be incomplete."; for a nurse, "The conversation’s important points and the AI draft are reviewed by the consultation’s doctor and are not counted in this view." |
+| Disagreements | Each in an amber box, **words first**: "**Sources disagree.** Staff measured SpO₂ 98 % at 10:40; a device (unverified) sent 94 % at 10:42." then "Found by a fixed rule (context-conflicts-v2). Not resolved: each side is shown as it was recorded." and a *View* button per part that holds a side (*View History*, *View Devices*) |
+| Evidence | The newest 8 items (*Show all (N)* / *Show fewer*; when a SIMULATED item is among those not listed, a line says so), one compact row each: the kind ("Device reading", "Thermal image", "Important point" …) and the time ("2 min ago", the exact time in its title and for screen readers), the title, a detail line, the source and versions, a **state chip** and a **trust mark**, and *View* (the part that says more). The trust mark is the device card's dashed **SIMULATED, not a measurement** for anything simulated (the row gets a dashed edge too), the solid **UNVERIFIED** for a device reading, and plain words for the others ("Entered by staff", "Said in the consultation", "Extracted from the conversation, to review" in the to-review colour, "AI output, to review" in the AI colour, "Recorded, not analysed", "Fixed rules, not AI", "Reviewed by the doctor", "Measured"). Only a device reading's state is drawn in the device colours (green LIVE with a dot, amber STALE, red DISCONNECTED); a LIVE device value turns STALE on the screen when the device card's does, and before the card has read, it says "when read at <time>" |
+| Missing | A short list when anything is: the allergy status not recorded, no conversation captured, no AI draft made (and why, when known), no thermal image or stethoscope recording ("for information; not required"), a source that could not be read |
+| Summary of this consultation | Closed until opened (`<details>`): "Composed by fixed rules from this consultation's records, not by AI. Advisory: the doctor decides.", then its five sections (current presentation, patient context, current observations, AI-derived information reviewed by the doctor, for the doctor's review), each statement with its trust mark, then the rules' versions. It is read beside the note and never put into it |
+| Failure | Loading: a skeleton. Not readable: "The overview could not be loaded. The consultation and the note are not affected." with *Try again*. A later read that fails keeps what was read and says "Not updated … read at <time>". The overview is inside its own error boundary like every tool (§4g) |
+
+- **Refreshing:** every 15 seconds while the page is visible, when the window regains focus, and at once after anything is added to the note. A reply the screen does not understand is not retried within the same read. The server audits a read once per user and consultation every five minutes.
+- **Checked** by `e2e/multimodal-consultation.spec.ts` in Chromium (the overview after each modality; no horizontal overflow at 1024 × 768, 1180 × 820, 1280 × 800, 1366 × 1024, 1920 × 1080 and 390 × 844; axe at 1180 × 820 with every modality present) and by screenshots of the development stack at the same six sizes. Not checked: a tablet, a screen reader by hand.
+
+**Not built:** alerts, a "resolve" action, a summary written by a model, sorting or filtering of the evidence, the overview in the signed record.
 
 ## 5. Rules the screens follow
 

@@ -4,11 +4,11 @@ import { RuleFactExtractor } from '../src/ai/extract/rules.ts'
 import type { AiProviders } from '../src/ai/providers.ts'
 import { AiProviderError } from '../src/ai/providers.ts'
 import { hashPassword } from '../src/auth/password.ts'
-import { departments, facilities, users } from '../src/db/schema.ts'
+import { auscultationRecordings, departments, devices, facilities, files, users } from '../src/db/schema.ts'
 import { loadAppSettings } from '../src/settings/load.ts'
 import type { AppSettings } from '../src/settings/schema.ts'
 import { adminQuery, call, createFixture, createTestApp, type Fixture, login, resetDatabase, samplePatient, TEST_PASSWORD, type TestContext } from './helpers.ts'
-import { faithfulDraft, injectedDraft, StubReasoner } from './consult-support.ts'
+import { faithfulDraft, injectedDraft, sourcesIn, StubReasoner } from './consult-support.ts'
 
 // Local AI consultation intelligence (V3): a draft made by a model that runs on this computer, in the background, from the authorised record, the
 // doctor's notes and the points the doctor confirmed. These tests use an in-process stand-in for the model (a labelled test double) and look at
@@ -146,6 +146,30 @@ describe('making a draft', () => {
     expect(prompt).not.toContain(p.mrn)
     expect(prompt).not.toMatch(/Consult\d/)
     expect(prompt).not.toContain('94100')
+  })
+
+  it('D2: is told nothing of a stethoscope recording: none of the consultation’s, real or SIMULATED, with a note typed beside it or not, reaches the model, and a sound it writes of has nothing to rest on', async () => {
+    const { e, p, doctor } = await open()
+    const file = async () => (await ctx.db.insert(files).values({ facilityId: fx.facilityId, patientId: p.id, encounterId: e.id, kind: 'stethoscope_audio', storageKey: `test/${crypto.randomUUID()}`, mimeType: 'audio/wav', sizeBytes: 1000, sha256: 'a'.repeat(64), uploadedBy: fx.users.doctor }).returning({ id: files.id }))[0]!.id
+    const [sim] = await ctx.db.insert(devices).values({ facilityId: fx.facilityId, kind: 'smart_stethoscope', label: 'Stethoscope simulator', serialNumber: `SN-${crypto.randomUUID().slice(0, 8)}`, integration: 'simulator', createdBy: fx.users.admin }).returning({ id: devices.id })
+    for (const o of [
+      { site: 'mitral', durationMs: 38_000, captureMethod: 'file_upload', note: 'Sentinel-steth-note: soft systolic murmur heard' },
+      { site: 'lung_left_lower', durationMs: null, captureMethod: 'browser_recording' },
+      { site: 'aortic', durationMs: 12_000, captureMethod: 'gateway', simulated: true, deviceId: sim!.id },
+    ]) await ctx.db.insert(auscultationRecordings).values({ facilityId: fx.facilityId, patientId: p.id, encounterId: e.id, fileId: await file(), dataOrigin: 'synthetic', createdBy: fx.users.doctor, ...o })
+    // A model that writes of a sound anyway, citing what it was shown.
+    model.answer = (sources) => {
+      const d = faithfulDraft(sources) as { observations: { text: string; refs: string[]; basis: string; uncertainty: string | null }[] }
+      d.observations = [...d.observations, { text: 'Mitral area recording suggests a murmur.', refs: [sources[0]!.ref], basis: 'stated', uncertainty: null }]
+      return d
+    }
+    await start(e.id, doctor)
+    const s = await ready(e.id, doctor)
+    const prompt = model.calls[0]!.user
+    // The draft's inputs are what they were before recordings existed: no line about one, and nothing of what was typed beside one.
+    expect(prompt).not.toMatch(/stethoscope|auscultation|recording|Sentinel-steth|murmur|mitral|aortic|lung|SIMULATED|simulator/i)
+    expect(s.draft!.sourceCount).toBe(sourcesIn(prompt).length)
+    expect(s.draft!.items.map((i) => i.text).join('\n')).not.toMatch(/murmur|mitral|recording/i)
   })
 })
 

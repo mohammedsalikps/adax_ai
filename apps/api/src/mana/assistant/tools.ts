@@ -1,7 +1,9 @@
-import { MANA_TOOLS, type ManaSourceItem, type ManaToolName, type ManaTopic, type PlannedCall } from '@adaxai/contracts'
+import { isConsultationTopic, MANA_TOOLS, type ManaConsultationTopic, type ManaSourceItem, type ManaToolName, type ManaTopic, type PlannedCall } from '@adaxai/contracts'
 import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import { makeScrubber } from '../../ai/text.ts'
 import { can } from '../../auth/permissions.ts'
+import type { Config } from '../../config.ts'
+import { buildConsultationContext } from '../../consultation-context/build.ts'
 import { appointments, departments, encounters, facilities, patients, users, visits } from '../../db/schema.ts'
 import { consentState } from '../../consents/service.ts'
 import type { DbOrTx } from '../../db/client.ts'
@@ -9,6 +11,7 @@ import type { DenialAudit } from '../../http/errors.ts'
 import { ageOn, fullName, getPatientOr404 } from '../../patients/service.ts'
 import { type RuleSettings, answerFromRecord } from '../answers.ts'
 import { loadPatientRecord, type PatientRecord } from '../record.ts'
+import { contextFacts } from './consultation.ts'
 import { resolveHandle, searchPatients, TooManyPatients } from './entities.ts'
 import { addDays, cap, dayLabel, dayOf, freeText, scrubGeneric, timeLabel, toSourceItem } from './format.ts'
 import { type ManaCtx, outcome, type ToolDef, type ToolFact, type ToolFinding, type ToolOutcome } from './types.ts'
@@ -20,7 +23,10 @@ import { type ManaCtx, outcome, type ToolDef, type ToolFact, type ToolFinding, t
  * (a note, a reason for a visit) has the patient's own name, MRN and telephone number replaced, and any telephone or record number replaced whoever it
  * belongs to. That is a best effort made of patterns: a name of someone else written in a note is not recognised.
  */
-export const TOOLS_VERSION = 'mana-tools-v1'
+// v2 (D2): `consultation_context`, the consultation the conversation was opened in, read through the consultation context (consultation-context/build.ts).
+// v3: it leaves out what the patient's consents to thermal imaging and to recording keep out, and a rejected point; it says nothing waits for review only of
+// what it could count.
+export const TOOLS_VERSION = 'mana-tools-v3'
 
 const MAX_ROWS = 20
 const MAX_FACTS_PER_TOOL = 24
@@ -115,7 +121,7 @@ async function patientFor(ctx: ManaCtx, call: PlannedCall): Promise<Who | ToolOu
 }
 const isOutcome = (x: unknown): x is ToolOutcome => typeof x === 'object' && x !== null && 'status' in x
 
-const TOPIC_INTENT: Record<Exclude<ManaTopic, 'investigations'>, Parameters<typeof answerFromRecord>[0]> = {
+const TOPIC_INTENT: Record<Exclude<ManaTopic, 'investigations' | ManaConsultationTopic>, Parameters<typeof answerFromRecord>[0]> = {
   briefing: 'briefing',
   history: 'history_summary',
   allergies: 'allergies',
@@ -135,6 +141,8 @@ const getPatientRecord: ToolDef = {
   needs: ['patients:read', 'encounters:read'],
   async run(ctx, call) {
     const topic = call.topic ?? 'briefing'
+    // What one consultation holds is read by its own tool, not out of the patient's record.
+    if (isConsultationTopic(topic)) return outcome('invalid', 'That topic is about the open consultation, not about the patient’s record.')
     if (topic === 'search') {
       const missing = need(call, 'text', 'A word or phrase to look for')
       if (missing) return missing
@@ -530,6 +538,52 @@ const getCurrentContext: ToolDef = {
   },
 }
 
+// --- the consultation the conversation was opened in (D2) --------------------------------------------------------------------------------
+
+/**
+ * The deployment as the consultation context reads it when Mana was not given the server's configuration: it reads only `env` and `dataOrigin` (whether a
+ * simulator may post here, devices/gateway.ts), and this is the strictest answer (none may). Mana leaves SIMULATED items out whatever the answer is.
+ */
+const UNKNOWN_DEPLOYMENT = { env: 'production', dataOrigin: 'clinical' } as Config
+
+const getConsultationContext: ToolDef = {
+  name: 'consultation_context',
+  needs: ['patients:read', 'encounters:read'],
+  async run(ctx, call) {
+    const topic: ManaConsultationTopic = isConsultationTopic(call.topic) ? call.topic : 'consultation_recorded'
+    // Only the consultation this conversation was opened in, and only for its patient: there is no argument that names another one.
+    if (!ctx.scope.encounterId || !ctx.scope.patientId) return outcome('refused', 'This conversation was not opened in a consultation, so there is no consultation to read. Ask from the consultation itself.')
+    const h = await resolveHandle(ctx, call.patient ?? 'current')
+    if (h.kind === 'none') return outcome('not_found', h.reason)
+    if (h.kind === 'ambiguous' || h.patientId !== ctx.scope.patientId) return outcome('refused', 'Mana reads only the consultation this conversation was opened in, for its own patient.')
+    const refusal = await consentRefusal(ctx, ctx.db, h.patientId)
+    if (refusal) return outcome('refused', refusal, { patientId: h.patientId })
+    // The same read model, with the same isolation, as the consultation's Overview: who may see what is decided inside it, from the caller. It throws a 404
+    // (with its audit reason) for another clinic's consultation, which runTool turns into "not found".
+    const c = await buildConsultationContext({ db: ctx.db, settings: ctx.settings, config: ctx.config ?? UNKNOWN_DEPLOYMENT }, ctx.me, ctx.scope.encounterId, { now: ctx.now.getTime() })
+    if (c.patientId !== h.patientId) return outcome('not_found', 'not found')
+    const [e] = await ctx.db.select({ status: encounters.status, doctorId: encounters.doctorId }).from(encounters).where(and(eq(encounters.id, c.encounterId), eq(encounters.facilityId, ctx.me.facilityId)))
+    if (!e) return outcome('not_found', 'not found')
+    // What the patient's other consents keep out of what Mana reads, as the other paths keep it out: the thermal images once consent to thermal imaging is
+    // withdrawn (as the patient's record does, record.ts); the conversation and its points unless consent to recording and AI assistance is granted, in its
+    // current wording, for this consultation (as the consultation draft requires, consult/service.ts).
+    const [thermal, recording] = await Promise.all([consentState(ctx.db, h.patientId, 'thermal_imaging'), consentState(ctx.db, h.patientId, 'ai_recording', c.encounterId)])
+    ctx.disclosed.add(h.patientId)
+    const scrub = scrubberFor(await getPatientOr404(ctx.db, ctx.me.facilityId, h.patientId))
+    const out = contextFacts(c, topic, {
+      encounterId: c.encounterId,
+      alias: h.alias,
+      scrub,
+      timeZone: ctx.timeZone,
+      today: ctx.today,
+      signed: e.status === 'signed',
+      isAuthor: e.doctorId === ctx.me.id,
+      withheld: { thermal: thermal.state === 'withdrawn', conversation: recording.state !== 'granted' },
+    })
+    return outcome(out.facts.length || out.findings.length ? 'ok' : 'empty', out.detail, { facts: out.facts, findings: out.findings, patientId: h.patientId })
+  },
+}
+
 export const REGISTRY: Record<ManaToolName, ToolDef> = {
   get_current_context: getCurrentContext,
   find_patient: findPatient,
@@ -541,6 +595,7 @@ export const REGISTRY: Record<ManaToolName, ToolDef> = {
   get_appointments: getAppointments,
   get_my_consultations: getMyConsultations,
   get_facility_information: getFacilityInformation,
+  consultation_context: getConsultationContext,
 }
 
 if (Object.keys(REGISTRY).sort().join() !== Object.keys(MANA_TOOLS).sort().join()) throw new Error('the registry and the contract list different tools')

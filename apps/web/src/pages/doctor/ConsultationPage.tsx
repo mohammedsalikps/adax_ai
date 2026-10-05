@@ -39,6 +39,7 @@ import { usePortalBase } from '../../lib/clinical.ts'
 import { encounterKey, useEncounter, useStartConsultation } from '../../lib/encounters.ts'
 import { fmtDate, fmtDateTime, fmtTime } from '../../lib/format.ts'
 import { consultKey } from '../../lib/consult.ts'
+import { contextKey } from '../../lib/consultationContext.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
 
@@ -58,6 +59,8 @@ export type SidePanel = (e: Encounter, inserter: NoteInserter) => ReactNode
  * saves the doctor's edits first and records what was inserted, from which reviewed AI output, on the server.
  */
 export interface ConsultationPanels {
+  /** D2: what the consultation holds in one place (pending reviews, disagreements, evidence, what is missing), first in the tools column. */
+  overview?: SidePanel
   conversation?: SidePanel
   draft?: SidePanel
   mana?: SidePanel
@@ -68,7 +71,8 @@ export interface ConsultationPanels {
 }
 
 /** The parts of the tools column, for the bar at its top (and for the chips under the banner, which lead to the part that says more). */
-const TOOL_PARTS: { id: 'history' | ToolSection | 'mana' | 'thermal' | 'more'; label: string; panel?: keyof ConsultationPanels }[] = [
+const TOOL_PARTS: { id: 'overview' | 'history' | ToolSection | 'mana' | 'thermal' | 'more'; label: string; panel?: keyof ConsultationPanels }[] = [
+  { id: 'overview', label: 'Overview', panel: 'overview' },
   { id: 'history', label: 'History' },
   { id: 'conversation', label: 'Conversation', panel: 'conversation' },
   { id: 'draft', label: 'AI draft', panel: 'draft' },
@@ -77,14 +81,14 @@ const TOOL_PARTS: { id: 'history' | ToolSection | 'mana' | 'thermal' | 'more'; l
   { id: 'thermal', label: 'Thermal', panel: 'thermal' },
   { id: 'more', label: 'More', panel: 'more' },
 ]
-const PANEL_LABEL: Record<keyof ConsultationPanels, string> = { conversation: 'The conversation', draft: 'The AI draft', mana: 'Mana', devices: 'The devices', thermal: 'Thermal imaging', more: 'This panel' }
+const PANEL_LABEL: Record<keyof ConsultationPanels, string> = { overview: 'The consultation overview', conversation: 'The conversation', draft: 'The AI draft', mana: 'Mana', devices: 'The devices', thermal: 'Thermal imaging', more: 'This panel' }
 
 /**
  * Brings a part of the tools column (or the note) into view and moves focus there, so a keyboard or screen-reader user arrives with it. From
  * 1024px the tools column scrolls on its own: only it moves (under its bar), and the page, with the note beside it, stays where the doctor
- * left it. Below that, the page scrolls.
+ * left it. Below that, the page scrolls. Exported for the tools that lead to another part (the Overview), so that they get there the same way.
  */
-function showPart(id: string) {
+export function showPart(id: string) {
   const el = document.getElementById(id)
   if (!el) return
   const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
@@ -465,6 +469,8 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
             setSaveState(dirtyRef.current ? 'dirty' : 'saved')
             void qc.invalidateQueries({ queryKey: ['my-consultations'] })
             void qc.invalidateQueries({ queryKey: consultKey(initial.id) })
+            // The overview lists what is in the note: it reads the consultation again now, not at its next refresh.
+            void qc.invalidateQueries({ queryKey: contextKey(initial.id) })
           } catch (err) {
             if (err instanceof ApiError && err.code === 'version_conflict') setSaveState('conflict')
             else if (isTerminal(err)) block(err)
@@ -574,7 +580,11 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
               Note
             </button>
           </nav>
-          <div data-tools-scroller className="min-w-0 space-y-6 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pr-2 lg:pb-4 lg:pl-1">
+          {/* relative: the scroller is the containing block of what is absolutely placed inside it (visually hidden labels), so that it clips
+              them; otherwise they escape its overflow at their place far down the column and make the page taller than the workspace,
+              which carries the sticky bar away at the bottom of the page. */}
+          <div data-tools-scroller className="relative min-w-0 space-y-6 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pr-2 lg:pb-4 lg:pl-1">
+            {panels.overview && part('overview', tool('overview'))}
             {part(
               'history',
               <>

@@ -35,6 +35,7 @@ import { AiProviderError } from '../../ai/providers.ts'
 import { audit } from '../../audit/audit.ts'
 import { can } from '../../auth/permissions.ts'
 import { SESSION_IDLE_MS, type SessionUser } from '../../auth/sessions.ts'
+import type { Config } from '../../config.ts'
 import { type Db, type DbOrTx, pgCode } from '../../db/client.ts'
 import { aiModels, aiRuns, manaConversations, manaMessages, manaMessageSources, manaToolCalls, sessions, users } from '../../db/schema.ts'
 import { getEncounterOr404 } from '../../encounters/service.ts'
@@ -75,6 +76,11 @@ export interface ManaServiceDeps {
   dataOrigin: 'clinical' | 'synthetic'
   /** Longest one model call may take. Defaults to the AI timeout setting, and at most six minutes (a question is two calls and the doctor is waiting). */
   callTimeoutMs?: number
+  /**
+   * The server's configuration, for the consultation tool (the consultation context reads whether a simulator may post here). Without it the context is built
+   * as for a deployment where none may (see ManaCtx.config).
+   */
+  config?: Config
 }
 
 /** What a stored answer holds. The sources are rows of their own; the names of patients are put back from the conversation when it is read. */
@@ -501,7 +507,7 @@ export class ManaAssistantService {
       await this.requireStillAllowed(me)
       const clock = await this.clock(me.facilityId)
       const book = new EntityBook(conv.entities as EntityRef[])
-      const ctx: ManaCtx = { db, me, settings, scope: { encounterId: conv.encounterId, patientId: conv.patientId }, book, today: clock.today, timeZone: clock.timeZone, now: new Date(), modelIsLocal: model.local, disclosed: new Set(), textShown: new Set(), denials: [] }
+      const ctx: ManaCtx = { db, me, settings, scope: { encounterId: conv.encounterId, patientId: conv.patientId }, book, today: clock.today, timeZone: clock.timeZone, now: new Date(), modelIsLocal: model.local, disclosed: new Set(), textShown: new Set(), denials: [], config: this.d.config }
 
       // 1. What to look up. A plan that does not fit the question (a refusal of a question about the records, a change that was not asked for, no calls) is
       // sent back to the planner once, with a fixed note; what it says the second time stands.
@@ -1049,7 +1055,7 @@ export function gather(runs: ToolRun[]): Gathered {
   for (const { o } of runs) {
     for (const fact of o.facts) {
       if (looksLikeInstruction(fact.text)) untrusted(fact.items)
-      else facts.push({ ref: `S${++s}`, text: fact.text, patient: fact.patient, items: fact.items })
+      else facts.push({ ref: `S${++s}`, text: fact.text, patient: fact.patient, items: fact.items, ...(fact.trust ? { trust: fact.trust } : {}) })
     }
     for (const fi of o.findings) {
       if (looksLikeInstruction(fi.text)) untrusted(fi.items)

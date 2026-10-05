@@ -1,6 +1,7 @@
-import type { ManaSourceItem, ManaToolName, ManaToolSummary, PlannedCall } from '@adaxai/contracts'
+import type { EvidenceTrust, ManaSourceItem, ManaToolName, ManaToolSummary, PlannedCall } from '@adaxai/contracts'
 import type { Permission } from '../../auth/permissions.ts'
 import type { SessionUser } from '../../auth/sessions.ts'
+import type { Config } from '../../config.ts'
 import type { Db } from '../../db/client.ts'
 import type { DenialAudit } from '../../http/errors.ts'
 import type { AppSettings } from '../../settings/schema.ts'
@@ -33,6 +34,11 @@ export interface ManaCtx {
   textShown: Set<string>
   /** Lookups that were refused as "not found" but that the audit log must tell apart (a patient of another clinic): the caller writes them. */
   denials: DenialAudit[]
+  /**
+   * The deployment's configuration, for the consultation context (it reads one thing from it: whether a simulator may post here). Without it the context is
+   * built as for a deployment where none may, the strictest reading.
+   */
+  config?: Config | undefined
 }
 
 /** One thing a tool established, in a sentence the model may copy from, and the records it rests on. The patient is a handle, never a name. */
@@ -40,6 +46,11 @@ export interface ToolFact {
   text: string
   patient: string | null
   items: ManaSourceItem[]
+  /**
+   * How far what it says can be trusted, in the consultation context's words (D2): set by the consultation tool only. The answer checks then hold a statement
+   * that restates it to its trust: a device reading stays "unverified", a recording "not analysed", AI output says it is AI's (answer.ts).
+   */
+  trust?: EvidenceTrust | null
 }
 
 /** What the explicit rules found (a conflict, something old, something not recorded): shown to the doctor whatever the model writes. */

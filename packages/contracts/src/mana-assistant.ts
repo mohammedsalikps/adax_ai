@@ -32,6 +32,8 @@ export const MANA_TOOLS = {
   get_appointments: 'Appointments in a time window (today, the next hour, a date), this doctor’s or the clinic’s',
   get_my_consultations: 'The consultations this doctor has done or has open (today, yesterday, a date), with counts',
   get_facility_information: 'This clinic and its departments',
+  consultation_context:
+    'The consultation this conversation was opened in (D2): what was recorded, said, measured and drafted in it, each with how far it can be trusted; what waits for review; what the rules found to disagree; what is missing',
 } as const
 export type ManaToolName = keyof typeof MANA_TOOLS
 export const MANA_TOOL_NAMES = Object.keys(MANA_TOOLS) as [ManaToolName, ...ManaToolName[]]
@@ -47,10 +49,19 @@ export const MANA_TOPICS = {
   investigations: 'Investigation results on record',
   changes: 'What changed since the previous visit',
   search: 'Where the record mentions something',
+  // The topics of `consultation_context` (one consultation, not the patient's record): see MANA_CONSULTATION_TOPICS.
+  consultation_recorded: 'In the open consultation: what was recorded, said, measured and drafted, with how far each can be trusted',
+  consultation_review: 'In the open consultation: what waits for the doctor’s review, and what the rules found to disagree',
+  consultation_missing: 'In the open consultation: what a consultation usually has and this one does not have yet',
+  consultation_thermal: 'In the open consultation: its thermal images, and the measurements of the approved ones',
 } as const
 export type ManaTopic = keyof typeof MANA_TOPICS
 export const MANA_TOPIC_NAMES = Object.keys(MANA_TOPICS) as [ManaTopic, ...ManaTopic[]]
 export const ManaTopic = z.enum(MANA_TOPIC_NAMES)
+/** The topics that are about the consultation the conversation was opened in (tool `consultation_context`); the others are about a patient's record. */
+export const MANA_CONSULTATION_TOPICS = ['consultation_recorded', 'consultation_review', 'consultation_missing', 'consultation_thermal'] as const satisfies readonly ManaTopic[]
+export type ManaConsultationTopic = (typeof MANA_CONSULTATION_TOPICS)[number]
+export const isConsultationTopic = (t: string | null | undefined): t is ManaConsultationTopic => (MANA_CONSULTATION_TOPICS as readonly string[]).includes(t ?? '')
 
 export const MANA_WHEN = ['last_minutes', 'minutes_ago', 'next_minutes', 'today', 'yesterday', 'tomorrow', 'date'] as const
 export const MANA_VISIT_STATUS_FILTER = ['waiting', 'in_triage', 'ready', 'in_consultation', 'completed', 'any'] as const
@@ -259,18 +270,23 @@ export type ManaConversationState = z.infer<typeof ManaConversationState>
 
 /**
  * Questions the screen offers as buttons. Each is a plan the server holds (no model is asked what to look up), so the answer starts at once;
- * the words shown on the button are the doctor's question as it is recorded.
+ * the words shown on the button are the doctor's question as it is recorded. `needsConsultation`: offered only in a conversation opened in a
+ * consultation (the server refuses it elsewhere too).
  */
 export const MANA_QUESTIONS = {
-  brief_current: { label: 'Brief me on this patient', needsPatient: true },
-  allergies_current: { label: 'Allergies on record', needsPatient: true },
-  medicines_current: { label: 'Last prescription and medicines', needsPatient: true },
-  vitals_current: { label: 'Vital signs compared with earlier', needsPatient: true },
-  changes_current: { label: 'What changed since the last visit', needsPatient: true },
-  visits_current: { label: 'Visits of this patient', needsPatient: true },
-  queue_mine: { label: 'My queue today', needsPatient: false },
-  appointments_mine: { label: 'My appointments today', needsPatient: false },
-  my_day: { label: 'My consultations today', needsPatient: false },
+  brief_current: { label: 'Brief me on this patient', needsPatient: true, needsConsultation: false },
+  allergies_current: { label: 'Allergies on record', needsPatient: true, needsConsultation: false },
+  medicines_current: { label: 'Last prescription and medicines', needsPatient: true, needsConsultation: false },
+  vitals_current: { label: 'Vital signs compared with earlier', needsPatient: true, needsConsultation: false },
+  changes_current: { label: 'What changed since the last visit', needsPatient: true, needsConsultation: false },
+  visits_current: { label: 'Visits of this patient', needsPatient: true, needsConsultation: false },
+  consultation_recorded: { label: 'What was recorded in this consultation?', needsPatient: true, needsConsultation: true },
+  consultation_review: { label: 'What still needs my review?', needsPatient: true, needsConsultation: true },
+  consultation_missing: { label: 'What information is missing?', needsPatient: true, needsConsultation: true },
+  consultation_thermal: { label: 'Show the thermal measurements from this consultation.', needsPatient: true, needsConsultation: true },
+  queue_mine: { label: 'My queue today', needsPatient: false, needsConsultation: false },
+  appointments_mine: { label: 'My appointments today', needsPatient: false, needsConsultation: false },
+  my_day: { label: 'My consultations today', needsPatient: false, needsConsultation: false },
 } as const
 export type ManaQuestion = keyof typeof MANA_QUESTIONS
 export const ManaQuestion = z.enum(Object.keys(MANA_QUESTIONS) as [ManaQuestion, ...ManaQuestion[]])

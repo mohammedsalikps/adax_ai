@@ -26,6 +26,7 @@ import { encounterIdsForVisits } from './encounters/service.ts'
 import { registerEncounterRoutes } from './encounters/routes.ts'
 import { registerInsertionRoutes } from './encounters/insertions.ts'
 import { registerConsultationRoutes } from './consult/routes.ts'
+import { registerConsultationContextRoutes } from './consultation-context/routes.ts'
 import { ConsultationService, editableEncounterFor } from './consult/service.ts'
 import { registerManaAssistantRoutes } from './mana/assistant/routes.ts'
 import { ManaAssistantService } from './mana/assistant/service.ts'
@@ -126,7 +127,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     editableEncounter: editableEncounterFor(db),
   })
   // Mana AI (V4): the doctor's assistant over the clinic's records; read-only, answers made in the background by the same local model.
-  const manaAssistant = new ManaAssistantService({ db, jobs, reasoning: reasoningConfig, gate: modelGate, settings, dataOrigin: deps.config.dataOrigin, ...(deps.manaCallTimeoutMs !== undefined && { callTimeoutMs: deps.manaCallTimeoutMs }) })
+  const manaAssistant = new ManaAssistantService({ db, jobs, reasoning: reasoningConfig, gate: modelGate, settings, config: deps.config, dataOrigin: deps.config.dataOrigin, ...(deps.manaCallTimeoutMs !== undefined && { callTimeoutMs: deps.manaCallTimeoutMs }) })
   // A step that was running when the system stopped will never finish: fail it (retryable) so its doctor is not left waiting on it.
   app.addHook('onReady', async () => {
     // Each sweep on its own: one that fails does not keep the others from running. Not worth stopping the server for: a sweep runs again at the next start.
@@ -167,6 +168,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerOversightRoutes(app, { db, providers, jobs, hostedKeyConfigured: !!deps.config.ai.anthropicApiKey })
   registerPortalRoutes(app, { db })
   registerDeviceRoutes(app, { db, config: deps.config, settings, limiter, clock: deps.clock })
+  registerConsultationContextRoutes(app, { db, config: deps.config, settings, limiter, clock: deps.clock, reasoningStatus: () => consult.status() })
 
   // API responses carry patient data: never store them in any cache (browser,
   // proxy or the web app's service worker), and set basic security headers.

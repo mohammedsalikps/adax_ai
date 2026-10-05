@@ -1,4 +1,4 @@
-import { MANA_NO_ANSWER, MANA_NOT_ESTABLISHED, MANA_UNVERIFIED, MANA_WITHHELD, type ManaAnswerBlock, type ManaModelAnswer, type ManaSourceItem } from '@adaxai/contracts'
+import { type EvidenceTrust, MANA_NO_ANSWER, MANA_NOT_ESTABLISHED, MANA_UNVERIFIED, MANA_WITHHELD, type ManaAnswerBlock, type ManaModelAnswer, type ManaSourceItem } from '@adaxai/contracts'
 import { neutralise } from '../../ai/llm/neutralise.ts'
 import { MANA_ANSWER_PROMPT } from '../../ai/prompts.ts'
 import {
@@ -33,7 +33,10 @@ import {
  */
 export const ANSWER_PROMPT = MANA_ANSWER_PROMPT
 export const ANSWER_SCHEMA_VERSION = MANA_ANSWER_PROMPT.schemaVersion
-export const ANSWER_CHECKS_VERSION = 'mana-answer-checks-v2'
+// v3 (D2): a statement that restates a fact of the consultation context keeps that fact's trust (see TRUST_MUST_SAY and the rules after it).
+// v4: an extracted point must be said to be one; nothing is added to a recording, a thermal measurement or a simulator's output, however short the word
+// (NOTHING_ADDED); "staff measured" is the staff's word, not a device's.
+export const ANSWER_CHECKS_VERSION = 'mana-answer-checks-v4'
 
 export interface AnswerFact {
   ref: string
@@ -41,6 +44,8 @@ export interface AnswerFact {
   /** The handle of the patient it is about. */
   patient: string | null
   items: ManaSourceItem[]
+  /** How far it can be trusted, when the tool that made it says so (the consultation context does): see `checkAnswer`. */
+  trust?: EvidenceTrust | null
 }
 
 export interface AnswerFinding {
@@ -373,6 +378,40 @@ const CLAIM_WORD =
   /^(?:severe|mild|moderate|serious|critical|fatal|urgent|emergency|chronic|acute|stable|unstable|improv\w*|worsen\w*|worse|worst|better|best|deteriorat\w*|resolved|cured|controlled|uncontrolled|normal|abnormal|elevated|raised|borderline|positive|negative|confirmed|suspected|likely|probable|possible|unlikely|definite\w*|hypertens\w*|hypotens\w*|diabet\w*|asthma\w*|pneumonia|infect\w*|sepsis|cancer\w*|tumou?r\w*|fractur\w*|stroke|an(?:a)?emi\w*|copd|tuberculosis|malaria|dengue|covid\w*|pregnan\w*|obes\w*|depress\w*|anxiety|epilep\w*|migraine|anaphyla\w*|angioedema|bronchospasm|shock|hives|urticaria|swelling|threatening|dangerous|contraindicat\w*|toxic\w*|overdos\w*|seizure\w*|arrest|bleed\w*|h(?:a)?emorrhag\w*|thrombo\w*|embol\w*|isch(?:a)?emi\w*|infarct\w*|jaundice|intoleran\w*)$|(?:itis|osis|emia|aemia|pathy|oma|algia|uria|penia|plegia|ectomy)$/i
 
 /**
+ * D2: how far a fact of the consultation context can be trusted is part of what it says, and a statement that restates it keeps it. A statement that rests on a
+ * fact of one of these trusts must say so in its own words: a device's reading is "unverified", a simulator's value "SIMULATED", a stethoscope recording "not
+ * analysed", a point extracted from the conversation and not yet decided by the doctor "extracted" or "to review" (or "not yet reviewed", "not confirmed"), AI
+ * output is the AI's ("AI", "extracted", "draft", "to review", "Mana"). Without them it would hand the doctor the value as more than it is: it is removed. (The
+ * consultation tool gives the model no SIMULATED item at all; the rule is there for any fact that ever carries that trust.)
+ */
+const TRUST_MUST_SAY: Partial<Record<EvidenceTrust, RegExp>> = {
+  measured_unverified: /\bunverified\b/i,
+  simulated: /\bsimulated\b/i,
+  recorded: /\bnot\s+(?:been\s+|yet\s+)?analy[sz]ed\b/i,
+  extracted: /\b(?:extracted|to\s+review|not\s+(?:yet\s+)?reviewed|not\s+confirmed)\b/i,
+  model_output: /\b(?:AI|extracted|draft|to\s+review|Mana)\b/i,
+}
+/**
+ * Words that make a device's reading or a simulator's value more than it is: "measured", "verified", "confirmed", "accurate", "real". In a statement that rests
+ * on such a fact, one of them stands only where a fact it cites has the same word ("not verified" is the label itself, not a claim). "Staff measured" (or
+ * "measured by staff") is the staff's measurement, and stands when the statement itself cites a fact entered by staff: the device's reading is still not.
+ */
+const UPGRADE = /\b(?:measured|measurements?|verified|validated|confirmed|accurate|reliable|real|actual|genuine|calibrated)\b/gi
+const NOT_UPGRADE = /\b(?:not|never|un)\s*(?:been\s+|yet\s+)?(?:measured|verified|validated|confirmed|calibrated)\b/gi
+const STAFF_MEASURED = /\bstaff\s+measured\b|\bmeasured\s+by\s+(?:the\s+)?staff\b/gi
+/**
+ * A stethoscope recording that nobody analysed, the measurements of a thermal image, and a simulator's output say all there is to say: a word a statement adds to
+ * one of them is a finding that nobody made ("murmur", "crackles", "warmer", "inflamed", "asymmetric", and short ones too: "hot", "red", "rub"). A statement that
+ * rests on such a fact uses only the words its facts have (every word of two letters or more, not only the longer ones the general checks read), the words that
+ * say where something is in them (REPORTING_WORDS), these plain nouns, and the glue of a sentence (NOTHING_ADDED_GLUE). The words of SHORT_FINDINGS are findings
+ * whatever else allows them, and stand only where a fact the statement cites has the same word.
+ */
+const NOTHING_ADDED: ReadonlySet<EvidenceTrust> = new Set<EvidenceTrust>(['recorded', 'measured', 'simulated'])
+const PLAIN_NOUNS = new Set('measurement measurements reading readings value values temperature temperatures image images recording recordings region regions available maximum minimum average mean'.split(' '))
+const NOTHING_ADDED_GLUE = new Set('is the of a an and at to it was has no not in on by with for its as or s'.split(' '))
+const SHORT_FINDINGS = /\b(?:hot|red|rub|dry|wet|low|raised|cold|warm|bad|high)\b/gi
+
+/**
  * Which side of a patient's record a medicine named in a statement is on: "allergic to X" (the allergy list) is not "takes X" (the medicines). The model is shown
  * both kinds of fact together, and a statement that cites both can swap them; the words of a statement alone ("allergic", "takes", "prescribed") say which side it
  * means, and the fact it cites must be on that side.
@@ -625,6 +664,8 @@ export function checkAnswer(out: ManaModelAnswer, inp: AnswerCheckInputs): Answe
     // (which is then added to what it cites, and the statement is marked: a figure that belongs to another record than the one cited is how a date and a reading
     // get mixed). A fact about another patient is never added: a time or a token number of P2 is not a time or a token number of P1.
     let sourcesAdded = false
+    /** The facts the statement itself cites (before any is added for a figure). */
+    const ownRefs = new Set(cited.map((f) => f.ref))
     const wanted = figuresIn(withSpelledNumbers(withoutTyped(text)), '', known)
     if (wanted.length) {
       const citedPool = poolOf(cited)
@@ -666,6 +707,36 @@ export function checkAnswer(out: ManaModelAnswer, inp: AnswerCheckInputs): Answe
       const have = timesIn(citedText)
       if ([...timesWanted].some((t) => !have.has(t))) {
         bump(reasons, 'time_not_in_record')
+        continue
+      }
+    }
+
+    // D2: the trust of the facts a statement rests on (those it cites, and any added above for a figure) is kept: said in its words, never raised, and nothing
+    // added to a recording, a thermal measurement or a simulator's output (see TRUST_MUST_SAY, UPGRADE and NOTHING_ADDED).
+    const trusts = new Set(cited.flatMap((f) => (f.trust ? [f.trust] : [])))
+    if ([...trusts].some((t) => TRUST_MUST_SAY[t] && !TRUST_MUST_SAY[t]!.test(text))) {
+      bump(reasons, 'trust_not_said')
+      continue
+    }
+    if (trusts.has('measured_unverified') || trusts.has('simulated')) {
+      const citedLower = citedText.toLowerCase()
+      // "Staff measured" only for a statement that itself cites what staff entered (a fact added above for a figure does not count).
+      const staffCited = cited.some((f) => ownRefs.has(f.ref) && f.trust === 'clinician_entered')
+      const raised = [...(staffCited ? text.replace(STAFF_MEASURED, ' ') : text).replace(NOT_UPGRADE, ' ').matchAll(UPGRADE)].map((m) => m[0].toLowerCase())
+      if (raised.some((w) => !new RegExp(`\\b${escapeRe(w)}\\b`).test(citedLower))) {
+        bump(reasons, 'trust_raised')
+        continue
+      }
+    }
+    if ([...trusts].some((t) => NOTHING_ADDED.has(t))) {
+      const citedLower = citedText.toLowerCase()
+      const have = [...new Set(citedLower.match(/[a-z]{2,}/g) ?? [])]
+      const added = [...new Set(text.toLowerCase().match(/[a-z]{2,}/g) ?? [])].filter(
+        (w) => !NOTHING_ADDED_GLUE.has(w) && !REPORTING_WORDS.has(w) && !PLAIN_NOUNS.has(w) && !inp.patientNames.some((n) => sameWord(n, w)) && !have.some((h) => sameWord(h, w)),
+      )
+      const short = [...text.matchAll(SHORT_FINDINGS)].map((m) => m[0].toLowerCase()).filter((w) => !new RegExp(`\\b${w}\\b`).test(citedLower))
+      if (added.length || short.length) {
+        bump(reasons, 'finding_not_in_source')
         continue
       }
     }

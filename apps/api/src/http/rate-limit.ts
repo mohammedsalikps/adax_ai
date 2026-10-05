@@ -42,6 +42,11 @@ export class RateLimiter {
     return { allowed: e.count <= rule.max, retryAfter, firstRefusal: e.count === rule.max + 1 }
   }
 
+  /** Forgets `key`'s window, as if it had never been hit (for a counted action that did not happen after all). */
+  reset(key: string): void {
+    this.hits.delete(key)
+  }
+
   private sweep(t: number) {
     for (const [k, e] of this.hits) if (e.resetAt <= t) this.hits.delete(k)
   }

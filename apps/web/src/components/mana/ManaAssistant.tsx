@@ -451,7 +451,8 @@ export function ManaAssistant({ encounterId, patientId, defaultOpen = false }: M
     const prev = s?.messages[idx - 1]
     return prev?.role === 'doctor' && prev.text && !prev.text.startsWith('Selected ') ? prev.text : null
   }
-  const suggested = SUGGESTIONS.filter(([, q]) => !q.needsPatient || !!s?.scopePatient)
+  // The questions about one consultation are offered only in a conversation opened in it (the server refuses them anywhere else).
+  const suggested = SUGGESTIONS.filter(([, q]) => (!q.needsPatient || !!s?.scopePatient) && (!q.needsConsultation || !!s?.conversation.scope.encounterId))
   const sp = s?.scopePatient
 
   return (

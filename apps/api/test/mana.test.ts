@@ -2,6 +2,7 @@ import { Encounter, EncounterAi, ManaAnswer, ManaAnswerList, PatientDetail, Visi
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { AiProviderError, type AiProviders, type CitedText, type RecordQuestionAnswerer, type RecordQuestionInput } from '../src/ai/providers.ts'
 import type { SessionUser } from '../src/auth/sessions.ts'
+import { auscultationRecordings, files } from '../src/db/schema.ts'
 import { classifyQuestion, itemsForGeneration } from '../src/mana/answers.ts'
 import { loadPatientRecord } from '../src/mana/record.ts'
 import { verifyCitations } from '../src/mana/routes.ts'
@@ -244,6 +245,25 @@ describe('Mana record answers: edge cases', () => {
     const record = await loadPatientRecord(noKeys.db, { facilityId: fx.facilityId } as SessionUser, p.id, { encounterId: e2.id, maxEncounters: 10, observationDays: 365 })
     const kept = itemsForGeneration('briefing', record, new Set(['M1']), 260)
     expect(kept.map((i) => i.ref)).toEqual(expect.arrayContaining(['A1', 'M1']))
+  })
+
+  it('D2: does not list a stethoscope recording of the consultation, so neither the consultation draft nor the record rules read, cite or send one', async () => {
+    const { p, e2, doctor } = await scenario(noKeys)
+    const [f] = await noKeys.db.insert(files).values({ facilityId: fx.facilityId, patientId: p.id, encounterId: e2.id, kind: 'stethoscope_audio', storageKey: `test/${crypto.randomUUID()}`, mimeType: 'audio/wav', sizeBytes: 1000, sha256: 'a'.repeat(64), uploadedBy: fx.users.doctor }).returning({ id: files.id })
+    await noKeys.db.insert(auscultationRecordings).values({ facilityId: fx.facilityId, patientId: p.id, encounterId: e2.id, fileId: f!.id, site: 'pulmonic', durationMs: 21_400, captureMethod: 'gateway', note: 'Sentinel-steth-note: stethoscope crackles', dataOrigin: 'synthetic', createdBy: fx.users.doctor })
+    const me = { facilityId: fx.facilityId } as SessionUser
+    // In the consultation (what the consultation draft is made from) and outside it (the patient's record as such): no item is a recording or says anything of one.
+    for (const opts of [{ encounterId: e2.id }, {}]) {
+      const record = await loadPatientRecord(noKeys.db, me, p.id, { ...opts, maxEncounters: 10, observationDays: 365 })
+      expect(record.items.length).toBeGreaterThan(0)
+      expect(JSON.stringify(record.items.map(({ data: _data, ...i }) => i))).not.toMatch(/stethoscope|auscultation|pulmonic|Sentinel-steth|crackles/i)
+      expect(record.items.every((i) => (i.data.t as string) !== 'recording')).toBe(true)
+    }
+    // The rules do not search it, cite it or send it.
+    const a = ManaAnswer.parse((await ask(noKeys, doctor, p.id, { question: 'Any mention of a stethoscope?', encounterId: e2.id })).json())
+    expect(a.intent).toBe('search')
+    expect(JSON.stringify(a)).not.toMatch(/stethoscope recording \(|pulmonic|Sentinel-steth|crackles/i)
+    expect(statements(a)).toEqual([expect.objectContaining({ kind: 'absent' })])
   })
 
   it('keeps AI-reported conflicts even when the model returns many statements', () => {

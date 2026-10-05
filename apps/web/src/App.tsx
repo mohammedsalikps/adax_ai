@@ -32,7 +32,7 @@ import { QueuePage } from './pages/clinical/QueuePage.tsx'
 import { TodaysPatientsPage } from './pages/doctor/TodaysPatientsPage.tsx'
 import { RegisterPatientPage } from './pages/clinical/RegisterPatientPage.tsx'
 import { PatientThermalCard, ThermalDetailPage, ThermalListPage } from './pages/clinical/ThermalPages.tsx'
-import { ConsultationPage } from './pages/doctor/ConsultationPage.tsx'
+import { ConsultationPage, showPart } from './pages/doctor/ConsultationPage.tsx'
 import { PrescriptionPrintPage } from './pages/doctor/PrescriptionPrintPage.tsx'
 import { ApplicationSelectorPage } from './pages/ApplicationSelectorPage.tsx'
 import { LoginPage } from './pages/LoginPage.tsx'
@@ -45,6 +45,7 @@ import { ClinicalImagesCard } from './components/clinical/ClinicalImagesCard.tsx
 import { ConsultationIntelligence } from './components/ai/ConsultationIntelligence.tsx'
 import { ManaAssistant } from './components/mana/ManaAssistant.tsx'
 import { ThermalPanel } from './components/thermal/ThermalPanel.tsx'
+import { ConsultationOverview } from './components/clinical/ConsultationOverview.tsx'
 
 const portal = (role: Role) => (
   <RequireAuth roles={[role]}>
@@ -118,6 +119,8 @@ const router = createBrowserRouter([
         element: (
           <ConsultationPage
             panels={{
+              // D2: the consultation's context in one place; each item leads to the part that says more, the way the tools bar does.
+              overview: (e) => <ConsultationOverview encounter={e} onJump={showPart} />,
               conversation: (e, inserter) => <CapturePanel encounter={e} inserter={inserter} />,
               draft: (e, inserter) => <ConsultationIntelligence encounterId={e.id} inserter={inserter} />,
               mana: (e) => <ManaAssistant patientId={e.patient.id} encounterId={e.id} />,

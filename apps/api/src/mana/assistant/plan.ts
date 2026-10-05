@@ -1,4 +1,4 @@
-import { MANA_QUESTIONS, ManaPlan, type ManaQuestion, type ManaToolName, type PlannedCall } from '@adaxai/contracts'
+import { isConsultationTopic, MANA_QUESTIONS, ManaPlan, type ManaQuestion, type ManaToolName, type PlannedCall } from '@adaxai/contracts'
 import { neutralise } from '../../ai/llm/neutralise.ts'
 import { MANA_PLAN_PROMPT } from '../../ai/prompts.ts'
 import type { DbOrTx } from '../../db/client.ts'
@@ -13,7 +13,8 @@ import { searchPatients } from './entities.ts'
  */
 export const PLAN_PROMPT = MANA_PLAN_PROMPT
 export const PLAN_SCHEMA_VERSION = MANA_PLAN_PROMPT.schemaVersion
-export const PLAN_CHECKS_VERSION = 'mana-plan-checks-v2'
+// v3 (D2): a call of `consultation_context` is about the current patient and has a consultation topic (the overview when it has none or another one).
+export const PLAN_CHECKS_VERSION = 'mana-plan-checks-v3'
 
 /** The most distinct patients one question reads. A question that needs more is a different kind of request than a doctor's work needs. */
 export const MAX_PATIENTS_PER_QUESTION = 2
@@ -63,10 +64,11 @@ export const TOOL_FIELDS: Record<ManaToolName, readonly (keyof PlannedCall)[]> =
   get_appointments: ['when', 'minutes', 'date', 'mine'],
   get_my_consultations: ['when', 'date'],
   get_facility_information: [],
+  consultation_context: ['patient', 'topic'],
 }
 
-/** The tools that read one patient's record. */
-export const PATIENT_TOOLS: ReadonlySet<ManaToolName> = new Set<ManaToolName>(['get_patient_record', 'get_patient_visits', 'get_consultation'])
+/** The tools that read one patient's record (the consultation tool reads the current patient's consultation: the wrong-patient check applies to it too). */
+export const PATIENT_TOOLS: ReadonlySet<ManaToolName> = new Set<ManaToolName>(['get_patient_record', 'get_patient_visits', 'get_consultation', 'consultation_context'])
 
 /**
  * The doctor's own words that make a queue or a schedule "mine": my, mine, myself; "to me", "for me", "with me"; and "I" as the one who acts ("I have seen",
@@ -251,6 +253,15 @@ export function validatePlan(raw: unknown, ctx: { today: string; question?: stri
       out.topic ??= 'briefing'
       if (out.topic !== 'search') out.text = null
     }
+    // The consultation tool reads the consultation the conversation was opened in, so its patient is "current" when none is given (another one is refused
+    // by the tool), and its topic is one of the consultation's (what was recorded, when it has none or a topic of the record).
+    if (c.tool === 'consultation_context') {
+      out.patient ??= 'current'
+      if (!isConsultationTopic(out.topic)) {
+        if (out.topic) bump(adjusted, 'topic_not_for_tool')
+        out.topic = 'consultation_recorded'
+      }
+    }
     // Finding a patient needs the words to find by, and the doctor wrote them: a plan that left them out is completed from the doctor's own question.
     if (c.tool === 'find_patient' && !out.text && ctx.question) {
       out.text = nameWordsIn(ctx.question)
@@ -343,6 +354,12 @@ export function suggestionPlan(s: ManaQuestion): ManaPlan {
         return blank('get_appointments', { when: 'today', mine: true })
       case 'my_day':
         return blank('get_my_consultations', { when: 'today' })
+      // D2: the consultation the conversation was opened in, through its context (the same read model as the consultation's Overview).
+      case 'consultation_recorded':
+      case 'consultation_review':
+      case 'consultation_missing':
+      case 'consultation_thermal':
+        return blank('consultation_context', { patient: 'current', topic: s })
     }
   })()
   return { kind: 'tools', calls: [call], clarification: null }
