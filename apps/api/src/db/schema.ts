@@ -1109,10 +1109,28 @@ export const thermalCaptures = pgTable(
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     /** clinical | synthetic | public_sample - set at upload from deployment config or a known sample checksum. */
     dataOrigin: text('data_origin').notNull().default('synthetic'),
+    /** V6: how the image arrived (live_capture | gallery_import | file_upload | simulator). Captures before V6 are file_upload. */
+    captureSource: text('capture_source').notNull().default('file_upload'),
+    /** V6: true exactly for the simulator's captures (CHECK); never shown to a patient, a model, Mana or a dataset. */
+    simulated: boolean('simulated').notNull().default(false),
+    /** V6: the registered device it was matched to by serial number, if any. */
+    deviceId: uuid('device_id').references(() => devices.id),
+    /** V6: when the camera says it took the image (device bridge), if it said. */
+    capturedAt: timestamp('captured_at', { withTimezone: true }),
+    /** V6: what the device bridge reported (model, serial, firmware, SDK, bridge), as reported: not verified. */
+    deviceReported: jsonb('device_reported'),
+    /** V6: whole-image standard deviation, °C (null for captures stored before V6). */
+    stdC: numeric('std_c', { precision: 6, scale: 2, mode: 'number' }),
     createdBy: uuid('created_by').references(() => users.id),
     ...timestamps,
   },
-  (t) => [check('thermal_captures_data_origin_check', sql`${t.dataOrigin} in ('clinical', 'synthetic', 'public_sample')`), index('thermal_captures_patient_idx').on(t.patientId), index('thermal_captures_encounter_idx').on(t.encounterId)],
+  (t) => [
+    check('thermal_captures_data_origin_check', sql`${t.dataOrigin} in ('clinical', 'synthetic', 'public_sample')`),
+    check('thermal_captures_source_check', sql`${t.captureSource} in ('live_capture', 'gallery_import', 'file_upload', 'simulator')`),
+    check('thermal_captures_simulated_check', sql`${t.simulated} = (${t.captureSource} = 'simulator') and (not ${t.simulated} or ${t.dataOrigin} = 'synthetic')`),
+    index('thermal_captures_patient_idx').on(t.patientId),
+    index('thermal_captures_encounter_idx').on(t.encounterId),
+  ],
 )
 
 export const thermalRois = pgTable(
@@ -1129,12 +1147,61 @@ export const thermalRois = pgTable(
     width: numeric('width', { precision: 10, scale: 2, mode: 'number' }).notNull(),
     height: numeric('height', { precision: 10, scale: 2, mode: 'number' }).notNull(),
     pairWith: text('pair_with'),
+    /** V6: a polygon's corners [[x, y], ...] in image pixels (null for rect and ellipse). */
+    points: jsonb('points'),
+    /** V6: the doctor's note on this region. */
+    note: text('note'),
     stats: jsonb('stats').notNull(),
     sortOrder: integer('sort_order').notNull().default(0),
     createdBy: uuid('created_by').references(() => users.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('thermal_rois_capture_idx').on(t.captureId)],
+  (t) => [
+    check('thermal_rois_shape_check', sql`${t.shape} in ('rect', 'ellipse', 'polygon') and ((${t.shape} = 'polygon') = (${t.points} is not null))`),
+    index('thermal_rois_capture_idx').on(t.captureId),
+  ],
+)
+
+/**
+ * V6: a clinician-facing summary of one thermal study, composed by fixed rules from the measurements (no language model), then decided once by
+ * a doctor: accepted, edited (the edit is `final_text`) or rejected. Only an accepted or edited summary can be added to a consultation note,
+ * through the note insertion route. Trigger in migration 0031: a decided summary, and what any summary says, never changes; none is deleted.
+ */
+export const thermalSummaries = pgTable(
+  'thermal_summaries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    facilityId: uuid('facility_id')
+      .notNull()
+      .references(() => facilities.id),
+    patientId: uuid('patient_id')
+      .notNull()
+      .references(() => patients.id),
+    encounterId: uuid('encounter_id').references(() => encounters.id),
+    captureId: uuid('capture_id')
+      .notNull()
+      .references(() => thermalCaptures.id),
+    composerVersion: text('composer_version').notNull(),
+    rulesVersion: text('rules_version'),
+    /** The thermal model status when it was composed (V6: none installed). */
+    model: jsonb('model').notNull(),
+    statements: jsonb('statements').notNull(),
+    text: text('text').notNull(),
+    /** pending | accepted | edited | rejected */
+    status: text('status').notNull().default('pending'),
+    finalText: text('final_text'),
+    decidedBy: uuid('decided_by').references(() => users.id),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    simulated: boolean('simulated').notNull().default(false),
+    createdBy: uuid('created_by').references(() => users.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('thermal_summaries_status_check', sql`${t.status} in ('pending', 'accepted', 'edited', 'rejected')`),
+    check('thermal_summaries_decision_check', sql`(${t.status} = 'pending') = (${t.decidedAt} is null) and ((${t.status} = 'edited') = (${t.finalText} is not null))`),
+    index('thermal_summaries_capture_idx').on(t.captureId),
+    index('thermal_summaries_encounter_idx').on(t.encounterId),
+  ],
 )
 
 /**

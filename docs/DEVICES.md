@@ -152,6 +152,18 @@ per visit. The device's stream, with its states, is on the "Device readings" car
 A reading is filed under the patient's open visit of the day it was measured on. One that arrives
 after that visit was closed belongs to the patient but is not added to the visit.
 
+## Thermal camera (V6)
+
+A thermal camera does not use the gateway above: it may send no readings (its list in the gate is empty), and its images reach
+ADAXAI as files. The FLIR ONE targeted in V6 would be reached through a native Android bridge in the ADAXAI tablet app, which **has
+not been compiled or run**; its hardware, permissions, contract, security and the steps to verify it on hardware are in
+[THERMAL_CAMERA.md](THERMAL_CAMERA.md). The registry's kind **`thermal_camera`** is used for one thing: a live capture is linked to a
+registered device by the **serial number** the bridge reported (not verified: a wrong one would link the wrong camera), and only to
+an **active** thermal camera of the same facility that is **not a simulator**. With no match the capture is linked to no device;
+either way what the bridge reported is stored as reported, not verified. A thermal camera needs no gateway token and no assignment: the image is taken into the doctor's own consultation in
+progress, under the patient's consent to thermal imaging. The thermal simulator is not a device record: its captures are made by a
+server route and stored as SIMULATED ([ADR 0020](adr/0020-v6-thermal-capture-in-the-consultation.md) §2.5).
+
 ## What a real integration needs
 
 1. **The physical devices** (make and model chosen), on loan for testing.

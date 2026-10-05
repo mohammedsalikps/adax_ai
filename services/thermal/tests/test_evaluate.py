@@ -178,3 +178,31 @@ def test_evaluate_endpoint():
     bad = client.post("/evaluate", files={"file": ("d.zip", b"nope", "application/zip")})
     assert bad.status_code == 422
     assert bad.json()["detail"]["error"] == "invalid_dataset"
+
+
+def test_a_polygon_region_in_an_export_keeps_its_corners_and_builds_a_case():
+    # V6: a region drawn as a polygon is exported with its corners, and the evaluator builds it
+    # (before, it refused the whole dataset).
+    from app.evaluate import build_case
+    from app.flags import FlagParams
+
+    m = np.full((H, W), 30.0, dtype=np.float32)
+    c = {
+        "id": "case-1",
+        "subject": "S1",
+        "rois": [
+            {
+                "label": "Knee",
+                "shape": "polygon",
+                "x": 1,
+                "y": 1,
+                "width": 8,
+                "height": 6,
+                "points": [[1, 1], [9, 1], [5, 7]],
+                "pairWith": None,
+                "stats": {},
+            },
+        ],
+    }
+    case, _ = build_case(c, m, FlagParams())
+    assert case.id == "case-1"

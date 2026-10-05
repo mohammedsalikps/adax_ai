@@ -1,4 +1,4 @@
-import { type Provenance, VITALS, type VitalKind } from '@adaxai/contracts'
+import { type Provenance, THERMAL_CAPTURE_SOURCES, type ThermalCaptureSource, VITALS, type VitalKind } from '@adaxai/contracts'
 import { and, desc, eq, gte, inArray, ne } from 'drizzle-orm'
 import { standingWindow } from '../visits/service.ts'
 import type { DbOrTx } from '../db/client.ts'
@@ -102,15 +102,20 @@ export async function buildPatientContext(db: DbOrTx, encounter: typeof encounte
   const currentPrescription = await db.select().from(prescriptionItems).where(eq(prescriptionItems.encounterId, encounter.id))
   for (const m of currentPrescription) add('P', { sourceType: 'prescription_item', sourceId: m.id, provenance: 'clinician_stated', text: `Current prescription draft: ${m.drugName} ${m.strength} ${m.form}, ${m.dose}, ${m.frequency}, ${m.duration}`.replace(/\s+/g, ' ') })
 
+  // Approved thermal measurements only; a simulated capture (generated numbers, not a measurement) is never given to a model. Each says how the
+  // image arrived, an imported one IMPORTED (an earlier image: when it was taken is not known), and is dated when the camera took it if the camera
+  // said so, otherwise when it was stored.
   const thermal = await db
     .select()
     .from(thermalCaptures)
-    .where(and(eq(thermalCaptures.patientId, patient.id), eq(thermalCaptures.status, 'approved')))
+    .where(and(eq(thermalCaptures.patientId, patient.id), eq(thermalCaptures.status, 'approved'), eq(thermalCaptures.simulated, false)))
     .orderBy(desc(thermalCaptures.createdAt))
     .limit(3)
   for (const t of thermal) {
-    const pairs = (t.pairStats as { a: string; b: string; meanDiff: number | null }[]).map((p) => `${p.a} minus ${p.b} mean ${p.meanDiff ?? 'n/a'} °C`).join('; ')
-    add('T', { sourceType: 'thermal_capture', sourceId: t.id, provenance: 'record', text: `Approved thermal measurement ${day(t.createdAt)}, ${(t.protocol as { bodyRegion: string }).bodyRegion}: ${pairs || 'no paired regions'} (measurements only, not validated)` })
+    const pairs = (t.pairStats as { a: string; b: string; meanDiff: number | null }[]).map((p) => `${scrub(p.a)} minus ${scrub(p.b)} mean ${p.meanDiff ?? 'n/a'} °C`).join('; ')
+    const source = t.captureSource === 'gallery_import' ? 'IMPORTED: an earlier image chosen from the device, date taken not known' : (THERMAL_CAPTURE_SOURCES[t.captureSource as ThermalCaptureSource] ?? t.captureSource)
+    const when = t.capturedAt ? `taken ${day(t.capturedAt)}` : `${t.captureSource === 'gallery_import' ? 'imported' : 'stored'} ${day(t.createdAt)}`
+    add('T', { sourceType: 'thermal_capture', sourceId: t.id, provenance: 'record', text: `Approved thermal measurement (${source}), ${when}, ${scrub((t.protocol as { bodyRegion: string }).bodyRegion)}: ${pairs || 'no paired regions'} (measurements only, not validated)` })
   }
 
   // Visit of this encounter: the reason for visit is part of the record.

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NOT COMPILED, NOT RUN on hardware. USB device filter for the host Activity's USB_DEVICE_ATTACHED intent filter.
+
+  vendor-id is decimal: 2507 = 0x09CB, FLIR Systems' USB vendor id. This matches every FLIR USB device, not only the FLIR ONE; the
+  bridge itself connects only to an identity the SDK reports as a FLIR ONE (UsbPermissionHandler.isFlirOne).
+
+  No product-id on purpose: product ids must be taken from the device filter of the sample app shipped with the FLIR Atlas Android SDK,
+  which was not available when this was written. Public USB id lists name product 0x1996 "FLIR ONE Camera", but that is neither FLIR's
+  documentation nor checked against a Gen 3 or a Pro, so it is not used. When the SDK is downloaded, copy the sample's product ids here
+  (as product-id="<decimal>") and note the SDK version they came from.
+-->
+<resources>
+  <usb-device vendor-id="2507" />
+</resources>

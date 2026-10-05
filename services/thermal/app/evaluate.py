@@ -157,7 +157,15 @@ def consensus(labels: list[dict]) -> tuple[str | None, bool]:
 def build_case(c: dict, m: np.ndarray, params: FlagParams) -> tuple[Case, dict]:
     keyed = {r["label"].strip().lower(): r for r in c.get("rois", [])}
     rois = [
-        Roi(id=k, shape=r["shape"], x=r["x"], y=r["y"], width=r["width"], height=r["height"])
+        Roi(
+            id=k,
+            shape=r["shape"],
+            x=r["x"],
+            y=r["y"],
+            width=r["width"],
+            height=r["height"],
+            points=r.get("points"),
+        )
         for k, r in keyed.items()
     ]
     pairs, seen = [], set()

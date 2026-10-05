@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { audit } from '../audit/audit.ts'
 import { currentUser } from '../auth/plugin.ts'
 import type { DbOrTx, Db } from '../db/client.ts'
-import { aiDraftItems, aiDrafts, aiRecommendations, aiReviewActions, aiRuns, clinicalFacts, clinicalImages, consultationDraftItems, consultationDrafts, encounters, imageAnalyses, manaQuestions, noteInsertions, users } from '../db/schema.ts'
+import { aiDraftItems, aiDrafts, aiRecommendations, aiReviewActions, aiRuns, clinicalFacts, clinicalImages, consultationDraftItems, consultationDrafts, encounters, imageAnalyses, manaQuestions, noteInsertions, thermalCaptures, thermalSummaries, users } from '../db/schema.ts'
 import { badRequest, conflict, HttpError, notFound } from '../http/errors.ts'
 import { parse } from '../http/validate.ts'
 import { assertOwnDraft, assertWithDoctor, getEncounterOr404, loadEncounter } from './service.ts'
@@ -43,7 +43,9 @@ const REVIEWED = ['accepted', 'edited']
  * and, where the artifact has a review step, that the doctor accepted it.
  * Returns a "produced by" label (provider, model, prompt or rules version) and
  * the reviewed text that may be inserted (null for a Mana answer, which the
- * doctor edits in the insert dialog).
+ * doctor edits in the insert dialog). A thermal summary (V6) is composed by
+ * rules, not a model: it must be this consultation's, accepted or edited, of
+ * an image that is approved, and never simulated.
  */
 async function verifySubject(db: Db, e: EncounterRow, type: InsertionSubject, id: string): Promise<{ producedBy: string | null; expected: string | null }> {
   const runOf = async (runId: string | null) => (runId ? await db.query.aiRuns.findFirst({ where: eq(aiRuns.id, runId) }) : undefined)
@@ -88,6 +90,17 @@ async function verifySubject(db: Db, e: EncounterRow, type: InsertionSubject, id
       if (!q || q.patientId !== e.patientId) throw notFound('Mana answer')
       const run = await runOf(q.runId)
       return { producedBy: `${run ? `${produced(run)}; ` : ''}record rules ${q.rulesVersion}; text chosen and edited by the doctor`, expected: null }
+    }
+    case 'thermal_summary': {
+      const s = await db.query.thermalSummaries.findFirst({ where: and(eq(thermalSummaries.id, id), eq(thermalSummaries.facilityId, e.facilityId)) })
+      if (!s || s.encounterId !== e.id) throw notFound('Thermal summary')
+      // Generated numbers are nobody's measurement: they never enter a consultation note, whatever the doctor decided about the summary.
+      if (s.simulated) throw conflict('A simulated thermal summary cannot be added to a consultation note.', 'simulated_not_allowed')
+      if (!REVIEWED.includes(s.status)) throw conflict('Accept or edit this thermal summary before adding it to the note', 'not_reviewed')
+      // Its image must still be approved: approval froze the measurements and regions it states (migration 0009); nothing else is summarised.
+      const c = await db.query.thermalCaptures.findFirst({ columns: { status: true }, where: and(eq(thermalCaptures.id, s.captureId), eq(thermalCaptures.facilityId, e.facilityId)) })
+      if (c?.status !== 'approved') throw conflict('This summary’s thermal image is not approved. Only the summary of an approved image can be added to the note.', 'thermal_not_approved')
+      return { producedBy: `${s.composerVersion}${s.rulesVersion ? ` · ${s.rulesVersion}` : ''}`, expected: s.finalText ?? s.text }
     }
   }
 }

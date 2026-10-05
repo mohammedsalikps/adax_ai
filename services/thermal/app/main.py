@@ -18,6 +18,7 @@ from app.evaluate import DatasetError, evaluate_dataset, to_markdown
 from app.flags import FlagsRequest, evaluate
 from app.images import ImageRejected
 from app.images import inspect as inspect_image
+from app.model import status as model_status
 from app.radiometric import ExtractionError, extract, extractor_info, parameters
 from app.roi import RoiStatsRequest, compute, encode_matrix
 
@@ -69,6 +70,8 @@ async def extract_endpoint(file: Annotated[UploadFile, File()]) -> dict:
         "minC": round(float(finite.min()), 2),
         "maxC": round(float(finite.max()), 2),
         "meanC": round(float(finite.mean()), 2),
+        # Population standard deviation over the pixels with a reading.
+        "stdC": round(float(finite.astype(np.float64).std()), 2),
         "matrixEncoding": "float32-le-base64",
         "matrix": encode_matrix(c),
         "camera": ex.camera,
@@ -76,6 +79,12 @@ async def extract_endpoint(file: Annotated[UploadFile, File()]) -> dict:
         "visibleJpeg": base64.b64encode(ex.visible_jpeg).decode("ascii") if ex.visible_jpeg else None,
         "extractor": extractor_info(),
     }
+
+
+@app.get("/model/status")
+def model_status_endpoint() -> dict:
+    """Whether a thermal model is installed. None is, and the answer says so."""
+    return model_status()
 
 
 @app.post("/roi-stats")

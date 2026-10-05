@@ -1,4 +1,4 @@
-import type { ThermalFlags } from '@adaxai/contracts'
+import { type ThermalFlags, ThermalModelStatus } from '@adaxai/contracts'
 import { HttpError } from '../http/errors.ts'
 
 export interface ExtractResult {
@@ -7,6 +7,8 @@ export interface ExtractResult {
   minC: number
   maxC: number
   meanC: number
+  /** Population standard deviation over the pixels with a reading (V6; absent from a service older than V6). */
+  stdC?: number | null
   /** float32 little-endian, row-major. */
   matrix: Buffer
   camera: { make: string | null; model: string | null; dateTime: string | null }
@@ -20,11 +22,23 @@ export interface RoiStatsResult {
   pairs: { a: string; b: string; meanDiff: number | null; maxDiff: number | null }[]
 }
 
+/** A region as the thermal service takes it: a box (rect, or the ellipse inscribed in it), or a polygon by its corners (even-odd rule). */
+export interface RoiGeometry {
+  id: string
+  shape: 'rect' | 'ellipse' | 'polygon'
+  x: number
+  y: number
+  width: number
+  height: number
+  /** Polygon only: its corners in image pixels. */
+  points?: [number, number][] | null
+}
+
 export interface RoiStatsInput {
   width: number
   height: number
   matrix: Buffer
-  rois: { id: string; shape: 'rect' | 'ellipse'; x: number; y: number; width: number; height: number }[]
+  rois: RoiGeometry[]
   pairs: { a: string; b: string }[]
 }
 
@@ -45,6 +59,11 @@ export interface ThermalService {
   evaluate(datasetZip: Buffer): Promise<EvaluationResult>
   /** Validates a clinical photograph and returns a metadata-free JPEG preview. */
   inspectImage(data: Buffer, opts: { allowed: string[]; maxPixels: number; previewMaxSide: number }): Promise<InspectedImage>
+  /**
+   * Whether a thermal model is installed (V6). Never throws: when the service cannot be reached, or answers with something that is not a model
+   * status, the answer is "unavailable" with that reason. There is no model in this build, so the service always says unavailable.
+   */
+  modelStatus(): Promise<ThermalModelStatus>
 }
 
 export interface InspectedImage {
@@ -59,13 +78,70 @@ export interface InspectedImage {
   previewHeight: number
 }
 
+/**
+ * WHERE A REAL THERMAL MODEL WOULD PLUG IN. Nothing implements this in this build: no trained thermal model exists, the thermal service says so
+ * (`GET /model/status`), and the evaluation pipeline's logistic-regression baseline is a measurement of a dataset, not a model that is installed.
+ * A model would be added behind this interface only with its weights, its evaluation for the stated use, and a decision record; every output it
+ * gives carries everything below, so that what it said can be traced to exactly which model, which weights and which input. Until then the product
+ * shows MODEL UNAVAILABLE and no model output of any kind.
+ */
+export interface ThermalModel {
+  /** Stable identifier and version of the model. */
+  readonly id: string
+  readonly version: string
+  /** SHA-256 of the weights file as installed. */
+  readonly artifactSha256: string
+  /** Version of the preprocessing applied to the matrix before inference (normalisation, resizing, masking). */
+  readonly preprocessingVersion: string
+  /** `real`: trained and evaluated for its stated task; `research`; `simulation`. */
+  readonly kind: 'real' | 'research' | 'simulation'
+  readonly intendedUse: string
+  /** The evaluation run that supports the stated use. */
+  readonly evaluation: { runId: string; summary: string }
+  infer(input: ThermalModelInput): Promise<ThermalModelOutput>
+}
+
+export interface ThermalModelInput {
+  captureId: string
+  width: number
+  height: number
+  /** float32 little-endian, row-major; NaN where there is no reading. */
+  matrix: Buffer
+  /** SHA-256 of `matrix`, recorded with the output. */
+  matrixSha256: string
+  /** Never a simulated capture: a simulator's numbers are not given to a model. */
+  simulated: false
+  rois: RoiGeometry[]
+}
+
+export interface ThermalModelOutput {
+  modelId: string
+  version: string
+  artifactSha256: string
+  preprocessingVersion: string
+  /** When inference ran (ISO). */
+  inferredAt: string
+  /** What it was given, by reference: never the image itself. */
+  input: { captureId: string; width: number; height: number; matrixSha256: string }
+  /** What it said, in its own documented shape. */
+  output: Record<string, unknown>
+  /** Its own confidence, where it has one; null where it does not. */
+  confidence: number | null
+  evaluation: { runId: string; summary: string }
+}
+
 const unavailable = () => new HttpError(503, 'thermal_unavailable', 'The thermal processing service is not reachable. Try again shortly.')
 
+/** The model status when the thermal service gave none (it is down, or answered with something else). Never says a model is available. */
+export function modelUnavailable(reason: string): ThermalModelStatus {
+  return { available: false, kind: null, modelId: null, version: null, artifactSha256: null, intendedUse: null, evaluation: null, reason }
+}
+
 export function httpThermalService(baseUrl: string, fetchImpl: typeof fetch = fetch): ThermalService {
-  async function call(path: string, init: RequestInit) {
+  async function call(path: string, init: RequestInit, timeoutMs = 60_000) {
     let res: Response
     try {
-      res = await fetchImpl(`${baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(60_000) })
+      res = await fetchImpl(`${baseUrl}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) })
     } catch {
       throw unavailable()
     }
@@ -112,6 +188,17 @@ export function httpThermalService(baseUrl: string, fetchImpl: typeof fetch = fe
       form.append('file', new Blob([new Uint8Array(data)]), 'image')
       const b = (await call('/image/inspect', { method: 'POST', body: form })) as Omit<InspectedImage, 'preview'> & { preview: string }
       return { ...b, preview: Buffer.from(b.preview, 'base64') }
+    },
+    async modelStatus() {
+      let body: unknown
+      try {
+        // A status, not a computation: a service that does not answer within seconds is taken as unreachable.
+        body = await call('/model/status', { method: 'GET' }, 5_000)
+      } catch {
+        return modelUnavailable('The thermal service could not be reached, so no thermal model can be used.')
+      }
+      const parsed = ThermalModelStatus.safeParse(body)
+      return parsed.success ? parsed.data : modelUnavailable('The thermal service did not give a model status, so no thermal model can be used.')
     },
   }
 }

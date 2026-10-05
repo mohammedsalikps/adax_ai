@@ -1,6 +1,6 @@
 # Models used by the capture pipeline and the consultation draft: model cards and measured results
 
-**Status: written 3 Oct 2026 for slice V2; the language-model sections (§1b, §8 and §9) were added on 4 Oct 2026 for slice V3.** An engineering record, not a regulatory file. **Nothing here is a claim of clinical validity, diagnostic accuracy, regulatory approval or production readiness.** Every number below was measured on **synthetic** material (listed in [DATASETS.md](DATASETS.md)), by one author, on one machine, and says nothing reliable about real consultations. Read the limits before the numbers.
+**Status: written 3 Oct 2026 for slice V2; the language-model sections (§1b, §8 and §9) were added on 4 Oct 2026 for slice V3, and §1c (thermal imaging: no model) on 5 Oct 2026 for slice V6.** An engineering record, not a regulatory file. **Nothing here is a claim of clinical validity, diagnostic accuracy, regulatory approval or production readiness.** Every number below was measured on **synthetic** material (listed in [DATASETS.md](DATASETS.md)), by one author, on one machine, and says nothing reliable about real consultations. Read the limits before the numbers.
 
 ## 1. What runs, and where
 
@@ -29,6 +29,10 @@
 | Data leaving the machine | **None.** A hosted reasoning mode exists only behind the egress policy and a key and only if the server is set to it; it has never been run against the real service and is not evaluated here |
 | Default | Provider `local`; `none` switches it off; **no fallback to a hosted model in either direction** |
 | Download | `npm run llm:setup` (about 19 MB runtime from GitHub and 2.74 GB model from Hugging Face) after the owner approved name, source and size on 4 Oct 2026; it asks first and deletes a file that does not match its pinned size and hash |
+
+### 1c. Thermal imaging (slice V6): no model
+
+**No thermal model is used or installed.** The thermal service's model status says "No trained thermal model is installed." and the screen shows MODEL UNAVAILABLE ([ADR 0020](../adr/0020-v6-thermal-capture-in-the-consultation.md) §2.6). What the product shows about a thermal image is measured (temperatures decoded from the radiometric file with `flyr`, and statistics of the whole image and of regions), found by fixed experimental rules (`rules-v1`: an area at least 2 SD above the image mean over 12 pixels or more; an asymmetry at a mean difference of 1.0 °C or more; not validated), or written by the **thermal summary composer `thermal-summary-v1`, which is fixed rules and not a language model**. None of these is a model, so none has a model card here. The evaluation pipeline's logistic-regression baseline (`thermal-eval-v1`) is a measurement of an exported dataset, trained and discarded within one evaluation run: it is not installed and the product does not use it. A thermal model would be described in this file, with its weights, data, splits and evaluation, before anything could show its output.
 
 ## 2. Speech-to-text model card (`faster-whisper-small`)
 
@@ -89,7 +93,7 @@ Full tables: [`data/eval/results/extraction-v1.md`](../../data/eval/results/extr
 
 - **Speaker identification:** none by any model. The extractor's *guess* of the side from the wording (used only when nobody assigned the line) was right for 96 to 100 % of the points it placed on a side, on scripted dialogue where doctors ask and patients answer in plain first and second person; real conversations are messier. The doctor's assignment is the reference.
 - **Languages:** English only is supported and measured. **Hindi, Tamil and code-mixed audio were not evaluated** (no voice or recordings available without a download the owner did not approve). The Hindi and Hinglish *text* files only show that the extractor declines non-English text.
-- **Not tested at all:** real recordings, real accents, noise and distance, overlapping speech, children, long (hours) recordings, the stethoscope and thermal pipelines (other slices).
+- **Not tested at all:** real recordings, real accents, noise and distance, overlapping speech, children, long (hours) recordings, the stethoscope and thermal pipelines (other slices; thermal uses no model at all, §1c).
 
 ## 7. Re-running and keeping this honest (speech and important points)
 

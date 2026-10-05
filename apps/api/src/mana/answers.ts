@@ -9,7 +9,9 @@ import type { ItemData, PatientRecord, RecordItem, SignedConsultation } from './
  * may be outdated. No language model is involved; every statement cites the
  * record items it was built from. Change the version when the rules change.
  */
-export const MANA_RULES_VERSION = 'mana-record-v2'
+// v3 (V6): the thermal items read changed: no simulated capture, none after a withdrawal of thermal imaging consent, the measured values and the
+// doctor-reviewed summary.
+export const MANA_RULES_VERSION = 'mana-record-v3'
 
 /** Question classification (first match wins). Suggested questions carry their intent explicitly. */
 const INTENT_RULES: [ManaIntent, RegExp][] = [

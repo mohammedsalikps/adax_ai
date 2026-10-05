@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NOT COMPILED, NOT RUN on hardware. Library manifest of the ADAXAI thermal bridge (merged into the host app's manifest).
+
+  - USB host: the FLIR ONE (Gen 3, Pro; USB-C) is a USB device and the tablet must act as USB host (OTG) on its USB-C port.
+  - No android.permission.CAMERA: the bridge does not use the tablet's own cameras. Whether the FLIR SDK or the FLIR ONE's USB
+    interfaces need it is NOT VERIFIED: Android grants access to a device of USB class "video" only to apps that also hold CAMERA when
+    they target API 28 or higher (UsbManager.requestPermission). Compare with the manifest of the sample app shipped with the SDK and
+    with the FLIR SDK's own AAR manifest (merged automatically) before release.
+  - INTERNET is the host app's (its WebView loads ADAXAI), not the bridge's: the bridge makes no network call.
+  - The USB_DEVICE_ATTACHED intent filter belongs to the host Activity (a library cannot declare it for an Activity it does not own):
+    see android/host-example/MainActivity.kt; it uses @xml/flir_usb_device_filter from this library.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <uses-feature android:name="android.hardware.usb.host" android:required="true" />
+
+</manifest>

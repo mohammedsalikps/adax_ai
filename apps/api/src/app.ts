@@ -20,6 +20,7 @@ import { registerPortalRoutes } from './portal/routes.ts'
 import { registerRoutingRoutes } from './routing/routes.ts'
 import { registerThermalDatasetRoutes } from './thermal/datasets.ts'
 import { registerThermalRoutes } from './thermal/routes.ts'
+import { registerThermalSummaryRoutes } from './thermal/summary-routes.ts'
 import { registerActivationRoutes } from './auth/activation.ts'
 import { encounterIdsForVisits } from './encounters/service.ts'
 import { registerEncounterRoutes } from './encounters/routes.ts'
@@ -160,6 +161,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerManaAssistantRoutes(app, { db, service: manaAssistant, limiter, settings })
   registerImageRoutes(app, { db, config: deps.config, settings, providers, thermal, jobs, executors })
   registerThermalRoutes(app, { db, config: deps.config, thermal })
+  registerThermalSummaryRoutes(app, { db, config: deps.config, thermal, limiter })
   registerThermalDatasetRoutes(app, { db, config: deps.config, thermal })
   registerRoutingRoutes(app, { db, routing })
   registerOversightRoutes(app, { db, providers, jobs, hostedKeyConfigured: !!deps.config.ai.anthropicApiKey })

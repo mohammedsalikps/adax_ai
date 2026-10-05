@@ -1,9 +1,10 @@
-import { type ManaSource, type ManaSourceStatus, VITALS, type VitalKind } from '@adaxai/contracts'
+import { type ManaSource, type ManaSourceStatus, type RoiStats, THERMAL_CAPTURE_SOURCES, type ThermalCaptureSource, type ThermalPair, VITALS, type VitalKind } from '@adaxai/contracts'
 import { and, asc, desc, eq, gte, inArray, lte, ne, sql } from 'drizzle-orm'
 import { SIMULATED } from '../devices/provenance.ts'
 import type { SessionUser } from '../auth/sessions.ts'
+import { consentState } from '../consents/service.ts'
 import type { DbOrTx } from '../db/client.ts'
-import { allergies, diagnoses, encounterAmendments, encounters, facilities, investigationResults, observations, patientConditions, patientMedications, prescriptionItems, thermalCaptures, users, visits } from '../db/schema.ts'
+import { allergies, diagnoses, encounterAmendments, encounters, facilities, investigationResults, observations, patientConditions, patientMedications, prescriptionItems, thermalCaptures, thermalRois, thermalSummaries, users, visits } from '../db/schema.ts'
 import { makeScrubber } from '../ai/text.ts'
 import { notFound } from '../http/errors.ts'
 import { ageOn, facilityToday, getPatientOr404, type PatientRow } from '../patients/service.ts'
@@ -30,7 +31,7 @@ export type ItemData =
   | { t: 'amendment'; reason: string; createdAt: Date }
   | { t: 'observation'; kind: VitalKind; value: number; unit: string; source: string; validationStatus: string; visitId: string | null; measuredAt: Date }
   | { t: 'visit'; visitId: string; visitDate: string; reason: string }
-  | { t: 'thermal'; region: string }
+  | { t: 'thermal'; region: string; captureId: string; kind: 'measurement' | 'reviewed_summary' }
   | { t: 'condition'; name: string; status: string }
   | { t: 'patient_medication'; drugName: string; summary: string; status: string }
   | { t: 'investigation'; testName: string; flag: string; collectedOn: string }
@@ -248,17 +249,65 @@ export async function loadPatientRecord(db: DbOrTx, me: SessionUser, patientId: 
     })
   }
 
-  // Approved thermal measurements (measurements only; not validated).
-  const thermal = await db
-    .select()
-    .from(thermalCaptures)
-    .where(and(eq(thermalCaptures.patientId, patient.id), eq(thermalCaptures.status, 'approved')))
-    .orderBy(desc(thermalCaptures.createdAt))
-    .limit(3)
+  // Approved thermal measurements (measurements only; not validated), each with the doctor's latest reviewed summary of it (accepted or edited), if
+  // any. A SIMULATED capture is never read (generated numbers are nobody's record), and none at all once the patient has withdrawn consent to
+  // thermal imaging.
+  const thermalConsent = await consentState(db, patient.id, 'thermal_imaging')
+  const thermal =
+    thermalConsent.state === 'withdrawn'
+      ? []
+      : await db
+          .select()
+          .from(thermalCaptures)
+          .where(and(eq(thermalCaptures.patientId, patient.id), eq(thermalCaptures.facilityId, me.facilityId), eq(thermalCaptures.status, 'approved'), eq(thermalCaptures.simulated, false)))
+          .orderBy(desc(thermalCaptures.createdAt))
+          .limit(3)
+  const thermalIds = thermal.map((t) => t.id)
+  const [thermalRoiRows, reviewedSummaries] = thermalIds.length
+    ? await Promise.all([
+        db.select().from(thermalRois).where(inArray(thermalRois.captureId, thermalIds)).orderBy(asc(thermalRois.sortOrder)),
+        db
+          .select()
+          .from(thermalSummaries)
+          .where(and(inArray(thermalSummaries.captureId, thermalIds), inArray(thermalSummaries.status, ['accepted', 'edited']), eq(thermalSummaries.simulated, false)))
+          .orderBy(desc(thermalSummaries.decidedAt), desc(thermalSummaries.createdAt)),
+      ])
+    : [[], []]
+  const deg = (v: number) => `${Number(v.toFixed(2))} °C`
+  const roiText = (s: RoiStats) =>
+    !s.pixelCount || s.mean === null ? 'no reading' : [s.min !== null && `min ${deg(s.min)}`, s.max !== null && `max ${deg(s.max)}`, `mean ${deg(s.mean)}`, s.std !== null && `SD ${deg(s.std)}`, `${s.pixelCount} pixels`].filter(Boolean).join(', ')
   for (const t of thermal) {
     const region = (t.protocol as { bodyRegion: string }).bodyRegion
-    const pairs = (t.pairStats as { a: string; b: string; meanDiff: number | null }[]).map((p) => `${p.a} minus ${p.b} mean ${p.meanDiff ?? 'n/a'} °C`).join('; ')
-    add('T', { sourceType: 'thermal_capture', sourceId: t.id, encounterId: null, date: t.createdAt.toISOString(), field: 'Thermal measurement', status: 'recorded', provenance: 'record', excerpt: `Approved thermal measurement, ${region}: ${pairs || 'no paired regions'} (measurement only, not validated)`, data: { t: 'thermal', region } })
+    const source = THERMAL_CAPTURE_SOURCES[t.captureSource as ThermalCaptureSource] ?? t.captureSource
+    const date = (t.capturedAt ?? t.createdAt).toISOString()
+    const whole = `whole image min ${deg(t.minC)}, max ${deg(t.maxC)}, mean ${deg(t.meanC)}${t.stdC !== null ? `, SD ${deg(t.stdC)}` : ''}`
+    const regions = thermalRoiRows.filter((r) => r.captureId === t.id).map((r) => `region ${scrub(r.label)}: ${roiText(r.stats as RoiStats)}`)
+    const pairs = (t.pairStats as ThermalPair[]).map((p) => `${scrub(p.a)} minus ${scrub(p.b)} mean ${p.meanDiff ?? 'n/a'} °C`)
+    add('T', {
+      sourceType: 'thermal_capture',
+      sourceId: t.id,
+      encounterId: t.encounterId,
+      date,
+      field: 'Thermal measurement',
+      status: 'recorded',
+      provenance: 'record',
+      excerpt: `Approved thermal measurement (${source}), ${scrub(region)}: ${[whole, ...regions, ...(pairs.length ? pairs : ['no paired regions'])].join('; ')} (measurement only, not validated)`,
+      data: { t: 'thermal', region, captureId: t.id, kind: 'measurement' },
+    })
+    const summary = reviewedSummaries.find((s) => s.captureId === t.id)
+    if (summary) {
+      add('T', {
+        sourceType: 'thermal_capture',
+        sourceId: t.id,
+        encounterId: t.encounterId,
+        date: (summary.decidedAt ?? summary.createdAt).toISOString(),
+        field: 'Thermal summary (doctor-reviewed)',
+        status: 'recorded',
+        provenance: 'clinician_stated',
+        excerpt: `Doctor-reviewed thermal summary (${summary.status === 'edited' ? 'edited' : 'accepted'} by the doctor; composed by rules ${summary.composerVersion}, not validated): ${scrub(summary.finalText ?? summary.text).replace(/\s*\n\s*/g, ' ')}`.slice(0, 1500),
+        data: { t: 'thermal', region, captureId: t.id, kind: 'reviewed_summary' },
+      })
+    }
   }
 
   // The history typed in by staff (conditions, the medicines list, results), when asked for. Entries marked as made in error are left out.

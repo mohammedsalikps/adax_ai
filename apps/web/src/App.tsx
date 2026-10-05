@@ -44,6 +44,7 @@ import { PortalConsentsPage, PortalHomePage, PortalProfilePage, PortalRecordPage
 import { ClinicalImagesCard } from './components/clinical/ClinicalImagesCard.tsx'
 import { ConsultationIntelligence } from './components/ai/ConsultationIntelligence.tsx'
 import { ManaAssistant } from './components/mana/ManaAssistant.tsx'
+import { ThermalPanel } from './components/thermal/ThermalPanel.tsx'
 
 const portal = (role: Role) => (
   <RequireAuth roles={[role]}>
@@ -131,6 +132,7 @@ const router = createBrowserRouter([
                   </PanelBoundary>
                 </>
               ),
+              thermal: (e, inserter) => <ThermalPanel encounter={e} inserter={inserter} canEdit={e.canEdit} />,
               more: (e, inserter) => (
                 <>
                   <PanelBoundary label="The clinical photographs">

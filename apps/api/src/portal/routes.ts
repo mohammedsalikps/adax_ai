@@ -310,10 +310,10 @@ export function registerPortalRoutes(app: FastifyInstance, deps: { db: Db }) {
     return { ok: true, signedOut, effects: result.effects }
   })
 
-  /** Doctor-approved thermal measurements (measurements only). */
+  /** Doctor-approved thermal measurements (measurements only). A simulated capture is not a measurement of the patient: it is never shown to them, even approved. */
   app.get('/api/portal/thermal', perm, async (req) => {
     const { patientId } = await self(req)
-    const rows = await db.select().from(thermalCaptures).where(and(eq(thermalCaptures.patientId, patientId), eq(thermalCaptures.status, 'approved'))).orderBy(desc(thermalCaptures.createdAt))
+    const rows = await db.select().from(thermalCaptures).where(and(eq(thermalCaptures.patientId, patientId), eq(thermalCaptures.status, 'approved'), eq(thermalCaptures.simulated, false))).orderBy(desc(thermalCaptures.createdAt))
     await read(req, patientId, 'thermal')
     return {
       reports: rows.map((t): PortalThermalReport => {

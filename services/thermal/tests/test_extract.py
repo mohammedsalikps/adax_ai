@@ -87,3 +87,27 @@ def test_non_jpeg_is_rejected():
     res = post("x.png", buf.getvalue(), "image/png")
     assert res.status_code == 422
     assert res.json()["detail"]["error"] == "invalid_image"
+
+
+@needs_samples
+def test_extract_reports_the_whole_image_standard_deviation():
+    body = post("flir_example.jpg", (SAMPLES / "flir_example.jpg").read_bytes()).json()
+    m = np.frombuffer(base64.b64decode(body["matrix"]), dtype="<f4").astype(np.float64)
+    assert body["stdC"] == pytest.approx(float(m[np.isfinite(m)].std()), abs=0.01)
+    assert body["stdC"] > 0
+
+
+def test_std_is_the_population_std_over_pixels_with_a_reading(monkeypatch):
+    from app import main
+    from app.radiometric import Extracted
+
+    c = np.array([[30.0, 32.0, np.nan], [34.0, 36.0, np.nan]], dtype=np.float32)
+    camera = {"make": None, "model": None, "dateTime": None}
+    monkeypatch.setattr(main, "extract", lambda data: Extracted(c, None, {}, camera, None))
+    res = post("x.jpg", b"\xff\xd8\xff")
+    assert res.status_code == 200
+    body = res.json()
+    assert (body["minC"], body["maxC"], body["meanC"]) == (30.0, 36.0, 33.0)
+    assert body["stdC"] == round(float(np.std([30.0, 32.0, 34.0, 36.0])), 2)
+    m = np.frombuffer(base64.b64decode(body["matrix"]), dtype="<f4").reshape(2, 3)
+    assert np.isnan(m[0, 2]) and np.isnan(m[1, 2])

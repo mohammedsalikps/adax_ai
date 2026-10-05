@@ -66,7 +66,7 @@
 
 ## Test fixtures
 
-Tests create their own throw-away synthetic patients, staff and records and delete nothing outside the disposable test and end-to-end databases. The thermal tests use public FLIR sample images fetched by `scripts/fetch-thermal-samples.mjs` (git-ignored; tests skip without them); their source and licence (MIT, National Drones) are recorded by the fetch script and in `samples/thermal/SOURCE.txt`, and they are third-party images, not clinic data.
+Tests create their own throw-away synthetic patients, staff and records and delete nothing outside the disposable test and end-to-end databases. The thermal tests use public FLIR sample images fetched by `scripts/fetch-thermal-samples.mjs` (git-ignored; tests skip without them); their source and licence (MIT, National Drones) are recorded by the fetch script and in `samples/thermal/SOURCE.txt`, and they are third-party images, not clinic data. Since V6 the end-to-end test also imports one of them into a synthetic patient's consultation as an earlier image (marked IMPORTED); the server records an upload of any of these files with data origin `public_sample`, whatever the deployment's origin.
 
 ## Device simulator output (`npm run devices:simulate`) (slice V5)
 
@@ -78,3 +78,14 @@ Tests create their own throw-away synthetic patients, staff and records and dele
 | Use | Exercising the device boundary and its screens in development, demonstrations and tests. **Not a training set, not an evaluation set, not evidence about any device** |
 | Splits, metrics, failure cases | Not applicable (nothing is trained or evaluated on it) |
 | Limits | It shows that the states and labels work; it says nothing about how a real band or stethoscope behaves (noise, dropouts, motion artefact, clock drift, units) |
+
+## Thermal simulator output (`thermal-sim-v1`) (slice V6)
+
+| | |
+| --- | --- |
+| What | Temperature matrices of 160 × 120 values produced by a program (`packages/contracts/src/thermalSim.ts`, `thermal-sim-v1`) from a case and a seed: a warm oval on a cooler background with a little noise (*even distribution*), the same with one warmer spot (*localized difference*), with much more noise (*high variance*), or with a block of pixels without a reading (*missing data*). Two more cases (*invalid capture*, *processing failure*) store nothing, and *disconnected* is a camera state that never reaches the server |
+| Origin | Generated arithmetic (a small deterministic number generator around fixed shapes). **Not a recording of anyone, not an image of a body, not derived from any dataset, not a model of a camera.** The same case and seed always give the same matrix; the browser's simulated preview uses the same code |
+| Marking | Stored only by the server's simulator route, only where the data is not clinical and the deployment is not production, as `capture_source = simulator`, `simulated = true` and data origin `synthetic` (database CHECK constraints; unchangeable once stored, by trigger); its "original" is the case and seed as JSON; shown as SIMULATED; left out of the patient portal, every model's and assistant's inputs, dataset exports (counted as excluded) and consultation notes ([ADR 0020](../adr/0020-v6-thermal-capture-in-the-consultation.md) §2.5) |
+| Use | Exercising thermal capture, measurement, the summary and their screens in development, demonstrations and tests. **Not a training set, not an evaluation set, not evidence about any camera or any patient** |
+| Splits, metrics, failure cases | Not applicable (nothing is trained or evaluated on it) |
+| Limits | It shows that the pipeline, the labels and the exclusions work; it says nothing about how a FLIR ONE or a body behaves (sensor noise, emissivity, distance, drift, real temperature patterns) |

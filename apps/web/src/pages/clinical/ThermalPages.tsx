@@ -1,9 +1,10 @@
-import type { PatientDetail, ThermalCapture } from '@adaxai/contracts'
+import type { PatientDetail, ThermalCapture, ThermalCaptureSource } from '@adaxai/contracts'
 import { useQuery } from '@tanstack/react-query'
 import { Upload } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { PatientBanner } from '../../components/clinical/PatientBanner.tsx'
+import { ThermalSourceBadge } from '../../components/thermal/ThermalSourceBadge.tsx'
 import { ThermalUploadDialog } from '../../components/thermal/ThermalUploadDialog.tsx'
 import { ThermalViewer } from '../../components/thermal/ThermalViewer.tsx'
 import { Button } from '../../components/ui/Button.tsx'
@@ -36,7 +37,7 @@ export function PatientThermalCard({ patient }: { patient: PatientDetail }) {
               {c.protocol.bodyRegion} · {fmtDateTime(c.createdAt)}
             </Link>
             <span className="flex items-center gap-2 text-ink-muted tabular-nums">
-              {fmtC(c.minC)}–{fmtC(c.maxC)} · {c.rois.length} region{c.rois.length === 1 ? '' : 's'} {statusBadge(c.status)}
+              {fmtC(c.minC)}–{fmtC(c.maxC)} · {c.rois.length} region{c.rois.length === 1 ? '' : 's'} <ThermalSourceBadge capture={c} /> {statusBadge(c.status)}
             </span>
           </li>
         ))}
@@ -78,6 +79,9 @@ interface ThermalListItem {
   status: string
   bodyRegion: string
   createdAt: string
+  /** V6: where the image came from (a row without them shows no source rather than a guess). */
+  captureSource?: ThermalCaptureSource
+  simulated?: boolean
 }
 
 export function ThermalListPage() {
@@ -107,6 +111,7 @@ export function ThermalListPage() {
             columns={[
               { key: 'p', header: 'Patient', cell: (r) => <><p className="font-medium">{r.patientName}</p><p className="text-xs text-ink-muted">{r.mrn}</p></> },
               { key: 'r', header: 'Region', cell: (r) => <Link to={`${base}/thermal/${r.id}`} className="font-medium text-brand-strong underline underline-offset-2">{r.bodyRegion}</Link> },
+              { key: 'src', header: 'Source', cell: (r) => <ThermalSourceBadge capture={r} /> },
               { key: 's', header: 'Status', cell: (r) => statusBadge(r.status) },
               { key: 'd', header: 'Uploaded', cell: (r) => <span className="whitespace-nowrap">{fmtDateTime(r.createdAt)}</span> },
             ]}

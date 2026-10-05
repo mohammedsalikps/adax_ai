@@ -62,19 +62,22 @@ export interface ConsultationPanels {
   draft?: SidePanel
   mana?: SidePanel
   devices?: SidePanel
+  /** V6: thermal imaging for this patient and this encounter. */
+  thermal?: SidePanel
   more?: SidePanel
 }
 
 /** The parts of the tools column, for the bar at its top (and for the chips under the banner, which lead to the part that says more). */
-const TOOL_PARTS: { id: 'history' | ToolSection | 'mana' | 'more'; label: string; panel?: keyof ConsultationPanels }[] = [
+const TOOL_PARTS: { id: 'history' | ToolSection | 'mana' | 'thermal' | 'more'; label: string; panel?: keyof ConsultationPanels }[] = [
   { id: 'history', label: 'History' },
   { id: 'conversation', label: 'Conversation', panel: 'conversation' },
   { id: 'draft', label: 'AI draft', panel: 'draft' },
   { id: 'mana', label: 'Mana', panel: 'mana' },
   { id: 'devices', label: 'Devices', panel: 'devices' },
+  { id: 'thermal', label: 'Thermal', panel: 'thermal' },
   { id: 'more', label: 'More', panel: 'more' },
 ]
-const PANEL_LABEL: Record<keyof ConsultationPanels, string> = { conversation: 'The conversation', draft: 'The AI draft', mana: 'Mana', devices: 'The devices', more: 'This panel' }
+const PANEL_LABEL: Record<keyof ConsultationPanels, string> = { conversation: 'The conversation', draft: 'The AI draft', mana: 'Mana', devices: 'The devices', thermal: 'Thermal imaging', more: 'This panel' }
 
 /**
  * Brings a part of the tools column (or the note) into view and moves focus there, so a keyboard or screen-reader user arrives with it. From
@@ -604,6 +607,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
             {panels.draft && part('draft', tool('draft'))}
             {panels.mana && part('mana', tool('mana'))}
             {panels.devices && part('devices', tool('devices'))}
+            {panels.thermal && part('thermal', tool('thermal'))}
             {panels.more && part('more', tool('more'))}
           </div>
         </aside>

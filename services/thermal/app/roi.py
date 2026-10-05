@@ -1,9 +1,13 @@
-"""Region-of-interest statistics on a temperature matrix (degrees Celsius)."""
+"""Region-of-interest statistics on a temperature matrix (degrees Celsius).
+
+A pixel belongs to a region when its centre is inside it. Pixels without a reading (NaN) are part of no
+statistic: a region's pixel count is the number of readings in it.
+"""
 
 from __future__ import annotations
 
 import base64
-from typing import Literal
+from typing import Annotated, Literal
 
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
@@ -11,12 +15,23 @@ from pydantic import BaseModel, Field, model_validator
 
 class Roi(BaseModel):
     id: str = Field(min_length=1, max_length=64)
-    shape: Literal["rect", "ellipse"]
-    # Bounding box in matrix pixel coordinates (x to the right, y down).
+    shape: Literal["rect", "ellipse", "polygon"]
+    # Bounding box in matrix pixel coordinates (x to the right, y down). For a polygon it is informative only:
+    # the mask comes from the points.
     x: float
     y: float
     width: float = Field(gt=0)
     height: float = Field(gt=0)
+    # Polygon only: its corners [x, y] in matrix pixel coordinates, in order.
+    points: Annotated[list[tuple[float, float]], Field(min_length=3, max_length=64)] | None = None
+
+    @model_validator(mode="after")
+    def _points_match_shape(self) -> Roi:
+        if self.shape == "polygon" and self.points is None:
+            raise ValueError("a polygon needs its points")
+        if self.shape != "polygon" and self.points is not None:
+            raise ValueError("only a polygon has points")
+        return self
 
 
 class Pair(BaseModel):
@@ -55,8 +70,32 @@ def encode_matrix(m: np.ndarray) -> str:
     return base64.b64encode(np.ascontiguousarray(m, dtype="<f4").tobytes()).decode("ascii")
 
 
+def polygon_mask(shape: tuple[int, int], points: list[tuple[float, float]]) -> np.ndarray:
+    """Pixels whose centres are inside the polygon by the even-odd rule: a horizontal ray from the centre
+    crosses its edges an odd number of times. Self-intersecting outlines are therefore well defined (overlaps
+    cancel). A centre exactly on an edge may fall on either side of it."""
+    h, w = shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    cx, cy = xx + 0.5, yy + 0.5
+    inside = np.zeros(shape, dtype=bool)
+    n = len(points)
+    for i in range(n):
+        x1, y1 = points[i]
+        x2, y2 = points[(i + 1) % n]
+        if y1 == y2:
+            continue  # a horizontal edge is never crossed by a horizontal ray
+        crosses = (y1 > cy) != (y2 > cy)
+        x_at = x1 + (cy - y1) * (x2 - x1) / (y2 - y1)
+        inside ^= crosses & (cx < x_at)
+    return inside
+
+
 def roi_mask(shape: tuple[int, int], roi: Roi) -> np.ndarray:
-    """Pixels whose centres fall inside the ROI (rectangle, or ellipse inscribed in the box)."""
+    """Pixels whose centres fall inside the ROI (rectangle, ellipse inscribed in the box, or polygon)."""
+    if roi.shape == "polygon":
+        if roi.points is None:  # the model refuses this already
+            raise ValueError("a polygon needs its points")
+        return polygon_mask(shape, roi.points)
     h, w = shape
     yy, xx = np.mgrid[0:h, 0:w]
     cx, cy = xx + 0.5, yy + 0.5

@@ -148,6 +148,8 @@ export const INSERTION_SUBJECTS = {
   mana_answer: 'Mana answer',
   image_analysis: 'Photo description',
   consultation_item: 'Consultation draft statement',
+  /** V6: a thermal study summary composed by rules (no model) and accepted or edited by the doctor; never a simulated one. */
+  thermal_summary: 'Thermal study summary',
 } as const
 export type InsertionSubject = keyof typeof INSERTION_SUBJECTS
 export const InsertionSubject = z.enum(Object.keys(INSERTION_SUBJECTS) as [InsertionSubject, ...InsertionSubject[]])
