@@ -8,6 +8,8 @@ import { AiAssistantPanel } from './components/clinical/AiAssistantPanel.tsx'
 import { ConsultAction, ConsultationLink } from './components/clinical/ConsultAction.tsx'
 import { Timeline } from './components/clinical/Timeline.tsx'
 import { RequireAuth, RoleRedirect } from './components/RequireAuth.tsx'
+import type { RouteHandle } from './components/shell/AppShell.tsx'
+import { PanelBoundary } from './components/ui/PanelBoundary.tsx'
 import { ToastProvider } from './components/ui/Toast.tsx'
 import { watchSessionOnFocus } from './lib/focus.ts'
 import { createQueryClient } from './lib/queryClient.ts'
@@ -109,24 +111,37 @@ const router = createBrowserRouter([
       { path: 'patients', element: <PatientsPage /> },
       { path: 'patients/:patientId', element: doctorProfile },
       {
+        // The doctor's consultation: one workspace (D1), the tools beside the note. Mana is given no way into the note: it is read-only.
         path: 'encounters/:encounterId',
+        handle: { workspace: true } satisfies RouteHandle,
         element: (
           <ConsultationPage
-            capturePanel={(e, inserter) => <CapturePanel encounter={e} inserter={inserter} />}
-            leftPanel={(e, inserter) => (
-              <>
-                <DeviceReadingsCard patientId={e.patient.id} encounterId={e.id} />
-                <AuscultationCard patientId={e.patient.id} encounterId={e.id} />
-                <ClinicalImagesCard patientId={e.patient.id} encounter={e} inserter={inserter} />
-              </>
-            )}
-            sidePanel={(e, inserter) => (
-              <>
-                <ConsultationIntelligence encounterId={e.id} inserter={inserter} />
-                <ManaAssistant patientId={e.patient.id} encounterId={e.id} />
-                <AiAssistantPanel encounter={e} inserter={inserter} />
-              </>
-            )}
+            panels={{
+              conversation: (e, inserter) => <CapturePanel encounter={e} inserter={inserter} />,
+              draft: (e, inserter) => <ConsultationIntelligence encounterId={e.id} inserter={inserter} />,
+              mana: (e) => <ManaAssistant patientId={e.patient.id} encounterId={e.id} />,
+              // Each card in its own boundary as well: the stethoscope recordings stay usable if the device readings cannot be drawn.
+              devices: (e) => (
+                <>
+                  <PanelBoundary label="The device readings">
+                    <DeviceReadingsCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />
+                  </PanelBoundary>
+                  <PanelBoundary label="The stethoscope recordings">
+                    <AuscultationCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />
+                  </PanelBoundary>
+                </>
+              ),
+              more: (e, inserter) => (
+                <>
+                  <PanelBoundary label="The clinical photographs">
+                    <ClinicalImagesCard patientId={e.patient.id} encounter={e} inserter={inserter} />
+                  </PanelBoundary>
+                  <PanelBoundary label="The AI consultation assistant">
+                    <AiAssistantPanel encounter={e} inserter={inserter} />
+                  </PanelBoundary>
+                </>
+              ),
+            }}
           />
         ),
       },

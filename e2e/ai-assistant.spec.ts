@@ -38,16 +38,32 @@ test('doctor records consent, saves a transcript, reviews AI suggestions and sig
   // Nothing has reached the note yet.
   await expect(page.getByLabel('Plan', { exact: true })).toHaveValue('')
 
-  // Accept the chief complaint: appended to the note field.
+  // Accept the chief complaint: accepting does not touch the note; the separate "Add to Chief complaint" appends it to the note field.
   const cc = suggestions.getByRole('listitem').filter({ hasText: 'Reports: My throat hurts' })
+  const insertions: string[] = []
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /\/api\/encounters\/[^/]+\/insertions$/.test(new URL(r.url()).pathname)) insertions.push(r.url())
+  })
   await cc.getByRole('button', { name: 'Accept' }).click()
+  await expect(cc.getByRole('button', { name: 'Add to Chief complaint' })).toBeVisible()
+  // Give an insertion that would follow the acceptance time to be sent: none is.
+  await page.waitForTimeout(1500)
+  expect(insertions, 'accepting sends nothing into the note').toHaveLength(0)
+  await expect(page.getByLabel('Chief complaint')).not.toHaveValue(/Reports: My throat hurts/)
+  await cc.getByRole('button', { name: 'Add to Chief complaint' }).click()
+  await expect.poll(() => insertions.length).toBe(1)
   await expect(page.getByLabel('Chief complaint')).toHaveValue(/Sore throat and fever\nReports: My throat hurts and I have had fever for two days\./)
 
   // Edit the plan before adding it.
-  const plan = suggestions.getByRole('listitem').filter({ hasText: 'Doctor advised:' }).or(suggestions.getByRole('listitem').filter({ has: page.getByLabel('Edit before adding') }))
+  const plan = suggestions.getByRole('listitem').filter({ hasText: 'Doctor advised:' }).or(suggestions.getByRole('listitem').filter({ has: page.getByLabel('Edit the suggestion') }))
   await plan.getByRole('button', { name: 'Edit' }).click()
-  await plan.getByLabel('Edit before adding').fill('Warm saline gargles; oral fluids.')
-  await plan.getByRole('button', { name: 'Add edited text' }).click()
+  await plan.getByLabel('Edit the suggestion').fill('Warm saline gargles; oral fluids.')
+  await plan.getByRole('button', { name: 'Save edited text' }).click()
+  // The edited text is accepted, not yet in the note: "Add to Plan" puts it there.
+  const addPlan = suggestions.getByRole('button', { name: 'Add to Plan' })
+  await expect(addPlan).toBeVisible()
+  await expect(page.getByLabel('Plan', { exact: true })).toHaveValue('')
+  await addPlan.click()
   await expect(page.getByLabel('Plan', { exact: true })).toHaveValue('Warm saline gargles; oral fluids.')
 
   // The unsourced suggestion cannot be accepted without explicit confirmation; reject it.

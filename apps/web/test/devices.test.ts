@@ -3,8 +3,8 @@
 // the server uses. No browser, no server, no device.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { AttachedDevice, DeviceReading, Observation } from '@adaxai/contracts'
-import { ageDevice, ageText } from '../src/lib/devices.ts'
+import type { AttachedDevice, DeviceReading, Observation, PatientDeviceReadings } from '@adaxai/contracts'
+import { ageDevice, ageText, ageView, summarizeDevices } from '../src/lib/devices.ts'
 import { latestPerKind, vitalsStatus } from '../src/lib/vitals.ts'
 
 const T0 = Date.UTC(2026, 9, 5, 10, 0, 0)
@@ -102,6 +102,89 @@ test('a simulated reading is aged like any other and stays marked simulated', ()
   const sim = ageDevice(device({ simulated: true, integration: 'simulator', readings: [reading('heart_rate', 131, 0, { validationStatus: 'simulated' })] }), T0 + 40_000, limits)
   assert.equal(sim.simulated, true)
   assert.deepEqual(sim.readings.map((r) => [r.state, r.validationStatus]), [['stale', 'simulated']])
+})
+
+// --- the whole answer, aged; and its summary for the consultation header's chip ---
+const view = (devices: AttachedDevice[]): PatientDeviceReadings => ({ serverTime: iso(0), thresholds: limits, consent: 'granted', devices })
+const simulator = (over: Partial<AttachedDevice> = {}) => device({ assignmentId: '00000000-0000-4000-8000-000000000003', label: 'Simulator band', integration: 'simulator', simulated: true, ...over })
+
+test('a whole answer is aged from the server’s clock: a live reading turns stale after the live limit, and a silent gateway disconnected', () => {
+  // This computer's clock is an hour behind the server's: only the time since the answer arrived counts, not this clock's own time.
+  const receivedAt = T0 - 3_600_000
+  const data = { view: view([device()]), receivedAt }
+  const at = (seconds: number) => ageView(data, receivedAt + seconds * 1000)
+  assert.equal(at(0).now, T0)
+  assert.equal(at(0).view.devices[0]!.state, 'live')
+  assert.equal(at(30).view.devices[0]!.state, 'live')
+  assert.equal(at(31).now, T0 + 31_000)
+  assert.equal(at(31).view.devices[0]!.state, 'stale')
+  assert.equal(at(120).view.devices[0]!.state, 'stale')
+  assert.equal(at(121).view.devices[0]!.state, 'disconnected')
+  assert.deepEqual(at(121).view.devices[0]!.readings.map((r) => r.state), ['disconnected', 'disconnected'])
+  // Everything else in the answer is as the server sent it, and the answer itself is not changed.
+  assert.equal(at(121).view.consent, 'granted')
+  assert.deepEqual(at(121).view.thresholds, limits)
+  assert.equal(data.view.devices[0]!.state, 'live')
+})
+
+test('nothing attached (or nothing read) is summarised as no device, never as a state', () => {
+  for (const s of [summarizeDevices(null), summarizeDevices(view([]))]) {
+    assert.equal(s.state, 'none')
+    assert.equal(s.label, 'No device attached')
+    assert.equal(s.attached, 0)
+    assert.equal(s.simulated, false)
+    assert.equal(s.unverified, false)
+    assert.deepEqual(s.counts, { live: 0, stale: 0, disconnected: 0, no_data: 0, unavailable: 0 })
+  }
+})
+
+test('one device is summarised by its own state, in plain words', () => {
+  const one = (over: Partial<AttachedDevice>) => summarizeDevices(view([device(over)]))
+  assert.deepEqual([one({ state: 'live' }).state, one({ state: 'live' }).label], ['live', 'Device live'])
+  assert.deepEqual([one({ state: 'stale' }).state, one({ state: 'stale' }).label], ['stale', 'Device reading stale'])
+  assert.deepEqual([one({ state: 'disconnected' }).state, one({ state: 'disconnected' }).label], ['disconnected', 'Device not connected'])
+  assert.equal(one({ state: 'no_data' }).label, 'Device: no data')
+  assert.equal(one({ state: 'unavailable' }).label, 'Device unavailable')
+  assert.equal(one({ state: 'live' }).attached, 1)
+})
+
+test('several devices are summarised by the most concerning state among them, with how many are in it', () => {
+  const s = summarizeDevices(view([device({ state: 'live' }), simulator({ state: 'disconnected' })]))
+  assert.equal(s.state, 'disconnected')
+  assert.equal(s.label, 'Device not connected (1 of 2)')
+  assert.equal(s.attached, 2)
+  assert.deepEqual(s.counts, { live: 1, stale: 0, disconnected: 1, no_data: 0, unavailable: 0 })
+  // The order: disconnected, unavailable, no data, stale, live.
+  const worst = (...states: AttachedDevice['state'][]) => summarizeDevices(view(states.map((state) => device({ state })))).state
+  assert.equal(worst('live', 'unavailable', 'no_data'), 'unavailable')
+  assert.equal(worst('stale', 'no_data'), 'no_data')
+  assert.equal(worst('live', 'stale', 'live'), 'stale')
+  assert.equal(worst('live', 'live'), 'live')
+  assert.equal(summarizeDevices(view([device(), device()])).label, 'Device live (2 of 2)')
+})
+
+test('a summary says when a simulator is attached and when a device’s values are unverified, and a simulator alone is not "unverified"', () => {
+  const sim = summarizeDevices(view([simulator()]))
+  assert.equal(sim.simulated, true)
+  assert.equal(sim.unverified, false)
+  // The label is the state: what a simulator is, is said by the SIMULATED mark beside it, never by a word a device could also have.
+  assert.equal(sim.label, 'Device live')
+  const real = summarizeDevices(view([device()]))
+  assert.equal(real.simulated, false)
+  assert.equal(real.unverified, true)
+  const both = summarizeDevices(view([device(), simulator()]))
+  assert.equal(both.simulated, true)
+  assert.equal(both.unverified, true)
+})
+
+test('a summary of an aged answer moves only towards stale and disconnected, never back to live', () => {
+  const data = { view: view([device(), simulator()]), receivedAt: T0 }
+  const at = (seconds: number) => summarizeDevices(ageView(data, T0 + seconds * 1000).view)
+  assert.equal(at(0).state, 'live')
+  assert.equal(at(31).state, 'stale')
+  assert.equal(at(31).label, 'Device reading stale (2 of 2)')
+  assert.equal(at(121).state, 'disconnected')
+  assert.equal(at(3600).state, 'disconnected')
 })
 
 // --- the visit's vital signs: what staff measured stands ---

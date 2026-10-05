@@ -7,7 +7,7 @@ import { usePatient } from '../../lib/clinical.ts'
 import { fmtDateTime } from '../../lib/format.ts'
 import { Button } from '../ui/Button.tsx'
 import { Dialog } from '../ui/Dialog.tsx'
-import { Alert, Spinner } from '../ui/Feedback.tsx'
+import { Alert, Badge, ErrorState, Spinner } from '../ui/Feedback.tsx'
 import { SelectField, TextField } from '../ui/Form.tsx'
 import { Card } from '../ui/Layout.tsx'
 import { useToast } from '../ui/Toast.tsx'
@@ -325,12 +325,14 @@ function UploadDialog({ patientId, encounterId, onClose }: { patientId: string; 
  * Stethoscope recordings: an audio file chosen by staff (for example exported from a digital stethoscope's own app), a recording made in the
  * browser from an audio input, or one sent by a device gateway. Recording, upload and playback only: no stethoscope has been connected to or
  * tested with this build, and nothing is analysed. A recording made by a simulator is generated tones and is marked SIMULATED.
+ * `variant="consultation"` (opt in): the recordings made in this consultation are marked as such, and a list that cannot be loaded says so with a retry.
  */
-export function AuscultationCard({ patientId, encounterId }: { patientId: string; encounterId?: string }) {
+export function AuscultationCard({ patientId, encounterId, variant }: { patientId: string; encounterId?: string; variant?: 'consultation' | undefined }) {
   const patient = usePatient(patientId)
   const q = useQuery({ queryKey: key(patientId), queryFn: () => api<{ recordings: AuscultationRecording[] }>(`/patients/${patientId}/auscultations`), select: (d) => d.recordings })
   const [dialog, setDialog] = useState<'upload' | 'record' | null>(null)
   const consented = !!patient.data?.consents.some((c) => c.type === 'device_monitoring' && c.status === 'granted')
+  const consultation = variant === 'consultation'
   return (
     <Card
       title="Stethoscope recordings"
@@ -348,13 +350,24 @@ export function AuscultationCard({ patientId, encounterId }: { patientId: string
       <p className="mb-2 text-xs text-ink-muted">Audio recorded or uploaded by staff, or sent by a device gateway. No stethoscope has been connected to or tested with this system, and recordings are not analysed.</p>
       {patient.data && !consented && <Alert tone="info" className="mb-2">Record the patient’s consent to device readings before adding recordings.</Alert>}
       {q.isPending && <Spinner />}
-      {q.data && !q.data.length && <p className="text-sm text-ink-muted">No recordings.</p>}
+      {consultation && q.isError && !q.data && <ErrorState title="Stethoscope recordings could not be loaded" error={q.error} onRetry={() => void q.refetch()} retrying={q.isFetching} />}
+      {consultation && q.isError && q.data && (
+        <Alert tone="error" className="mb-2">
+          The list could not be read again. A recording added since it was last read may be missing.
+        </Alert>
+      )}
+      {q.data && !q.data.length && <p className="text-sm text-ink-muted">{consultation ? 'No recording available.' : 'No recordings.'}</p>}
       <ul className="space-y-3">
         {q.data?.map((r) => (
           <li key={r.id} className={`text-sm ${r.simulated ? 'rounded-lg border border-dashed border-ink/50 p-2' : ''}`} data-testid="auscultation" data-capture={r.captureMethod} data-simulated={r.simulated}>
             <p className="flex flex-wrap items-center gap-2 font-medium">
               {AUSCULTATION_SITES[r.site]}
               {r.simulated && <SimulatedBadge what="SIMULATED AUDIO" />}
+              {consultation && !!encounterId && r.encounterId === encounterId && (
+                <Badge tone="brand">
+                  <span data-testid="auscultation-this-consultation">This consultation</span>
+                </Badge>
+              )}
             </p>
             {r.simulated && <p className="text-xs font-medium">Generated tones from a simulator: not a body sound, and not a recording of this patient.</p>}
             <audio controls preload="none" src={`/api/files/${r.fileId}`} className="w-full" aria-label={`${r.simulated ? 'Simulated audio' : 'Stethoscope recording'}, ${AUSCULTATION_SITES[r.site]}, ${fmtDateTime(r.createdAt)}`} />

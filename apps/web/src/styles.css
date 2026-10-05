@@ -111,8 +111,9 @@
   html {
     @apply bg-canvas text-ink antialiased;
     font-family: var(--font-sans);
-    /* The top bar is sticky: a focused element is scrolled clear of it (WCAG 2.4.11), also on phones where it is two rows tall. */
-    scroll-padding-top: 8rem;
+    /* The top bar is sticky: a focused element is scrolled clear of it (WCAG 2.4.11), also on phones where it is two rows tall; in a
+       consultation from 1024px also clear of its sticky bar, which publishes its height as --consult-header-h (0 elsewhere). */
+    scroll-padding-top: max(8rem, calc(var(--spacing-topbar) + var(--consult-header-h, 0px) + 1rem));
     /* A bar fixed to the bottom of the screen (the consultation's actions below 1024px) publishes its height here. */
     scroll-padding-bottom: calc(var(--action-bar-h, 0px) + 1rem);
   }

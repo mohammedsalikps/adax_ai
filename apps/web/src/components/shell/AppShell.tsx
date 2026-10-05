@@ -1,7 +1,7 @@
 import type { Role } from '@adaxai/contracts'
 import { Info } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Outlet, ScrollRestoration, useLocation, useNavigate } from 'react-router'
+import { Outlet, ScrollRestoration, useLocation, useMatches, useNavigate } from 'react-router'
 import { useLogout, useMe } from '../../lib/auth.tsx'
 import { signOutProblem } from '../../lib/signInErrors.ts'
 import { useToast } from '../ui/Toast.tsx'
@@ -9,7 +9,35 @@ import { Sidebar } from './Sidebar.tsx'
 import { TopBar } from './TopBar.tsx'
 
 const NAV_ID = 'portal-nav'
-const DESKTOP = '(min-width: 64rem)'
+
+/** A page that marks itself `handle: { workspace: true }` (the doctor's consultation) needs the width of a tablet held sideways for its work. */
+export interface RouteHandle {
+  workspace?: boolean
+}
+
+/**
+ * Where the sidebar stops being a drawer, and the classes that differ with it (written out in full: Tailwind only sees whole class names).
+ * A workspace keeps the drawer up to 1280px, so a tablet held sideways (1024 to 1279px) gives the whole screen to the work, and its page is
+ * not held to the 80rem column that lists and forms are.
+ */
+const FRAME = {
+  page: {
+    desktop: '(min-width: 64rem)',
+    grid: 'min-h-screen lg:grid lg:grid-cols-[var(--spacing-sidebar)_minmax(0,1fr)]',
+    backdrop: 'fixed inset-0 z-30 bg-ink/40 lg:hidden print:hidden',
+    sidebar: 'lg:sticky lg:top-0 lg:z-auto lg:flex lg:h-dvh lg:w-auto lg:shadow-none print:hidden',
+    main: 'mx-auto w-full max-w-7xl min-w-0 flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8 print:p-0',
+    drawerUntil: 'lg',
+  },
+  workspace: {
+    desktop: '(min-width: 80rem)',
+    grid: 'min-h-screen xl:grid xl:grid-cols-[var(--spacing-sidebar)_minmax(0,1fr)]',
+    backdrop: 'fixed inset-0 z-30 bg-ink/40 xl:hidden print:hidden',
+    sidebar: 'xl:sticky xl:top-0 xl:z-auto xl:flex xl:h-dvh xl:w-auto xl:shadow-none print:hidden',
+    main: 'mx-auto w-full max-w-[120rem] min-w-0 flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8 print:p-0',
+    drawerUntil: 'xl',
+  },
+} as const
 
 /**
  * The frame of every signed-in page: sidebar (a drawer on phones), top bar,
@@ -28,6 +56,7 @@ export function AppShell({ role }: { role: Role }) {
   const toast = useToast()
   const navigate = useNavigate()
   const location = useLocation()
+  const frame = FRAME[useMatches().some((m) => (m.handle as RouteHandle | undefined)?.workspace) ? 'workspace' : 'page']
   const [menuOpen, setMenuOpen] = useState(false)
   const menuButton = useRef<HTMLButtonElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
@@ -66,7 +95,7 @@ export function AppShell({ role }: { role: Role }) {
     const overflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     // Growing to the desktop layout turns the drawer into the permanent sidebar: the menu button is gone, so focus is left alone.
-    const mq = window.matchMedia(DESKTOP)
+    const mq = window.matchMedia(frame.desktop)
     const onChange = () => mq.matches && closeMenu('none')
     mq.addEventListener('change', onChange)
     return () => {
@@ -74,18 +103,18 @@ export function AppShell({ role }: { role: Role }) {
       mq.removeEventListener('change', onChange)
       document.body.style.overflow = overflow
     }
-  }, [menuOpen, closeMenu])
+  }, [menuOpen, closeMenu, frame.desktop])
 
   // To the front door once the server has ended the session; if it could not be reached the person stays, signed in, and is told.
   const signOut = () => logout.mutate(undefined, { onSuccess: () => navigate('/login', { replace: true }), onError: (e) => toast('error', signOutProblem(e)) })
   const base = `/${role}`
 
   return (
-    <div className="min-h-screen lg:grid lg:grid-cols-[var(--spacing-sidebar)_minmax(0,1fr)]">
+    <div className={frame.grid}>
       <a href="#main" inert={menuOpen} className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:rounded-md focus:bg-surface focus:px-4 focus:py-2 focus:shadow-pop">
         Skip to main content
       </a>
-      {menuOpen && <div aria-hidden="true" className="fixed inset-0 z-30 bg-ink/40 lg:hidden print:hidden" onClick={() => closeMenu('menu')} />}
+      {menuOpen && <div aria-hidden="true" className={frame.backdrop} onClick={() => closeMenu('menu')} />}
       <Sidebar
         role={role}
         id={NAV_ID}
@@ -93,7 +122,8 @@ export function AppShell({ role }: { role: Role }) {
         onClose={() => closeMenu('menu')}
         onNavigate={() => closeMenu('page')}
         closeRef={closeButton}
-        className={`${menuOpen ? 'fixed inset-y-0 left-0 z-40 flex w-72 shadow-pop' : 'hidden'} lg:sticky lg:top-0 lg:z-auto lg:flex lg:h-dvh lg:w-auto lg:shadow-none print:hidden`}
+        drawerUntil={frame.drawerUntil}
+        className={`${menuOpen ? 'fixed inset-y-0 left-0 z-40 flex w-72 shadow-pop' : 'hidden'} ${frame.sidebar}`}
       />
       {/* While the drawer is open the page behind it cannot be reached by keyboard or screen reader. */}
       <div className="flex min-w-0 flex-col" inert={menuOpen}>
@@ -105,8 +135,8 @@ export function AppShell({ role }: { role: Role }) {
             </span>
           </p>
         </div>
-        <TopBar me={me} base={base} menuOpen={menuOpen} onMenu={() => setMenuOpen(true)} menuRef={menuButton} navId={NAV_ID} onSignOut={signOut} />
-        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-7xl min-w-0 flex-1 px-4 py-6 focus:outline-none sm:px-6 lg:px-8 print:p-0">
+        <TopBar me={me} base={base} menuOpen={menuOpen} onMenu={() => setMenuOpen(true)} menuRef={menuButton} navId={NAV_ID} onSignOut={signOut} drawerUntil={frame.drawerUntil} />
+        <main id="main" tabIndex={-1} className={frame.main}>
           <Outlet />
         </main>
       </div>

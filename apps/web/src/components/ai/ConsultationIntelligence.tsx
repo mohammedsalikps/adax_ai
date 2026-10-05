@@ -4,6 +4,8 @@ import {
   type ConsultDraft,
   type ConsultItem,
   type ConsultSection,
+  type EncounterAi,
+  factState,
   ITEM_FLAGS,
   NOTE_SECTIONS,
   type RecordCheck,
@@ -11,9 +13,11 @@ import {
   SUPPORT_STATES,
   type SupportState,
 } from '@adaxai/contracts'
+import { useQuery } from '@tanstack/react-query'
 import { BrainCircuit, Check, ChevronDown, Pencil, Plus, RefreshCw, ShieldAlert, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { errorMessage } from '../../lib/api.ts'
+import { aiKey } from '../../lib/ai.ts'
+import { api, errorMessage } from '../../lib/api.ts'
 import { useCancelDraft, useConsultationAi, useGenerateDraft, useReviewConsultItem } from '../../lib/consult.ts'
 import { fmtDate, fmtDateTime } from '../../lib/format.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
@@ -68,6 +72,15 @@ function viewOf(draft: ConsultDraft | null, available: boolean): View {
   if (draft.insufficient) return 'insufficient'
   if (draft.stale) return 'stale'
   return draft.status === 'partial' ? 'partial' : 'ready'
+}
+
+/** The title of the one alert that says the model cannot be used now. The server's reasons often start with the same words. */
+const UNAVAILABLE = 'Local AI unavailable.'
+
+/** What the server says about the model beyond the alert's title (null when it says nothing more). */
+function beyondTitle(reason: string | null): string | null {
+  const rest = (reason ?? '').replace(/^Local AI unavailable[.:]\s*/, '').trim()
+  return rest ? rest[0]!.toUpperCase() + rest.slice(1) : null
 }
 
 const clock = (ms: number) => `${Math.floor(ms / 60_000)}:${String(Math.floor((ms % 60_000) / 1000)).padStart(2, '0')}`
@@ -361,6 +374,22 @@ function DraftFacts({ draft }: { draft: ConsultDraft }) {
   )
 }
 
+/**
+ * What a draft is made from, in one line by the Generate button. The number of points the doctor confirmed is read from the copy of the
+ * consultation's AI state that the capture panel keeps; this never asks the server for it (`enabled: false`), and without that copy the number is left out.
+ */
+function DraftInputs({ encounterId }: { encounterId: string }) {
+  const capture = useQuery({ queryKey: aiKey(encounterId), queryFn: () => api<EncounterAi>(`/encounters/${encounterId}/ai`), enabled: false })
+  const n = capture.data ? capture.data.facts.filter((f) => factState(f.status) === 'confirmed').length : null
+  return (
+    <p className="text-xs text-ink-muted" data-testid="consult-inputs">
+      {n === 0
+        ? 'A draft is made from this patient’s record and your note for this visit, never from the raw transcript or the audio. No important point is confirmed yet: confirming them first gives the draft more to work with.'
+        : `A draft is made from this patient’s record, your note for this visit and ${n === null ? 'the important points' : `the ${n} important point${n === 1 ? '' : 's'}`} you confirmed, never from the raw transcript or the audio.`}
+    </p>
+  )
+}
+
 // --- the panel -------------------------------------------------------------------------------------------------------------------------------
 
 export function ConsultationIntelligence({ encounterId, inserter }: { encounterId: string; inserter: NoteInserter }) {
@@ -391,6 +420,13 @@ export function ConsultationIntelligence({ encounterId, inserter }: { encounterI
   const view = viewOf(draft, ai.status.available)
   const check = draft?.recordCheck ?? ai.recordCheck
   const regenerate = () => generate.mutate(undefined, { onError: (e) => toast('error', errorMessage(e)) })
+  // With nothing else in the way, the server gives the model's own reason as what stops a new draft: that is said once, in the alert about the model.
+  // Anything else (the visit is closed, the consent is missing or old) is said as well, whether or not the model is there.
+  const modelReason = ai.status.available ? null : (ai.status.reason ?? UNAVAILABLE)
+  const blocked = ai.blockedReason && ai.blockedReason !== modelReason && ai.blockedReason !== UNAVAILABLE ? ai.blockedReason : null
+  const why = beyondTitle(modelReason)
+  // A draft that ended because the model was not there is told in that same alert, and only if it adds something to it.
+  const draftWhy = draft?.status === 'unavailable' ? beyondTitle(draft.errorMessage) : null
   return (
     <Card title={title}>
       <div className="space-y-4" role="region" aria-label="AI consultation intelligence" data-testid="consult-panel" data-view={view}>
@@ -400,7 +436,7 @@ export function ConsultationIntelligence({ encounterId, inserter }: { encounterI
           <Badge tone="warn">REQUIRES DOCTOR REVIEW</Badge>
         </div>
         <p className="text-xs text-ink-muted">
-          Made by a language model from this patient’s record, your notes and the points you confirmed. Nothing is added to the note, the diagnoses or the prescription until you accept a statement and add it yourself. Not clinically validated. “Supported by record” means the cited record items contain the statement’s words and figures; it does not mean the statement is right, so read the items.{' '}
+          Made by a language model (what it is made from is said under the button). Nothing is added to the note, the diagnoses or the prescription until you accept a statement and add it yourself. Not clinically validated. “Supported by record” means the cited record items contain the statement’s words and figures; it does not mean the statement is right, so read the items.{' '}
           {ai.status.available ? (
             <span data-testid="consult-model">
               {ai.status.local ? `Local model ${ai.status.model}: it runs on this computer and nothing leaves it.` : `Hosted model ${ai.status.model}: NOT on this computer${ai.egress.destination ? ` (${ai.egress.destination})` : ''}.`}
@@ -432,10 +468,16 @@ export function ConsultationIntelligence({ encounterId, inserter }: { encounterI
             )}
           </span>
         </div>
+        {view !== 'generating' && <DraftInputs encounterId={encounterId} />}
 
         {!ai.status.available && (
-          <Alert tone="warning" title="Local AI unavailable.">
-            <span data-testid="consult-unavailable">{ai.status.reason ?? 'The local model is not running.'}</span> No draft is made without it, and nothing is made up. The record check below does not need AI.
+          <Alert tone="warning" title={UNAVAILABLE}>
+            <span data-testid="consult-unavailable">{why ? `${why} ` : ''}No draft is made without it, and nothing is made up.</span> The record check below does not need AI.
+            {draftWhy && draftWhy !== why && (
+              <span className="mt-1 block">
+                The last attempt: <span data-testid="consult-error">{draftWhy}</span>
+              </span>
+            )}
             <div className="mt-2">
               <Button size="sm" variant="secondary" icon={<RefreshCw aria-hidden="true" className="size-4" />} loading={q.isFetching} onClick={() => void q.refetch()}>
                 Check again
@@ -443,9 +485,9 @@ export function ConsultationIntelligence({ encounterId, inserter }: { encounterI
             </div>
           </Alert>
         )}
-        {ai.blockedReason && ai.status.available && (
+        {blocked && (
           <Alert tone="info">
-            <span data-testid="consult-blocked">{ai.blockedReason}</span>
+            <span data-testid="consult-blocked">{blocked}</span>
           </Alert>
         )}
         {generate.isError && (
@@ -459,8 +501,9 @@ export function ConsultationIntelligence({ encounterId, inserter }: { encounterI
             {draft.retryable && !/try again|retry/i.test(draft.errorMessage ?? '') ? 'You can try again.' : ''}
           </Alert>
         )}
-        {draft?.status === 'unavailable' && (
-          <Alert tone="warning" title="Local AI unavailable.">
+        {/* With the model there again, what ended this draft is history: the title says so instead of saying the model is unavailable. */}
+        {draft?.status === 'unavailable' && ai.status.available && (
+          <Alert tone="warning" title="The last attempt could not use the local AI">
             <span data-testid="consult-error">{draft.errorMessage}</span>
           </Alert>
         )}

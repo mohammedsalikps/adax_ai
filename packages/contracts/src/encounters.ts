@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { Text } from './common.ts'
 import { NoteInsertion } from './mana.ts'
 import { Sex } from './patients.ts'
-import { VisitStatus } from './visits.ts'
+import { Priority, VisitStatus } from './visits.ts'
 import { Observation } from './vitals.ts'
 
 const NoteText = (max: number) => z.string().max(max, `At most ${max} characters`)
@@ -133,7 +133,11 @@ export const Encounter = z.object({
   id: z.uuid(),
   status: EncounterStatus,
   version: z.number().int(),
-  visit: z.object({ id: z.uuid(), visitDate: z.string(), tokenNumber: z.number().int(), departmentName: z.string(), reasonForVisit: z.string().nullable(), status: VisitStatus }),
+  /**
+   * The visit as it is now. `priority` is the visit's priority in the queue (set at check-in and changeable while the visit is open), read
+   * when the consultation is loaded; it is not part of the signed content.
+   */
+  visit: z.object({ id: z.uuid(), visitDate: z.string(), tokenNumber: z.number().int(), departmentName: z.string(), reasonForVisit: z.string().nullable(), status: VisitStatus, priority: Priority }),
   patient: z.object({
     id: z.uuid(),
     mrn: z.string(),

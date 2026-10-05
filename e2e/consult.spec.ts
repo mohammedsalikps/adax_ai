@@ -175,6 +175,7 @@ test('with the local model down it says "Local AI unavailable.", offers no draft
   await page.reload()
   await expect(status(page)).toContainText('UNAVAILABLE', { timeout: 20_000 })
   await expect(panel(page).getByRole('alert').or(panel(page).getByRole('status')).filter({ hasText: 'Local AI unavailable.' }).first()).toBeVisible()
+  await expect(page.getByTestId('model-status-chip')).toContainText('Local AI unavailable')
   await expect(panel(page).getByRole('button', { name: 'Generate draft' })).toBeDisabled()
   await expect(panel(page).getByTestId('record-check')).toContainText('Fixed rules, not AI')
   await expect(panel(page).getByTestId('consult-statement')).toHaveCount(0)

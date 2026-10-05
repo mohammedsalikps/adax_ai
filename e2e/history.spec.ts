@@ -176,7 +176,8 @@ test('the doctor starts a consultation from today’s patients and has the patie
   await expect(history.getByRole('tab', { name: /^Summary/ })).toHaveAttribute('aria-selected', 'true')
 
   // What is not built says so, and nothing pretends.
-  await expect(page.getByTestId('writing-pad')).toContainText('Not available yet')
+  // The writing pad is not built, so the workspace does not offer it (D1: no card for a feature that does not exist).
+  await expect(page.getByTestId('writing-pad')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Stethoscope recordings' })).toContainText('No stethoscope has been connected to or tested with this system')
 
   await expectNoAxeViolations(page)
@@ -372,18 +373,18 @@ test('today’s patients: tabs with counts filter the list, the day can be chang
   await expectNoHorizontalOverflow(page)
 })
 
-for (const [width, height, columns] of [
-  [1920, 1080, 3],
-  [1536, 900, 3],
-  [1440, 900, 3],
-  [1400, 900, 3],
-  [1399, 900, 2],
+for (const [width, height, panes] of [
+  [1920, 1080, 2],
+  [1536, 900, 2],
+  [1440, 900, 2],
+  [1366, 1024, 2],
   [1280, 800, 2],
-  [1024, 768, 1],
+  [1180, 820, 2],
+  [1024, 768, 2],
   [768, 1024, 1],
   [390, 844, 1],
 ] as const) {
-  test(`the workstation at ${width}px is ${columns === 3 ? 'three columns' : columns === 2 ? 'two columns' : 'one column'}, nothing overflows and the editors stay usable`, async ({ page, baseURL, isMobile }) => {
+  test(`the workspace at ${width}x${height} is ${panes === 2 ? 'the tools beside the note' : 'one column'}, nothing overflows and the editors stay usable`, async ({ page, baseURL, isMobile }) => {
     test.skip(isMobile, 'sets its own screen sizes')
     const p = await patientWithHistory(baseURL!)
     await page.setViewportSize({ width, height })
@@ -397,9 +398,25 @@ for (const [width, height, columns] of [
     const visit = await page.getByRole('region', { name: 'This visit' }).boundingBox()
     const past = await page.getByRole('region', { name: 'Past history' }).first().boundingBox()
     const mana = await page.getByRole('region', { name: 'Mana AI' }).boundingBox()
-    expect(visit && past && mana, `${width}`).toBeTruthy()
-    const distinctX = new Set([visit!.x, past!.x, mana!.x].map((x) => Math.round(x)))
-    expect(distinctX.size, `${width}px wide: columns`).toBe(columns)
+    const note = await page.getByRole('region', { name: 'Consultation note' }).boundingBox()
+    expect(visit && past && mana && note, `${width}`).toBeTruthy()
+    // The tools (the visit, the history, Mana) are one column; the note is beside them from 1024px, under them below.
+    expect(new Set([visit!.x, past!.x, mana!.x].map((x) => Math.round(x))).size, `${width}px wide: the tools are one column`).toBe(1)
+    if (panes === 2) expect(note!.x, `${width}px wide: the note is beside the tools`).toBeGreaterThan(visit!.x + visit!.width)
+    else expect(Math.round(note!.x), `${width}px wide: one column`).toBe(Math.round(visit!.x))
+    // From 1024px the consultation bar (name, allergies, Complete consultation) and the note are both on the screen when the page opens.
+    if (panes === 2) {
+      await page.evaluate(() => window.scrollTo(0, 0))
+      await expect(page.getByTestId('patient-banner')).toBeInViewport()
+      await expect(page.getByRole('button', { name: 'Complete consultation' })).toBeInViewport()
+      await expect(page.getByLabel('Chief complaint')).toBeInViewport()
+    }
+    // The consultation is a workspace: below 1280px the navigation is a drawer behind the menu button, so the whole width is the consultation's.
+    const nav = page.getByRole('navigation', { name: 'Doctor navigation' })
+    if (width < 1280) {
+      await expect(nav).toBeHidden()
+      await expect(page.getByRole('button', { name: 'Open menu' })).toBeVisible()
+    } else await expect(nav).toBeVisible()
     // The fields of the diagnosis and the medicine are readable (not squeezed to a sliver) and stay inside their cards.
     for (const card of ['Diagnosis', 'Prescription']) {
       const region = page.getByRole('region', { name: card, exact: true })
@@ -481,19 +498,29 @@ test('a high reading is named in words in the banner', async ({ page, baseURL })
   await expect(banner).not.toContainText('spo2')
 })
 
-test('the allergies stay in front of the prescriber: after scrolling, while prescribing, and at signing', async ({ page, baseURL }) => {
+test('the allergies stay in front of the prescriber: after scrolling, while prescribing, and at signing', async ({ page, baseURL, isMobile }) => {
   const p = await readyWithVitals(baseURL!, [{ items: [{ kind: 'heart_rate', value: 70 }], minutesAgo: 5 }], { substance: 'Penicillin', severity: 'severe' })
   await signIn(page, 'dr.meera')
   await startFromQueue(page, p.name)
   await expect(page.getByTestId('patient-banner')).toContainText('Allergy: Penicillin (Severe)')
   await expect(page.getByTestId('patient-strip')).toHaveCount(0)
-  // Scrolled past the banner, the name, MRN and allergies stay with the consultation bar.
+  // Scrolled to the prescription, the name, MRN and allergies stay with the consultation bar: from 1024px the banner itself is part of the
+  // bar and never leaves the screen; on a phone the strip takes its place once the banner has scrolled away.
   await page.getByRole('button', { name: 'Add medicine' }).click()
   await page.getByTestId('prescription-allergies').scrollIntoViewIfNeeded()
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
-  const strip = page.locator('[data-testid="patient-strip"]:visible')
-  await expect(strip).toContainText(p.name)
-  await expect(strip).toContainText('Allergy: Penicillin (Severe)')
+  if (isMobile) {
+    const strip = page.locator('[data-testid="patient-strip"]:visible')
+    await expect(strip).toContainText(p.name)
+    await expect(strip).toContainText('Allergy: Penicillin (Severe)')
+  } else {
+    const banner = page.getByTestId('patient-banner')
+    await expect(banner).toBeInViewport({ ratio: 1 })
+    await expect(page.getByTestId('consultation-header').getByRole('heading', { level: 1 })).toContainText(p.name)
+    await expect(banner).toContainText(p.mrn)
+    await expect(banner).toContainText('Allergy: Penicillin (Severe)')
+    await expect(page.locator('[data-testid="patient-strip"]:visible')).toHaveCount(0)
+  }
   // The save state and "Complete consultation" are never scrolled away, on a desktop or a phone.
   const actions = page.getByTestId('consultation-actions')
   await expect(actions.getByRole('button', { name: 'Complete consultation' })).toBeInViewport()
@@ -622,8 +649,11 @@ test('a result the system could not compare with a range says so, in the list an
   const row = history.getByRole('tabpanel', { name: /^Investigations/ }).getByTestId('history-result').filter({ hasText: 'Ferritin' })
   await expect(row).toContainText('8 ng/mL')
   await expect(row).toContainText('Not compared with a range')
-  await expect(page.getByTestId('patient-summary')).toContainText('Results not compared with a range: Ferritin 8 ng/mL')
-  // A result that was compared and is normal-or-high keeps its own chip, and the summary lists the high one only once, as the latest of its test.
+  // A result that was compared and is normal-or-high keeps its own chip.
   await expect(history.getByRole('tabpanel', { name: /^Investigations/ }).getByTestId('history-result').filter({ hasText: 'HbA1c' })).toContainText('High')
-  await expect(page.getByTestId('patient-summary')).toContainText('Results outside range: HbA1c')
+  // The record summary (in the profile, beside the consultation) says the same, and lists the high one only once, as the latest of its test.
+  await page.getByRole('button', { name: 'View profile' }).click()
+  const summary = page.getByTestId('patient-profile-drawer').getByTestId('record-summary')
+  await expect(summary).toContainText('Results not compared with a range: Ferritin 8 ng/mL')
+  await expect(summary).toContainText('Results outside range: HbA1c')
 })

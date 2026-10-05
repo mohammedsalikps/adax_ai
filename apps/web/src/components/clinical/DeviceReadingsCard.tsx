@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link2, Unlink } from 'lucide-react'
 import { useState } from 'react'
 import { api, errorMessage } from '../../lib/api.ts'
-import { ageText, deviceReadingsKey, devicesKey, fmtClock, fmtWhen, useDevices, usePatientDeviceReadings } from '../../lib/devices.ts'
+import { ageText, deviceReadingsKey, devicesKey, fmtClock, fmtWhen, useDeviceSummary, useDevices, usePatientDeviceReadings } from '../../lib/devices.ts'
 import { Button } from '../ui/Button.tsx'
 import { Dialog } from '../ui/Dialog.tsx'
 import { Alert, Badge, type BadgeTone, ErrorState, Spinner } from '../ui/Feedback.tsx'
@@ -42,11 +42,36 @@ export function ReadingStateBadge({ state, compact = false }: { state: ReadingSt
   )
 }
 
-/** Shown wherever a simulator's value or record appears. A simulator is a program that generates numbers; nothing it sends is a measurement. */
-export function SimulatedBadge({ what = 'SIMULATED' }: { what?: string }) {
+/**
+ * Shown wherever a simulator's value or record appears. A simulator is a program that generates numbers; nothing it sends is a measurement.
+ * `compact` is the size of the state chip inside a reading tile, for a row of small chips (the consultation header's).
+ */
+export function SimulatedBadge({ what = 'SIMULATED', compact = false }: { what?: string; compact?: boolean }) {
   return (
-    <span data-testid="simulated-badge" className="inline-flex items-center rounded-md border border-dashed border-ink/60 bg-canvas px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap text-ink">
+    <span
+      data-testid="simulated-badge"
+      className={
+        compact
+          ? 'inline-flex items-center rounded-md border border-dashed border-ink/60 bg-canvas px-1.5 py-px text-[0.6875rem] leading-4 font-semibold tracking-wide whitespace-nowrap text-ink'
+          : 'inline-flex items-center rounded-md border border-dashed border-ink/60 bg-canvas px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap text-ink'
+      }
+    >
       {what}
+    </span>
+  )
+}
+
+/**
+ * Shown beside a device that is not a simulator: no device has been validated with this system, so what it sends is unverified. A solid edge,
+ * where SIMULATED has a dashed one, so that the two are never taken for each other.
+ */
+export function UnverifiedBadge({ compact = false }: { compact?: boolean }) {
+  return (
+    <span
+      data-testid="unverified-badge"
+      className={`inline-flex items-center rounded-md border border-ink/60 bg-surface font-semibold tracking-wide whitespace-nowrap text-ink ${compact ? 'px-1.5 py-px text-[0.6875rem] leading-4' : 'px-2 py-0.5 text-xs'}`}
+    >
+      UNVERIFIED
     </span>
   )
 }
@@ -86,7 +111,11 @@ function ReadingTile({ kind, reading, simulated, now }: { kind: VitalKind; readi
   )
 }
 
-function DeviceBlock({ d, now, onEnd, ending }: { d: AttachedDevice; now: number; onEnd: () => void; ending: boolean }) {
+/** The card's opt-in variants. `consultation`: an UNVERIFIED mark beside each device that is not a simulator, and a disconnected device says so first. */
+export type DeviceCardVariant = 'consultation'
+
+function DeviceBlock({ d, now, onEnd, ending, variant }: { d: AttachedDevice; now: number; onEnd: () => void; ending: boolean; variant?: DeviceCardVariant | undefined }) {
+  const consultation = variant === 'consultation'
   const byKind = new Map(d.readings.map((r) => [r.kind, r]))
   // A kind the gate no longer allows but that was stored earlier is still shown: nothing received is hidden.
   const kinds = [...new Set<VitalKind>([...d.kinds, ...d.readings.map((r) => r.kind)])]
@@ -102,6 +131,7 @@ function DeviceBlock({ d, now, onEnd, ending }: { d: AttachedDevice; now: number
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {d.simulated && <SimulatedBadge />}
+          {consultation && !d.simulated && <UnverifiedBadge />}
           <ReadingStateBadge state={d.state} />
         </div>
       </div>
@@ -111,7 +141,7 @@ function DeviceBlock({ d, now, onEnd, ending }: { d: AttachedDevice; now: number
       </p>
       {d.reason && (
         <p className="mt-1 text-xs" data-testid="device-reason">
-          {d.reason}
+          {consultation && d.state === 'disconnected' ? `Device not connected. ${d.reason}` : d.reason}
         </p>
       )}
       {kinds.length > 0 ? (
@@ -202,8 +232,9 @@ function AttachDialog({ patientId, encounterId, onClose }: { patientId: string; 
  * What the devices attached to this patient are saying NOW: the newest reading of each kind, when it was measured, and whether it is live, stale,
  * from a disconnected device, absent, or unavailable. It is re-read every few seconds; there is no value on this card that the server did not
  * store. No device has been validated with this build: every device value is "unverified", and a simulator's values are marked SIMULATED.
+ * This card is the only place that reads them: `DeviceStatusChip` on the same page shows what this card last read, and needs it mounted.
  */
-export function DeviceReadingsCard({ patientId, encounterId }: { patientId: string; encounterId?: string | undefined }) {
+export function DeviceReadingsCard({ patientId, encounterId, variant }: { patientId: string; encounterId?: string | undefined; variant?: DeviceCardVariant | undefined }) {
   const qc = useQueryClient()
   const toast = useToast()
   const { view, now, isPending, isError, error, refetch, isFetching, receivedAt } = usePatientDeviceReadings(patientId)
@@ -255,7 +286,7 @@ export function DeviceReadingsCard({ patientId, encounterId }: { patientId: stri
         {view && now !== null && view.devices.length > 0 && (
           <ul className="space-y-3" aria-label="Attached devices">
             {view.devices.map((d) => (
-              <DeviceBlock key={d.assignmentId} d={d} now={now} ending={end.isPending && end.variables === d.assignmentId} onEnd={() => (end.reset(), setEnding({ assignmentId: d.assignmentId, label: d.label }))} />
+              <DeviceBlock key={d.assignmentId} d={d} now={now} variant={variant} ending={end.isPending && end.variables === d.assignmentId} onEnd={() => (end.reset(), setEnding({ assignmentId: d.assignmentId, label: d.label }))} />
             ))}
           </ul>
         )}
@@ -291,5 +322,57 @@ export function DeviceReadingsCard({ patientId, encounterId }: { patientId: stri
         </Dialog>
       )}
     </div>
+  )
+}
+
+/**
+ * The devices attached to this patient in one chip, for the consultation header: the most concerning state among them in words, in that state's
+ * colours; SIMULATED when any of them is a simulator; UNVERIFIED when any of them is not. It shows no value of any device. It is what the "Device
+ * readings" card on the same page last read, aged every second (see `useDeviceSummary`): it asks the server nothing itself, says nothing until the
+ * card has read once, and says "not updated" when the card's last read is more than two polls old. `onSelect` makes it a button that leads to the card.
+ */
+export function DeviceStatusChip({ patientId, onSelect }: { patientId: string; onSelect?: () => void }) {
+  const { summary, behind } = useDeviceSummary(patientId)
+  if (!summary) return null
+  const { state } = summary
+  const content = (
+    <>
+      <span className={`inline-flex min-h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium whitespace-nowrap ${state === 'none' ? CHIP_TONE.unavailable : CHIP_TONE[state]}`}>
+        {state === 'live' && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-current" />}
+        <span className={onSelect ? 'underline-offset-2 group-hover:underline' : undefined}>{summary.label}</span>
+        {behind && <span className="font-normal">· not updated</span>}
+      </span>
+      {summary.simulated && <SimulatedBadge compact />}
+      {summary.unverified && <UnverifiedBadge compact />}
+    </>
+  )
+  const box = 'inline-flex max-w-full flex-wrap items-center gap-1'
+  if (!onSelect) {
+    return (
+      <span className={box} data-testid="device-status-chip" data-state={state}>
+        <span className="sr-only">Devices: </span>
+        {content}
+      </span>
+    )
+  }
+  const said = [
+    `Devices: ${summary.label}.`,
+    summary.simulated && (summary.unverified ? 'Some values are simulated; device values are unverified.' : 'Simulated values, not measurements.'),
+    summary.unverified && !summary.simulated && 'Device values are unverified.',
+    behind && 'Not updated in the last few seconds; it may have changed.',
+    'Show device readings',
+  ]
+  // The visible chip is 28 pixels high; the button's ::before reaches 8 pixels above and below it, so that it is a 44-pixel target that takes no more room.
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-label={said.filter(Boolean).join(' ')}
+      data-testid="device-status-chip"
+      data-state={state}
+      className={`group relative rounded-full before:absolute before:inset-x-0 before:-inset-y-2 before:content-[''] ${box}`}
+    >
+      {content}
+    </button>
   )
 }

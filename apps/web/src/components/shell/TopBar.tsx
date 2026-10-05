@@ -54,17 +54,21 @@ function PatientSearch({ base }: { base: string }) {
  * and nurses), who is signed in with their role and clinic, and sign out.
  * There is no notification bell: staff have no notifications to show yet.
  */
-export function TopBar({ me, base, menuOpen, onMenu, menuRef, navId, onSignOut }: { me: Me | null | undefined; base: string; menuOpen: boolean; onMenu: () => void; menuRef: Ref<HTMLButtonElement>; navId: string; onSignOut: () => void }) {
+export function TopBar({ me, base, menuOpen, onMenu, menuRef, navId, onSignOut, drawerUntil = 'lg' }: { me: Me | null | undefined; base: string; menuOpen: boolean; onMenu: () => void; menuRef: Ref<HTMLButtonElement>; navId: string; onSignOut: () => void; drawerUntil?: 'lg' | 'xl' }) {
+  // The menu button and the product mark are there while the sidebar is a drawer (see AppShell).
+  const drawerOnly = drawerUntil === 'xl' ? 'xl:hidden' : 'lg:hidden'
+  // On a workspace the menu button is the way to the navigation on a tablet held sideways too: a full-size target there.
+  const menuSize = drawerUntil === 'xl' ? 'inline-flex size-control items-center justify-center' : ''
   const canSearch = me?.role === 'doctor' || me?.role === 'nurse'
   const where = [me?.departmentName, me?.facilityName].filter(Boolean).join(' · ')
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-surface/95 backdrop-blur print:hidden">
       <div className="flex min-h-topbar flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 sm:px-6 lg:px-8">
-        <button ref={menuRef} type="button" className="-ml-2 rounded-md p-2 text-ink-muted hover:bg-canvas lg:hidden" aria-expanded={menuOpen} aria-controls={navId} onClick={onMenu}>
+        <button ref={menuRef} type="button" className={`-ml-2 rounded-md p-2 text-ink-muted hover:bg-canvas ${menuSize} ${drawerOnly}`} aria-expanded={menuOpen} aria-controls={navId} onClick={onMenu}>
           <Menu aria-hidden="true" className="size-6" />
           <span className="sr-only">Open menu</span>
         </button>
-        <Link to="/" className="flex items-center gap-2 rounded-md lg:hidden">
+        <Link to="/" className={`flex items-center gap-2 rounded-md ${drawerOnly}`}>
           <img src="/favicon.svg" alt="" className="size-7" />
           <span className="font-semibold tracking-tight">ADAXAI</span>
         </Link>

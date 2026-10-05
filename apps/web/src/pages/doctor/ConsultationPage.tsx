@@ -13,25 +13,25 @@ import {
 } from '@adaxai/contracts'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, CircleCheck, CloudUpload, FilePlus2, LoaderCircle, Plus, Printer, Sparkles, Stethoscope, Trash2 } from 'lucide-react'
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AllergyItems } from '../../components/clinical/AllergyItems.tsx'
 import { ConsultationBanner, PatientStrip } from '../../components/clinical/ConsultationBanner.tsx'
 import { ConsultationHeader, useOnScreen } from '../../components/clinical/ConsultationHeader.tsx'
+import { ConsultationStatus, type ToolSection } from '../../components/clinical/ConsultationStatus.tsx'
 import { PastHistoryPanel } from '../../components/clinical/PastHistory.tsx'
 import { PatientBanner } from '../../components/clinical/PatientBanner.tsx'
 import { PatientProfileDrawer } from '../../components/clinical/PatientProfileDrawer.tsx'
-import { RecordSummary } from '../../components/clinical/RecordSummary.tsx'
 import { DiscardDraftDialog, RecordVerificationCard, StatusHistoryCard } from '../../components/clinical/RecordLifecycle.tsx'
 import { Timeline } from '../../components/clinical/Timeline.tsx'
 import { RecordVitalsDialog, VitalsInline, VitalsTiles } from '../../components/clinical/Vitals.tsx'
-import { WritingPadCard } from '../../components/clinical/WorkstationCards.tsx'
 import { Menu } from '../../components/ui/Menu.tsx'
 import { Button } from '../../components/ui/Button.tsx'
 import { Dialog } from '../../components/ui/Dialog.tsx'
 import { Alert, Badge, Spinner } from '../../components/ui/Feedback.tsx'
 import { CheckboxField, SelectField, TextAreaField, TextField } from '../../components/ui/Form.tsx'
 import { Card } from '../../components/ui/Layout.tsx'
+import { PanelBoundary } from '../../components/ui/PanelBoundary.tsx'
 import { useToast } from '../../components/ui/Toast.tsx'
 import { ApiError, api, errorMessage } from '../../lib/api.ts'
 import { useMe, useStillSamePerson } from '../../lib/auth.tsx'
@@ -50,6 +50,54 @@ export interface Draft {
 
 /** Lets other panels (Mana, the AI assistant, the photographs) insert reviewed AI text into the note, recorded on the server. */
 export type SidePanel = (e: Encounter, inserter: NoteInserter) => ReactNode
+
+/**
+ * The tools beside the note, in the order a consultation uses them: the conversation (live transcription, important points), the AI draft,
+ * Mana, the devices (readings, stethoscope recordings) and the rest (photographs, the older assistant). The doctor's route supplies them; the
+ * visit and the patient's history are always there. Each is given the consultation and the one way into the note: `NoteInserter`, which
+ * saves the doctor's edits first and records what was inserted, from which reviewed AI output, on the server.
+ */
+export interface ConsultationPanels {
+  conversation?: SidePanel
+  draft?: SidePanel
+  mana?: SidePanel
+  devices?: SidePanel
+  more?: SidePanel
+}
+
+/** The parts of the tools column, for the bar at its top (and for the chips under the banner, which lead to the part that says more). */
+const TOOL_PARTS: { id: 'history' | ToolSection | 'mana' | 'more'; label: string; panel?: keyof ConsultationPanels }[] = [
+  { id: 'history', label: 'History' },
+  { id: 'conversation', label: 'Conversation', panel: 'conversation' },
+  { id: 'draft', label: 'AI draft', panel: 'draft' },
+  { id: 'mana', label: 'Mana', panel: 'mana' },
+  { id: 'devices', label: 'Devices', panel: 'devices' },
+  { id: 'more', label: 'More', panel: 'more' },
+]
+const PANEL_LABEL: Record<keyof ConsultationPanels, string> = { conversation: 'The conversation', draft: 'The AI draft', mana: 'Mana', devices: 'The devices', more: 'This panel' }
+
+/**
+ * Brings a part of the tools column (or the note) into view and moves focus there, so a keyboard or screen-reader user arrives with it. From
+ * 1024px the tools column scrolls on its own: only it moves (under its bar), and the page, with the note beside it, stays where the doctor
+ * left it. Below that, the page scrolls.
+ */
+function showPart(id: string) {
+  const el = document.getElementById(id)
+  if (!el) return
+  const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+  const column = el.closest<HTMLElement>('[data-tools-scroller]')
+  if (column && getComputedStyle(column).overflowY !== 'visible') column.scrollTo({ top: el.getBoundingClientRect().top - column.getBoundingClientRect().top + column.scrollTop - 4, behavior })
+  else el.scrollIntoView({ block: 'start', behavior })
+  el.focus({ preventScroll: true })
+}
+
+/**
+ * One tool beside the note. It is drawn again when the consultation's AI insertions change (a tool says what is already in the note), not on
+ * every keystroke in the note; and a fault inside it stays inside it (see PanelBoundary).
+ */
+const ToolSlot = memo(function ToolSlot({ render, encounter, inserter, label }: { render: SidePanel; encounter: Encounter; inserter: NoteInserter; label: string; insertions: NoteInsertion[] }) {
+  return <PanelBoundary label={label}>{render(encounter, inserter)}</PanelBoundary>
+})
 
 /** Where AI-produced text in the note came from (shown while editing, before signing and on the signed record). */
 export function AiProvenance({ insertions, section }: { insertions: NoteInsertion[]; section?: keyof NoteFields }) {
@@ -171,10 +219,11 @@ function ReviewAndSignDialog({ draft, encounter, insertions, onClose, onSign, si
       open
       wide
       onClose={onClose}
+      dismissible={!signing}
       title="Review and sign"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>
+          <Button variant="secondary" onClick={onClose} disabled={signing}>
             Back to editing
           </Button>
           <Button onClick={onSign} disabled={!attest || issues.length > 0} loading={signing}>
@@ -250,7 +299,7 @@ function ReviewAndSignDialog({ draft, encounter, insertions, onClose, onSign, si
   )
 }
 
-function ConsultationEditor({ initial, sidePanel, leftPanel, capturePanel }: { initial: Encounter; sidePanel?: SidePanel | undefined; leftPanel?: SidePanel | undefined; capturePanel?: SidePanel | undefined }) {
+function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: ConsultationPanels }) {
   const qc = useQueryClient()
   const toast = useToast()
   const base = usePortalBase()
@@ -429,8 +478,28 @@ function ConsultationEditor({ initial, sidePanel, leftPanel, capturePanel }: { i
     },
     inserted: (type, id) => insertions.some((i) => i.subjectType === type && i.subjectId === id),
   }
+  const inserterRef = useRef(inserter)
+  inserterRef.current = inserter
+  const toolInserter = useMemo<NoteInserter>(() => ({ insert: (...a) => inserterRef.current.insert(...a), inserted: (...a) => inserterRef.current.inserted(...a) }), [])
 
   const locked = state === 'conflict' || state === 'blocked'
+  const parts = TOOL_PARTS.filter((p) => !p.panel || panels[p.panel])
+  const tool = (key: keyof ConsultationPanels) => {
+    const render = panels[key]
+    return render ? <ToolSlot render={render} encounter={initial} inserter={toolInserter} insertions={insertions} label={PANEL_LABEL[key]} /> : null
+  }
+  // A part of the tools column: a named group the bar at its top leads to, focusable so that arriving there by the bar or a chip moves focus too.
+  const part = (id: (typeof TOOL_PARTS)[number]['id'], children: ReactNode) => (
+    <div
+      id={`tools-${id}`}
+      role="group"
+      aria-label={TOOL_PARTS.find((p) => p.id === id)?.label}
+      tabIndex={-1}
+      className="scroll-mt-20 space-y-6 rounded-xl focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand lg:scroll-mt-0"
+    >
+      {children}
+    </div>
+  )
   return (
     <>
       <ConsultationHeader
@@ -439,6 +508,11 @@ function ConsultationEditor({ initial, sidePanel, leftPanel, capturePanel }: { i
         backTo={`${base}/queue`}
         backLabel="Back to today’s patients"
         patient={bannerOnScreen ? null : <PatientStrip encounter={initial} />}
+        banner={
+          <div ref={bannerRef}>
+            <ConsultationBanner encounter={initial} onOpenProfile={() => setProfileOpen(true)} status={<ConsultationStatus encounterId={initial.id} patientId={initial.patient.id} onSelect={(s) => showPart(`tools-${s}`)} />} />
+          </div>
+        }
         actions={
           <>
             <SaveIndicator state={state} savedAt={savedAt} />
@@ -453,9 +527,6 @@ function ConsultationEditor({ initial, sidePanel, leftPanel, capturePanel }: { i
           </>
         }
       />
-      <div ref={bannerRef}>
-        <ConsultationBanner encounter={initial} onOpenProfile={() => setProfileOpen(true)} />
-      </div>
       {state === 'blocked' && (
         <Alert tone="error" title="Your latest changes cannot be saved" className="mb-4">
           {blocked}{' '}
@@ -474,66 +545,91 @@ function ConsultationEditor({ initial, sidePanel, leftPanel, capturePanel }: { i
           .
         </Alert>
       )}
-      {/* Three columns from 1400px: capture (live transcription, important points) and this visit | past history and the note | patient summary, Mana and the assistant. From 1280px two, in the same left-to-right order (capture and this visit, with the summary and the assistant under them | the note); below that one. */}
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[26rem_minmax(0,1fr)] xl:grid-rows-[auto_1fr] wide:grid-cols-[20rem_minmax(0,1fr)_22rem] wide:grid-rows-none">
-        <aside className="space-y-6 xl:col-start-1 xl:row-start-1 wide:col-start-1" aria-label="Visit information">
-          {/* Capture first: the live transcription and the important points are the primary clinical content of a consultation. */}
-          {capturePanel?.(initial, inserter)}
-          <Card title="This visit">
-            {initial.visit.reasonForVisit && <p className="mb-3 text-sm">Reason: “{initial.visit.reasonForVisit}”</p>}
-            <VitalsTiles vitals={initial.vitals} />
-            <div className="mt-3">
-              <Button size="sm" variant="secondary" onClick={() => setVitalsOpen(true)}>
-                Record vitals
-              </Button>
-            </div>
-          </Card>
-          {leftPanel?.(initial, inserter)}
-          <WritingPadCard />
+      {/*
+        One workspace, two panes from 1024px (a tablet held sideways): the tools on the left, in the order a consultation uses them, and the note
+        on the right, so reviewed text moves left to right into it. The tools column keeps its place under the consultation bar and scrolls on
+        its own, so the note stays in view while the doctor reads the transcript or the AI draft, and the reverse. Below 1024px one column.
+        Every tool stays mounted and visible: a recording, the device readings and the AI draft keep running while the doctor works elsewhere.
+      */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(20rem,26rem)_minmax(0,1fr)] 2xl:grid-cols-[30rem_minmax(0,1fr)]">
+        <aside
+          aria-label="Consultation tools"
+          className="min-w-0 lg:sticky lg:top-[calc(var(--spacing-topbar)+var(--consult-header-h,0px)+1rem)] lg:-ml-1 lg:flex lg:max-h-[calc(100dvh-var(--spacing-topbar)-var(--consult-header-h,0px)-2rem)] lg:flex-col"
+          data-testid="consultation-tools"
+        >
+          {/* The note is after the tools in the reading order; a keyboard user can go straight to it (visible when focused). */}
+          <button type="button" onClick={() => showPart('consultation-note')} className="sr-only rounded-md bg-surface px-3 py-2 text-sm font-medium shadow-pop focus:not-sr-only focus:inline-flex">
+            Skip to the note
+          </button>
+          <nav aria-label="Go to" className="mb-4 flex flex-wrap gap-1 lg:shrink-0 lg:pl-1">
+            {parts.map((p) => (
+              <button key={p.id} type="button" onClick={() => showPart(`tools-${p.id}`)} className="inline-flex min-h-control-sm items-center rounded-full border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted hover:bg-canvas hover:text-ink">
+                {p.label}
+              </button>
+            ))}
+            <button type="button" onClick={() => showPart('consultation-note')} className="inline-flex min-h-control-sm items-center rounded-full border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted hover:bg-canvas hover:text-ink lg:hidden">
+              Note
+            </button>
+          </nav>
+          <div data-tools-scroller className="min-w-0 space-y-6 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pr-2 lg:pb-4 lg:pl-1">
+            {part(
+              'history',
+              <>
+                <Card title="This visit">
+                  <VitalsTiles vitals={initial.vitals} />
+                  <div className="mt-3">
+                    <Button size="sm" variant="secondary" onClick={() => setVitalsOpen(true)}>
+                      Record vitals
+                    </Button>
+                  </div>
+                </Card>
+                <Card
+                  title="Past history"
+                  bodyClassName="p-4"
+                  actions={
+                    <Button size="sm" variant="ghost" aria-expanded={historyOpen} aria-controls="past-history-body" onClick={() => setHistoryOpen((o) => !o)}>
+                      {historyOpen ? 'Hide' : 'Show'}
+                      <span className="sr-only"> past history</span>
+                    </Button>
+                  }
+                >
+                  {/* No scroller of its own: the tools column scrolls. */}
+                  <div id="past-history-body" hidden={!historyOpen}>
+                    <PastHistoryPanel patientId={initial.patient.id} bare />
+                  </div>
+                </Card>
+              </>,
+            )}
+            {panels.conversation && part('conversation', tool('conversation'))}
+            {panels.draft && part('draft', tool('draft'))}
+            {panels.mana && part('mana', tool('mana'))}
+            {panels.devices && part('devices', tool('devices'))}
+            {panels.more && part('more', tool('more'))}
+          </div>
         </aside>
-        {/* The editors inside lay themselves out by the width of this column (container queries), which is narrow at 1400px and wide on a tablet. */}
-        <div className="@container min-w-0 space-y-6 xl:col-start-2 xl:row-span-2 xl:row-start-1 wide:col-start-2 wide:row-span-1">
-          <Card
-            title="Past history"
-            bodyClassName="p-4"
-            actions={
-              <Button size="sm" variant="ghost" aria-expanded={historyOpen} aria-controls="past-history-body" onClick={() => setHistoryOpen((o) => !o)}>
-                {historyOpen ? 'Hide' : 'Show'}
-                <span className="sr-only"> past history</span>
-              </Button>
-            }
-          >
-            <div id="past-history-body" hidden={!historyOpen}>
-              <div className="xl:max-h-[30rem] xl:overflow-y-auto" role="region" aria-label="Past history details" tabIndex={0}>
-                <PastHistoryPanel patientId={initial.patient.id} bare />
+        {/* The editors inside lay themselves out by the width of this column (container queries). */}
+        <div className="@container min-w-0 space-y-6">
+          <div id="consultation-note" tabIndex={-1} className="scroll-mt-20 focus:outline-none">
+            <Card title="Consultation note" actions={inserting ? <Badge tone="ai">Inserting AI text…</Badge> : undefined}>
+              <div className="space-y-4">
+                {NOTE_SECTIONS.map((s) => (
+                  <div key={s.key}>
+                    <TextAreaField
+                      label={s.label}
+                      hint={s.hint}
+                      rows={s.rows}
+                      value={draft.note[s.key]}
+                      onChange={(e) => update((d) => ({ ...d, note: { ...d.note, [s.key]: e.target.value } }))}
+                      readOnly={state === 'conflict' || state === 'blocked' || inserting}
+                    />
+                    <AiProvenance insertions={insertions} section={s.key} />
+                  </div>
+                ))}
               </div>
-            </div>
-          </Card>
-          <Card title="Consultation note" actions={inserting ? <Badge tone="ai">Inserting AI text…</Badge> : undefined}>
-            <div className="space-y-4">
-              {NOTE_SECTIONS.map((s) => (
-                <div key={s.key}>
-                  <TextAreaField
-                    label={s.label}
-                    hint={s.hint}
-                    rows={s.rows}
-                    value={draft.note[s.key]}
-                    onChange={(e) => update((d) => ({ ...d, note: { ...d.note, [s.key]: e.target.value } }))}
-                    readOnly={state === 'conflict' || state === 'blocked' || inserting}
-                  />
-                  <AiProvenance insertions={insertions} section={s.key} />
-                </div>
-              ))}
-            </div>
-          </Card>
+            </Card>
+          </div>
           <DiagnosesEditor items={draft.diagnoses} onChange={(diagnoses) => update((d) => ({ ...d, diagnoses }))} />
           <PrescriptionEditor encounter={initial} items={draft.prescription} onChange={(prescription) => update((d) => ({ ...d, prescription }))} />
-        </div>
-        <div className="min-w-0 space-y-6 xl:col-start-1 xl:row-start-2 wide:col-start-3 wide:row-start-1">
-          <Card title="Patient summary">
-            <RecordSummary patientId={initial.patient.id} testId="patient-summary" />
-          </Card>
-          {sidePanel?.(initial, inserter)}
         </div>
       </div>
       {/* Room for the actions that stay at the bottom of the screen below 1024px: as tall as that bar actually is. */}
@@ -750,7 +846,8 @@ export function EncounterReadView({ e }: { e: Encounter }) {
   )
 }
 
-export function ConsultationPage({ sidePanel, leftPanel, capturePanel }: { sidePanel?: SidePanel; leftPanel?: SidePanel; capturePanel?: SidePanel }) {
+/** A consultation: the editor (the doctor who is writing it, with `panels` beside the note), or the record read-only (everyone else, and after signing). */
+export function ConsultationPage({ panels = {} }: { panels?: ConsultationPanels }) {
   const { encounterId } = useParams()
   const q = useEncounter(encounterId)
   const navigate = useNavigate()
@@ -767,5 +864,5 @@ export function ConsultationPage({ sidePanel, leftPanel, capturePanel }: { sideP
     )
   // The editor starts from the server's current version, never from a cached copy (another tab or an earlier visit may have saved since).
   if (q.data.canEdit && !q.isFetchedAfterMount) return <Spinner label="Opening the latest version…" />
-  return q.data.canEdit ? <ConsultationEditor key={q.data.id} initial={q.data} sidePanel={sidePanel} leftPanel={leftPanel} capturePanel={capturePanel} /> : <EncounterReadView key={q.data.id} e={q.data} />
+  return q.data.canEdit ? <ConsultationEditor key={q.data.id} initial={q.data} panels={panels} /> : <EncounterReadView key={q.data.id} e={q.data} />
 }

@@ -17,10 +17,11 @@ beforeEach(async () => {
 afterAll(() => ctx.close())
 
 let seq = 0
-async function readyVisit(): Promise<Visit> {
+/** A checked-in visit with vitals, ready for the doctor; without a priority it is checked in as the API defaults it (normal). */
+async function readyVisit(opts: { priority?: Visit['priority'] } = {}): Promise<Visit> {
   seq++
   const p = PatientDetail.parse((await call(ctx.app, 'POST', '/api/patients', { cookie: nurse, body: samplePatient({ givenName: `Enc${seq}`, phone: `91000${String(seq).padStart(5, '0')}` }) })).json())
-  const v = Visit.parse((await call(ctx.app, 'POST', '/api/visits', { cookie: nurse, body: { patientId: p.id, departmentId: fx.departments.gen, chiefComplaint: 'Fever and cough' } })).json())
+  const v = Visit.parse((await call(ctx.app, 'POST', '/api/visits', { cookie: nurse, body: { patientId: p.id, departmentId: fx.departments.gen, priority: opts.priority, chiefComplaint: 'Fever and cough' } })).json())
   await call(ctx.app, 'POST', `/api/visits/${v.id}/observations`, { cookie: nurse, body: { items: [{ kind: 'temperature', value: 38.4 }] } })
   return Visit.parse((await call(ctx.app, 'POST', `/api/visits/${v.id}/status`, { cookie: nurse, body: { status: 'ready' } })).json())
 }
@@ -63,6 +64,19 @@ describe('starting a consultation', () => {
     expect((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: nurse, body: fullDraft(1) })).statusCode).toBe(403)
     const read = Encounter.parse((await call(ctx.app, 'GET', `/api/encounters/${e.id}`, { cookie: nurse })).json())
     expect(read.canEdit).toBe(false)
+  })
+
+  it("carries the visit's priority as the record has it now", async () => {
+    const urgent = Encounter.parse((await start((await readyVisit({ priority: 'urgent' })).id)).json())
+    expect(urgent.visit.priority).toBe('urgent')
+    expect(Encounter.parse((await call(ctx.app, 'GET', `/api/encounters/${urgent.id}`, { cookie: doctor })).json()).visit.priority).toBe('urgent')
+
+    // Checked in without a priority: normal. Raised in the queue while the patient is with the doctor: the next read says urgent.
+    const v = await readyVisit()
+    const normal = Encounter.parse((await start(v.id)).json())
+    expect(normal.visit.priority).toBe('normal')
+    expect((await call(ctx.app, 'PATCH', `/api/visits/${v.id}`, { cookie: nurse, body: { priority: 'urgent' } })).statusCode).toBe(200)
+    expect(Encounter.parse((await call(ctx.app, 'GET', `/api/encounters/${normal.id}`, { cookie: doctor })).json()).visit.priority).toBe('urgent')
   })
 })
 
@@ -136,6 +150,18 @@ describe('signing', () => {
     await expect(app.query("INSERT INTO diagnoses (encounter_id, description) VALUES ($1, 'sneaky')", [e.id])).rejects.toMatchObject({ code: '42501' })
     await expect(app.query("UPDATE prescription_items SET dose = '10 tablets' WHERE encounter_id = $1", [e.id])).rejects.toMatchObject({ code: '42501' })
     await expect(app.query('DELETE FROM prescription_items WHERE encounter_id = $1', [e.id])).rejects.toMatchObject({ code: '42501' })
+  })
+
+  it('shows the visit priority with the record but does not sign it', async () => {
+    const e = Encounter.parse((await start((await readyVisit({ priority: 'urgent' })).id)).json())
+    const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body: fullDraft(1) })).json())
+    const res = await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })
+    expect(res.statusCode).toBe(200)
+    expect(Encounter.parse(res.json()).visit).toMatchObject({ status: 'completed', priority: 'urgent' })
+    // The signed snapshot covers the same visit fields as before (scheme v2), so the priority is not part of what is hashed.
+    const { rows } = await adminQuery('SELECT signed_snapshot, content_hash FROM encounters WHERE id = $1', [e.id])
+    expect(Object.keys(rows[0].signed_snapshot.visit).sort()).toEqual(['id', 'reasonForVisit', 'tokenNumber', 'visitDate'])
+    expect(rows[0].content_hash).toBe(sha256(canonicalJson(rows[0].signed_snapshot)))
   })
 
   it('another doctor cannot sign', async () => {

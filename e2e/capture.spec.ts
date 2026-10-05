@@ -292,6 +292,7 @@ test('when the local speech service is unavailable the screen says so, recording
   await expect(notice).toContainText('No audio is ever sent to a hosted service instead')
   await expect(live.getByRole('button', { name: 'Start recording' })).toBeDisabled()
   await expect(live.getByText(unavailable.reason).last()).toBeVisible()
+  await expect(page.getByTestId('speech-status-chip')).toContainText('Speech-to-text unavailable')
   // A typed transcript still works, and says it is not recorded speech.
   await live.getByText('Other ways to add a transcript').click()
   await live.getByLabel('Or type or paste a transcript').fill('Doctor: How long has the cough lasted?\nPatient: About three days.')

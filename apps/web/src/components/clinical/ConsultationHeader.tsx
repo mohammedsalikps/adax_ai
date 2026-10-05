@@ -35,15 +35,15 @@ export function useOnScreen(ref: RefObject<Element | null>): boolean {
 }
 
 /**
- * Publishes the height of the bar that is fixed to the bottom of the screen below 1024px as `--action-bar-h`, so the page can leave exactly
- * that much room (and keep focused controls clear of it). It is 0 where the bar is not fixed.
+ * Publishes a measured height as a CSS variable on the page while `ref`'s element is mounted, and 0 where `when` says the element does not
+ * take that room (for the bottom bar: where it is not fixed). The page uses these to leave exactly that much room, and to keep focused controls clear.
  */
-function useActionBarHeight(ref: RefObject<HTMLElement | null>) {
+function usePublishedHeight(ref: RefObject<HTMLElement | null>, name: string, when: (el: HTMLElement) => boolean) {
   useEffect(() => {
     const el = ref.current
     if (!el) return
     const root = document.documentElement
-    const apply = () => root.style.setProperty('--action-bar-h', getComputedStyle(el).position === 'fixed' ? `${el.offsetHeight}px` : '0px')
+    const apply = () => root.style.setProperty(name, when(el) ? `${el.offsetHeight}px` : '0px')
     apply()
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(apply)
     ro?.observe(el)
@@ -51,56 +51,70 @@ function useActionBarHeight(ref: RefObject<HTMLElement | null>) {
     return () => {
       ro?.disconnect()
       window.removeEventListener('resize', apply)
-      root.style.removeProperty('--action-bar-h')
+      root.style.removeProperty(name)
     }
-  }, [ref])
+  }, [ref, name, when])
 }
 
+const isFixed = (el: HTMLElement) => getComputedStyle(el).position === 'fixed'
+const isSticky = (el: HTMLElement) => getComputedStyle(el).position === 'sticky'
+
 /**
- * The bar above a consultation: the way back, the title, that the consultation
+ * The bar above a consultation: the way back, whose consultation it is, that it
  * is in progress and for how long, and its actions (save state, save, complete,
- * more). From 1024px wide it stays at the top of the page; on narrower screens
- * the actions stay at the bottom of the screen (a bar whose height is measured,
- * and which never takes more than 45% of it), so the save
- * state and "Complete consultation" are never scrolled away. When the patient
- * banner has scrolled out of view, `patient` (name, MRN, allergies) is shown
- * with the bar instead, so the prescriber always sees who this is and what they
- * are allergic to. The elapsed time is for the eye only; it is not announced every second.
+ * more), with the patient's banner (`banner`: who they are, allergies, why they
+ * came, alerts, the state of the devices and the local AI) under them.
+ *
+ * From 1024px wide all of it stays at the top of the page, so the name, the MRN
+ * and the allergies are never scrolled away; its height is published as
+ * `--consult-header-h` for the tools column beside the note, which stays in view
+ * under it. On narrower screens the banner scrolls with the page and the actions
+ * stay at the bottom of the screen (a bar whose height is measured, and which
+ * never takes more than 45% of it), so the save state and "Complete
+ * consultation" are never scrolled away; once the banner has gone, `patient`
+ * (name, MRN, allergies) is shown with that bar instead, so the prescriber always
+ * sees who this is and what they are allergic to. The elapsed time is for the eye
+ * only; it is not announced every second.
  */
-export function ConsultationHeader({ patientName, startedAt, backTo, backLabel, actions, patient }: { patientName: string; startedAt: string; backTo: string; backLabel: string; actions?: ReactNode; patient?: ReactNode }) {
+export function ConsultationHeader({ patientName, startedAt, backTo, backLabel, actions, patient, banner }: { patientName: string; startedAt: string; backTo: string; backLabel: string; actions?: ReactNode; patient?: ReactNode; banner?: ReactNode }) {
   const elapsed = useElapsed(startedAt)
+  const header = useRef<HTMLElement>(null)
   const bar = useRef<HTMLDivElement>(null)
-  useActionBarHeight(bar)
+  usePublishedHeight(bar, '--action-bar-h', isFixed)
+  usePublishedHeight(header, '--consult-header-h', isSticky)
   return (
-    <header className="relative mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 lg:sticky lg:top-topbar lg:z-20 lg:-mx-8 lg:border-b lg:border-line lg:bg-canvas/95 lg:px-8 lg:py-2.5 lg:backdrop-blur" data-testid="consultation-header">
-      <div className="flex min-w-0 flex-wrap items-center gap-3">
-        <Link to={backTo} className="inline-flex size-control-sm items-center justify-center rounded-md text-ink-muted hover:bg-surface hover:text-ink">
-          <ArrowLeft aria-hidden="true" className="size-5" />
-          <span className="sr-only">{backLabel}</span>
-        </Link>
-        <h1 className="text-xl font-semibold tracking-tight">
-          Consultation
-          <span className="sr-only"> for {patientName}</span>
-        </h1>
-        <Badge tone="ok" dot>
-          Draft · in progress
-        </Badge>
-        <p className="text-sm text-ink-muted tabular-nums">
-          {elapsed ? (
-            <>
-              <span aria-hidden="true">{elapsed}</span>
-              <span className="sr-only">Started at {fmtTime(startedAt)}</span>
-            </>
-          ) : (
-            <>Started {fmtDateTime(startedAt)}</>
-          )}
-        </p>
+    <header ref={header} className="mb-4 lg:sticky lg:top-topbar lg:z-20 lg:-mx-8 lg:border-b lg:border-line lg:bg-canvas/95 lg:px-8 lg:py-2.5 lg:backdrop-blur" data-testid="consultation-header">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          <Link to={backTo} className="-ml-2 inline-flex size-control items-center justify-center rounded-md text-ink-muted hover:bg-surface hover:text-ink">
+            <ArrowLeft aria-hidden="true" className="size-5" />
+            <span className="sr-only">{backLabel}</span>
+          </Link>
+          {/* The patient is what the doctor must not get wrong: their name is the heading; "Consultation" is said to a screen reader first. */}
+          <h1 className="min-w-0 text-xl font-semibold tracking-tight break-words">
+            <span className="sr-only">Consultation: </span>
+            {patientName}
+          </h1>
+          <Badge tone="brand" dot>
+            Draft · in progress
+          </Badge>
+          <p className="text-sm text-ink-muted tabular-nums">
+            {elapsed ? (
+              <>
+                <span aria-hidden="true">{elapsed}</span>
+                <span className="sr-only">Started at {fmtTime(startedAt)}</span>
+              </>
+            ) : (
+              <>Started {fmtDateTime(startedAt)}</>
+            )}
+          </p>
+        </div>
+        <div ref={bar} className="max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:z-20 max-lg:max-h-[45dvh] max-lg:overflow-y-auto max-lg:border-t max-lg:border-line max-lg:bg-surface max-lg:px-4 max-lg:py-2 max-lg:shadow-pop" data-testid="consultation-actions">
+          {patient && <div className="mb-2 lg:hidden">{patient}</div>}
+          {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+        </div>
       </div>
-      <div ref={bar} className="max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:z-20 max-lg:max-h-[45dvh] max-lg:overflow-y-auto max-lg:border-t max-lg:border-line max-lg:bg-surface max-lg:px-4 max-lg:py-2 max-lg:shadow-pop" data-testid="consultation-actions">
-        {patient && <div className="mb-2 lg:hidden">{patient}</div>}
-        {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
-      </div>
-      {patient && <div className="absolute inset-x-0 top-full hidden border-b border-line bg-canvas/95 px-8 py-1.5 backdrop-blur lg:block">{patient}</div>}
+      {banner}
     </header>
   )
 }

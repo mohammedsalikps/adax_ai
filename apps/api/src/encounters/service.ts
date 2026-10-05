@@ -104,7 +104,7 @@ export async function loadEncounter(db: DbOrTx, me: SessionUser, e: EncounterRow
     id: e.id,
     status: e.status,
     version: e.version,
-    visit: { id: v.id, visitDate: v.visitDate, tokenNumber: v.tokenNumber, departmentName: deptName, reasonForVisit: v.chiefComplaint, status: v.status },
+    visit: { id: v.id, visitDate: v.visitDate, tokenNumber: v.tokenNumber, departmentName: deptName, reasonForVisit: v.chiefComplaint, status: v.status, priority: v.priority },
     patient: {
       id: p.id,
       mrn: p.mrn,

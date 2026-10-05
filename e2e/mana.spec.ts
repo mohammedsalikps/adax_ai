@@ -347,7 +347,9 @@ test('states at five widths: the workspace with Mana closed, open, generating, a
       expect(box, `${label} at ${size.width}px`).toBeTruthy()
       expect(box!.x + box!.width, `${label} at ${size.width}px`).toBeLessThanOrEqual(size.width + 0.5)
       expect(box!.x, `${label} at ${size.width}px`).toBeGreaterThanOrEqual(-0.5)
-      await target.scrollIntoViewIfNeeded()
+      // Brought into view the way the page itself does it (honouring its scroll padding), so the panel's header is not left under the sticky top bar:
+      // since D1 Mana sits in the middle of a phone's one column, and centring a tall panel there put its buttons behind that bar.
+      await target.evaluate((el) => el.scrollIntoView({ block: 'start' }))
       const slug = label.replace(/\W+/g, '-')
       // The crop of the panel is taken with the page's own sticky and fixed bars (the patient banner, the action bar) out of the way: a panel taller than the window
       // would otherwise have them drawn over it. The full-page screenshot keeps them.

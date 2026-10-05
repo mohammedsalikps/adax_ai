@@ -45,7 +45,7 @@
 | **Extracted draft** | `clinical_facts` (important points), `ai_draft_items`, recommendations | Always *pending*, always marked as extracted/AI with the rules or model version and whether it ran locally, never part of the record; a fact is carried forward when the doctor re-runs extraction (confirmed ones are not duplicated, rejected ones do not return) |
 | **Doctor-confirmed** | accepted or edited item (shown as *Doctor confirmed*), then a recorded insertion into the note | Confirming does **not** write to the note: only `POST /encounters/:id/insertions` ("Add to note"), with provenance; flagged items need an explicit confirmation; **nothing AI-produced is signed or inserted without the doctor**. `listConfirmedPoints` is the only read the later summary will use |
 
-A known looseness: accepting a *note-draft* item inserts it into the note draft in one click (a *facts* item needs a second click). The doctor still signs.
+Accepting a *note-draft* item does not insert it: as with the important points and the consultation-draft statements, the doctor accepts or edits it and then adds it with a separate "Add to <section>", which the server records with a reference to the suggestion. The doctor still signs.
 
 ## What slice V4 changed here
 

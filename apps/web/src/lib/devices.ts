@@ -59,25 +59,96 @@ const WHY: Partial<Record<ReadingState, (t: PatientDeviceReadings['thresholds'],
   unavailable: () => 'The time this device was attached for is over. End the assignment; it can then be attached again.',
 }
 
+/** What the server answered, and when it arrived on this computer's clock. */
+export interface ReceivedDeviceReadings {
+  view: PatientDeviceReadings
+  receivedAt: number
+}
+
+const fetchDeviceReadings = async (patientId: string): Promise<ReceivedDeviceReadings> => ({ view: await api<PatientDeviceReadings>(`/patients/${patientId}/device-readings`), receivedAt: Date.now() })
+
+/**
+ * A whole answer as it stands at `nowLocal` (this computer's clock): `now` is the server's clock carried forward (the time it answered plus the
+ * time since, on this computer's clock), so a wrong clock on this computer does not make an old value look new, and every device is aged to it.
+ */
+export function ageView(data: ReceivedDeviceReadings, nowLocal: number): { view: PatientDeviceReadings; now: number } {
+  const now = Date.parse(data.view.serverTime) + (nowLocal - data.receivedAt)
+  return { view: { ...data.view, devices: data.view.devices.map((d) => ageDevice(d, now, data.view.thresholds)) }, now }
+}
+
+/** Renders once a second while `on`, so that what is aged on the screen moves on between two reads. */
+function useSecondTick(on: boolean) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!on) return
+    const t = setInterval(() => tick((n) => n + 1), 1000)
+    return () => clearInterval(t)
+  }, [on])
+}
+
 /**
  * The devices attached to a patient and what they are saying, re-read every few seconds and aged every second in between. `now` is the server's
  * clock (the time it answered plus the time since, on this computer's clock), so a wrong clock on this computer does not make an old value look new.
  */
 export function usePatientDeviceReadings(patientId: string) {
-  const q = useQuery({
-    queryKey: deviceReadingsKey(patientId),
-    queryFn: async () => ({ view: await api<PatientDeviceReadings>(`/patients/${patientId}/device-readings`), receivedAt: Date.now() }),
-    refetchInterval: DEVICE_POLL_MS,
-    staleTime: 0,
-  })
-  const [, tick] = useState(0)
-  const watching = !!q.data?.view.devices.length
-  useEffect(() => {
-    if (!watching) return
-    const t = setInterval(() => tick((n) => n + 1), 1000)
-    return () => clearInterval(t)
-  }, [watching])
-  const now = q.data ? Date.parse(q.data.view.serverTime) + (Date.now() - q.data.receivedAt) : null
-  const view = q.data && now !== null ? { ...q.data.view, devices: q.data.view.devices.map((d) => ageDevice(d, now, q.data.view.thresholds)) } : null
-  return { view, now, isPending: q.isPending, error: q.error, isError: q.isError, refetch: q.refetch, isFetching: q.isFetching, receivedAt: q.data?.receivedAt ?? null }
+  const q = useQuery({ queryKey: deviceReadingsKey(patientId), queryFn: () => fetchDeviceReadings(patientId), refetchInterval: DEVICE_POLL_MS, staleTime: 0 })
+  useSecondTick(!!q.data?.view.devices.length)
+  const aged = q.data ? ageView(q.data, Date.now()) : null
+  return { view: aged?.view ?? null, now: aged?.now ?? null, isPending: q.isPending, error: q.error, isError: q.isError, refetch: q.refetch, isFetching: q.isFetching, receivedAt: q.data?.receivedAt ?? null }
+}
+
+/** From the most concerning to the least: the state a summary of several devices takes is the first one any of them is in. */
+const WORST_FIRST: readonly ReadingState[] = ['disconnected', 'unavailable', 'no_data', 'stale', 'live']
+
+const SUMMARY_LABEL: Record<ReadingState | 'none', string> = {
+  none: 'No device attached',
+  disconnected: 'Device not connected',
+  unavailable: 'Device unavailable',
+  no_data: 'Device: no data',
+  stale: 'Device reading stale',
+  live: 'Device live',
+}
+
+export interface DeviceSummary {
+  /** How many devices are attached. */
+  attached: number
+  /** The most concerning state among them ('none' when nothing is attached). */
+  state: ReadingState | 'none'
+  /** How many attached devices are in each state. */
+  counts: Record<ReadingState, number>
+  /** True when any attached record is a simulator: something shown with this summary is generated, not measured. */
+  simulated: boolean
+  /** True when any attached record is not a simulator: its values are device values, and no device has been validated (device_unverified). */
+  unverified: boolean
+  /** The state in plain words, for a chip; with the count when more than one device is attached. It never says what a simulator is: the chip does. */
+  label: string
+}
+
+/**
+ * The devices attached to a patient in one line: the most concerning state among them (disconnected, unavailable, no data, stale, live, in that
+ * order), so that one device that has gone quiet is not hidden behind another that is live. It carries no value of any device.
+ */
+export function summarizeDevices(view: PatientDeviceReadings | null): DeviceSummary {
+  const devices = view?.devices ?? []
+  const counts: Record<ReadingState, number> = { live: 0, stale: 0, disconnected: 0, no_data: 0, unavailable: 0 }
+  for (const d of devices) counts[d.state]++
+  const worst = WORST_FIRST.find((s) => counts[s] > 0)
+  const state = worst ?? 'none'
+  const label = worst && devices.length > 1 ? `${SUMMARY_LABEL[worst]} (${counts[worst]} of ${devices.length})` : SUMMARY_LABEL[state]
+  return { attached: devices.length, state, counts, simulated: devices.some((d) => d.simulated), unverified: devices.some((d) => !d.simulated), label }
+}
+
+/**
+ * The summary of a patient's devices, for a chip outside the device card. It only OBSERVES the card's query (same key, same function, never
+ * enabled): it never asks the server itself and never polls, so the "Device readings" card must be mounted on the same page for it to stay fresh.
+ * Between two reads it is aged every second by the same function as the card, from the card's last answer. If that answer is older than two polls
+ * and a second (the card is not mounted, or the server cannot be reached), it is still aged the same way, so what it says can only turn stale or
+ * disconnected, never the other way; `behind` says so. `summary` is null while nothing has been read: the chip then says nothing rather than guess.
+ */
+export function useDeviceSummary(patientId: string): { summary: DeviceSummary | null; isError: boolean; behind: boolean } {
+  const q = useQuery({ queryKey: deviceReadingsKey(patientId), queryFn: () => fetchDeviceReadings(patientId), enabled: false })
+  useSecondTick(!!q.data?.view.devices.length)
+  if (!q.data) return { summary: null, isError: q.isError, behind: false }
+  const nowLocal = Date.now()
+  return { summary: summarizeDevices(ageView(q.data, nowLocal).view), isError: q.isError, behind: q.isError || nowLocal - q.data.receivedAt > 2 * DEVICE_POLL_MS + 1000 }
 }

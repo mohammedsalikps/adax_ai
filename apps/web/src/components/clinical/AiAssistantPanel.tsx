@@ -26,14 +26,9 @@ function SuggestionCard({ item, transcript, encounterId, inserter, onFocusSource
   )
   const act = (decision: 'accepted' | 'edited' | 'rejected') =>
     decide.mutate(decision === 'edited' ? { decision, text } : { decision }, {
-      onSuccess: (r) => {
-        if (decision !== 'rejected' && r.item?.finalText) {
-          // Accepting a note suggestion inserts it (recorded on the server with a reference to this suggestion).
-          inserter.insert(item.section, r.item.finalText, { type: 'draft_item', id: item.id }).then(
-            () => toast('success', `Added to ${SECTION_LABEL[item.section]}. Review it in the note.`),
-            (e: unknown) => toast('error', `Accepted, but not added to the note: ${errorMessage(e)}`),
-          )
-        }
+      onSuccess: () => {
+        // Accepting does not write to the note: the doctor adds the accepted text with "Add to <section>" below, a separate act the server records.
+        if (decision !== 'rejected') toast('success', `${decision === 'edited' ? 'Edited and accepted' : 'Accepted'}. It is not in the note yet: use “Add to ${SECTION_LABEL[item.section]}” to add it.`)
         setEditing(false)
       },
     })
@@ -51,7 +46,7 @@ function SuggestionCard({ item, transcript, encounterId, inserter, onFocusSource
         {item.decision === 'rejected' && <Badge>Rejected</Badge>}
       </div>
       {editing ? (
-        <TextAreaField label="Edit before adding" rows={3} value={text} onChange={(e) => setText(e.target.value)} />
+        <TextAreaField label="Edit the suggestion" rows={3} value={text} onChange={(e) => setText(e.target.value)} />
       ) : (
         <p className={`text-sm ${item.decision === 'rejected' ? 'line-through' : ''}`}>{item.finalText ?? item.text}</p>
       )}
@@ -82,7 +77,7 @@ function SuggestionCard({ item, transcript, encounterId, inserter, onFocusSource
           {editing ? (
             <>
               <Button size="sm" icon={<Check aria-hidden="true" className="size-4" />} loading={decide.isPending} disabled={!text.trim() || (item.unsupported && !confirmUnsupported)} onClick={() => act('edited')}>
-                Add edited text
+                Save edited text
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
                 Cancel
@@ -103,7 +98,7 @@ function SuggestionCard({ item, transcript, encounterId, inserter, onFocusSource
           )}
         </div>
       )}
-      {/* Accepting inserts automatically; if that failed (or after a reload), the doctor can insert it here. */}
+      {/* The only way accepted text reaches the note: the doctor's own click, recorded on the server with a reference to this suggestion. */}
       {(item.decision === 'accepted' || item.decision === 'edited') && <InsertButton inserter={inserter} section={item.section} text={item.finalText ?? item.text} subject={{ type: 'draft_item', id: item.id }} />}
     </li>
   )
@@ -112,9 +107,10 @@ function SuggestionCard({ item, transcript, encounterId, inserter, onFocusSource
 type Tab = 'draft' | 'recommendations' | 'activity'
 
 /**
- * The AI side of a consultation: drafted note passages, recommendations and the activity log, each reviewed item by item. Nothing reaches
- * the note without the doctor's Accept/Edit, and signing stays a separate action. Recording, the transcript and the important points are
- * in the capture panel (left); the consultation summary that will sit here is a later step and is not built.
+ * The older AI assistant of a consultation: note passages drafted from the transcript by a hosted model (off unless the server allows hosted
+ * AI), recommendations from fixed safety rules (with AI suggestions only through the same hosted model), and the activity log, each reviewed
+ * item by item. Accepting a passage does not write to the note: "Add to <section>" does, as a separate act, and signing is another. Recording,
+ * the transcript and the important points are in the capture panel; the local AI draft, with its clinical summary, is ConsultationIntelligence.
  */
 export function AiAssistantPanel({ encounter, inserter }: { encounter: Encounter; inserter: NoteInserter }) {
   const toast = useToast()
@@ -167,7 +163,9 @@ export function AiAssistantPanel({ encounter, inserter }: { encounter: Encounter
       }
     >
       <div className="@container space-y-4">
-        <p className="text-xs text-ink-muted">Everything here is a draft for you to review. Nothing is added to the note until you accept or edit it, and signing is always your separate action. The assistant is not clinically validated. The sourced consultation summary is not built yet.</p>
+        <p className="text-xs text-ink-muted">
+          An older assistant: note suggestions drafted from the transcript by a hosted model (off unless this server allows hosted AI), safety checks by fixed rules, and the activity log. Everything here is a draft for you to review. Accepting a suggestion does not put it in the note: “Add to …” does, as a separate step, and signing is always your separate action. The assistant is not clinically validated. The local AI draft, with its clinical summary, is in “Consultation intelligence”.
+        </p>
         <ul className="flex flex-wrap gap-2 text-xs">
           <li>
             <Badge tone={llm ? 'ok' : 'neutral'}>AI drafting: {llm ? `available (${ai.status.llm.model})` : 'unavailable'}</Badge>

@@ -89,6 +89,10 @@ test('a simulator’s values reach the consultation marked SIMULATED: live, then
   await dlg.getByRole('button', { name: 'Attach' }).click()
   await expect(attached(page)).toHaveAttribute('data-simulated', 'true')
   await expect(attached(page).getByTestId('simulated-badge')).toHaveText('SIMULATED')
+  // A simulator is never UNVERIFIED (that mark is for a real device's values), here or in the bar's chip, which says SIMULATED.
+  await expect(attached(page).getByTestId('unverified-badge')).toHaveCount(0)
+  await expect(page.getByTestId('device-status-chip').getByTestId('simulated-badge')).toBeVisible()
+  await expect(page.getByTestId('device-status-chip').getByTestId('unverified-badge')).toHaveCount(0)
   await expect(attached(page)).toContainText('They are not measurements of this patient and are not part of the record.')
 
   // Never heard from: disconnected, and every kind says "No reading" rather than showing a number.
@@ -162,6 +166,11 @@ test('readings posted for a gateway device are shown as unverified device values
   await dlg.getByRole('button', { name: 'Attach' }).click()
   await expect(attached(page)).toHaveAttribute('data-simulated', 'false')
   await expect(attached(page).getByTestId('simulated-badge')).toHaveCount(0)
+  // In the consultation a device that is not a simulator says UNVERIFIED (solid), and so does the bar's device chip.
+  await expect(attached(page).getByTestId('unverified-badge')).toHaveText('UNVERIFIED')
+  const chip = page.getByTestId('device-status-chip')
+  await expect(chip.getByTestId('unverified-badge')).toBeVisible()
+  await expect(chip.getByTestId('simulated-badge')).toHaveCount(0)
 
   const stop = every(2000, () => band.send([{ kind: 'heart_rate', value: 118 }, { kind: 'spo2', value: 96 }]))
   await expect(tile(page, 'heart_rate')).toHaveAttribute('data-state', 'live', { timeout: 15_000 })
@@ -169,6 +178,8 @@ test('readings posted for a gateway device are shown as unverified device values
   await expect(tile(page, 'heart_rate')).toContainText('Device · unverified')
   await expect(tile(page, 'heart_rate')).toContainText('High')
   await expect(tile(page, 'spo2')).toContainText('96')
+  await expect(chip).toHaveAttribute('data-state', 'live')
+  await expect(chip).toContainText('Device live')
   await expectNoAxeViolations(page)
 
   // The visit's vital signs: the nurse measured the heart rate (92), so that stands; nobody measured oxygen saturation, so the device's value

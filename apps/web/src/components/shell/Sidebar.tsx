@@ -13,9 +13,9 @@ const navClass = ({ isActive }: { isActive: boolean }) =>
 /**
  * The left navigation: the product mark, the pages this role has, and the
  * account link. Only pages that exist are listed. Below the `lg` breakpoint it
- * is a drawer (see AppShell); the links are the same.
+ * is a drawer (see AppShell), below `xl` on a workspace page; the links are the same.
  */
-export function Sidebar({ role, id, facilityName, className = '', onClose, onNavigate, closeRef }: { role: Role; id: string; facilityName?: string | undefined; className?: string; onClose: () => void; onNavigate: () => void; closeRef: Ref<HTMLButtonElement> }) {
+export function Sidebar({ role, id, facilityName, className = '', onClose, onNavigate, closeRef, drawerUntil = 'lg' }: { role: Role; id: string; facilityName?: string | undefined; className?: string; onClose: () => void; onNavigate: () => void; closeRef: Ref<HTMLButtonElement>; drawerUntil?: 'lg' | 'xl' }) {
   return (
     <aside className={`flex-col border-r border-line bg-surface ${className}`}>
       <div className="flex min-h-topbar items-center justify-between gap-3 border-b border-line px-5">
@@ -27,7 +27,7 @@ export function Sidebar({ role, id, facilityName, className = '', onClose, onNav
           </span>
         </Link>
         {/* The drawer covers the top bar's menu button, so it has its own way out (phones only). */}
-        <button ref={closeRef} type="button" onClick={onClose} className="-mr-2 rounded-md p-2 text-ink-muted hover:bg-canvas lg:hidden">
+        <button ref={closeRef} type="button" onClick={onClose} className={`-mr-2 rounded-md p-2 text-ink-muted hover:bg-canvas ${drawerUntil === 'xl' ? 'inline-flex size-control items-center justify-center xl:hidden' : 'lg:hidden'}`}>
           <X aria-hidden="true" className="size-6" />
           <span className="sr-only">Close menu</span>
         </button>
