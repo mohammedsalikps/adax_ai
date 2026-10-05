@@ -17,7 +17,7 @@ beforeEach(async () => {
 })
 afterAll(() => ctx.close())
 
-const PUBLIC = ['GET /api/health', 'GET /api/ready', 'POST /api/auth/login', 'POST /api/auth/activate', 'POST /api/device-ingest/readings']
+const PUBLIC = ['GET /api/health', 'GET /api/ready', 'POST /api/auth/login', 'POST /api/auth/activate', 'POST /api/device-ingest/readings', 'POST /api/device-ingest/heartbeat', 'POST /api/device-ingest/auscultations']
 const ANY_SESSION = ['POST /api/auth/logout', 'GET /api/auth/me', 'POST /api/auth/change-password']
 const ROLES = ['admin', 'doctor', 'nurse', 'patient'] as const
 /** A concrete URL for a route pattern (ids that do not exist; a valid value where a param is an enum). */

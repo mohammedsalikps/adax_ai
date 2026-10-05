@@ -9,7 +9,7 @@ import type { ItemData, PatientRecord, RecordItem, SignedConsultation } from './
  * may be outdated. No language model is involved; every statement cites the
  * record items it was built from. Change the version when the rules change.
  */
-export const MANA_RULES_VERSION = 'mana-record-v1'
+export const MANA_RULES_VERSION = 'mana-record-v2'
 
 /** Question classification (first match wins). Suggested questions carry their intent explicitly. */
 const INTENT_RULES: [ManaIntent, RegExp][] = [
@@ -169,7 +169,17 @@ function lastPrescriptionSections(c: Ctx): ManaSection[] {
 }
 
 const fmtV = (kind: VitalKind, v: number) => `${v.toFixed(VITALS[kind].decimals)} ${VITALS[kind].unit}`
-const how = (o: RecordItem & { data: Extract<ItemData, { t: 'observation' }> }) => (o.data.source === 'device' ? `device reading, ${o.data.validationStatus.replace(/_/g, ' ')}` : 'measured by staff')
+type Obs = RecordItem & { data: Extract<ItemData, { t: 'observation' }> }
+const how = (o: Obs) => (o.data.source === 'device' ? `device reading, ${o.data.validationStatus.replace(/_/g, ' ')}` : 'measured by staff')
+const fromDevice = (o: Obs) => o.data.source === 'device'
+/** Said after a value in a list of readings when a device sent it: an unverified value is never listed as if staff had measured it. */
+const deviceTag = (o: Obs) => (fromDevice(o) ? `, ${how(o)}` : '')
+/**
+ * The reading that stands for a kind at a visit: what staff measured, if they measured it, else the newest device reading (rules v2). A device sends
+ * a value every few seconds and none of them is verified, so its readings are reported as such and are never set against each other, or against a
+ * staff measurement, as "recorded twice with different values".
+ */
+const standing = (list: Obs[]): Obs | undefined => list.find((o) => !fromDevice(o)) ?? list[0]
 
 function delta(kind: VitalKind, now: number, before: number): string {
   const d = now - before
@@ -186,30 +196,36 @@ function vitalsSection(c: Ctx, title = 'Vital signs'): ManaSection {
   if (!here.length) {
     out.push(absent(visitId ? 'No vital signs are recorded at this visit.' : 'There is no visit today, so there is nothing to compare with.'))
     const latest = VITAL_ORDER.map((k) => obs.find((o) => o.data.kind === k)).filter((o): o is NonNullable<typeof o> => !!o)
-    if (latest.length) out.push(doc(`Latest recorded readings: ${latest.map((o) => `${VITALS[o.data.kind].label} ${fmtV(o.data.kind, o.data.value)} (${c.date(o.date)})`).join('; ')}.`, latest.map((o) => o.ref)))
+    if (latest.length) out.push(doc(`Latest recorded readings: ${latest.map((o) => `${VITALS[o.data.kind].label} ${fmtV(o.data.kind, o.data.value)} (${c.date(o.date)}${deviceTag(o)})`).join('; ')}.`, latest.map((o) => o.ref)))
     else out.push(absent(`No vital signs in the last ${c.r.window.observationDays} days.`))
     return { title, statements: out }
   }
   for (const kind of VITAL_ORDER) {
     const mine = here.filter((o) => o.data.kind === kind)
-    const cur = mine[0]
+    const cur = standing(mine)
     if (!cur) continue
-    // Several readings of one kind at the same visit that disagree.
+    // Several staff measurements of one kind at the same visit that disagree (a device's readings are not measurements to set against each other).
     const tol = c.s.safety.vitalTolerance[kind]
-    const off = tol !== undefined ? mine.filter((o) => Math.abs(o.data.value - cur.data.value) > tol) : []
+    const off = tol !== undefined && !fromDevice(cur) ? mine.filter((o) => !fromDevice(o) && Math.abs(o.data.value - cur.data.value) > tol) : []
+    const device = fromDevice(cur) ? undefined : mine.find(fromDevice)
+    const alsoDevice = () => {
+      if (device) out.push(doc(`A device also sent ${VITALS[kind].label.toLowerCase()} at this visit: latest ${fmtV(kind, device.data.value)} (${how(device)}).`, [device.ref]))
+    }
     if (off.length) out.push(conflict(`${VITALS[kind].label} was recorded more than once at this visit with different values: ${[cur, ...off].map((o) => fmtV(kind, o.data.value)).join(' and ')}. Check which is correct.`, [cur.ref, ...off.map((o) => o.ref)]))
-    const prev = obs.find((o) => o.data.kind === kind && o.data.visitId !== visitId && o.data.measuredAt < cur.data.measuredAt)
+    const prev = standing(obs.filter((o) => o.data.kind === kind && o.data.visitId !== visitId && o.data.measuredAt < cur.data.measuredAt))
     if (!prev) {
       out.push(doc(`${VITALS[kind].label} ${fmtV(kind, cur.data.value)} at this visit (${how(cur)}); no earlier reading in the last ${c.r.window.observationDays} days.`, [cur.ref]))
+      alsoDevice()
       continue
     }
     out.push(doc(`${VITALS[kind].label} ${fmtV(kind, cur.data.value)} at this visit (${how(cur)}); previous ${fmtV(kind, prev.data.value)} on ${c.date(prev.date)} (${how(prev)}): ${delta(kind, cur.data.value, prev.data.value)}.`, [cur.ref, prev.ref]))
+    alsoDevice()
     const age = c.daysAgo(prev.data.measuredAt.toISOString())
     if (age > c.s.outdatedDays) out.push(outdated(`The previous ${VITALS[kind].label.toLowerCase()} reading is ${age} days old.`, [prev.ref]))
   }
   const measured = new Set(here.map((o) => o.data.kind))
   const notToday = VITAL_ORDER.filter((k) => !measured.has(k)).map((k) => obs.find((o) => o.data.kind === k)).filter((o): o is NonNullable<typeof o> => !!o)
-  if (notToday.length) out.push(doc(`Not measured at this visit; last recorded: ${notToday.map((o) => `${VITALS[o.data.kind].label} ${fmtV(o.data.kind, o.data.value)} on ${c.date(o.date)}`).join('; ')}.`, notToday.map((o) => o.ref)))
+  if (notToday.length) out.push(doc(`Not measured at this visit; last recorded: ${notToday.map((o) => `${VITALS[o.data.kind].label} ${fmtV(o.data.kind, o.data.value)} on ${c.date(o.date)}${deviceTag(o)}`).join('; ')}.`, notToday.map((o) => o.ref)))
   return { title, statements: out }
 }
 
@@ -297,9 +313,9 @@ function changesSinceLast(c: Ctx): ManaSection[] {
   // Vital signs at the two visits.
   const obs = c.observations
   for (const kind of VITAL_ORDER) {
-    const a = obs.find((o) => o.data.kind === kind && o.data.visitId === now.visitId)
-    const b = obs.find((o) => o.data.kind === kind && o.data.visitId === before.encounter.visitId)
-    if (a && b) out.push(doc(`${VITALS[kind].label}: ${fmtV(kind, a.data.value)} now, ${fmtV(kind, b.data.value)} then (${delta(kind, a.data.value, b.data.value)}).`, [a.ref, b.ref]))
+    const a = standing(obs.filter((o) => o.data.kind === kind && o.data.visitId === now.visitId))
+    const b = standing(obs.filter((o) => o.data.kind === kind && o.data.visitId === before.encounter.visitId))
+    if (a && b) out.push(doc(`${VITALS[kind].label}: ${fmtV(kind, a.data.value)} now${deviceTag(a)}, ${fmtV(kind, b.data.value)} then${deviceTag(b)} (${delta(kind, a.data.value, b.data.value)}).`, [a.ref, b.ref]))
   }
 
   // Medicines. An empty prescription does not show that medicines were stopped.
@@ -421,7 +437,7 @@ export function itemsForGeneration(intent: ManaIntent, record: PatientRecord, ci
 // --- the record check (consultation draft, V3) -------------------------------------------------------------------------------------------
 
 /** Version of the explicit rules that find what is conflicting, old or missing in a record. Change it when the rules change. */
-export const RECORD_CHECK_VERSION = 'record-check-v1'
+export const RECORD_CHECK_VERSION = 'record-check-v2'
 
 export interface RecordFinding {
   text: string
@@ -439,14 +455,14 @@ export function recordChecks(record: PatientRecord, settings: RuleSettings): { c
   const missing: RecordFinding[] = []
   const active = c.allergies.filter((a) => a.data.active)
 
-  // Conflicts: an allergy against "no known allergies"; an allergy against a drafted or recent medicine of the same configured group; readings of one
-  // kind at this visit that disagree beyond the configured tolerance.
+  // Conflicts: an allergy against "no known allergies"; an allergy against a drafted or recent medicine of the same configured group; staff measurements
+  // of one kind at this visit that disagree beyond the configured tolerance (a device's unverified readings are not set against them or each other).
   if (record.patient.noKnownAllergies && active.length) conflicts.push({ text: 'The record says “no known allergies” but also lists active allergies. Confirm with the patient.', refs: active.map((a) => a.ref) })
   for (const s of allergyMedicationConflicts(c)) conflicts.push({ text: s.text, refs: s.refs })
   const visitId = record.currentVisitId
   const here = visitId ? c.observations.filter((o) => o.data.visitId === visitId) : []
   for (const kind of VITAL_ORDER) {
-    const mine = here.filter((o) => o.data.kind === kind)
+    const mine = here.filter((o) => o.data.kind === kind && !fromDevice(o))
     const cur = mine[0]
     if (!cur) continue
     const tol = settings.safety.vitalTolerance[kind]

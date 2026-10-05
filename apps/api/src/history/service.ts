@@ -17,7 +17,8 @@ import { alias } from 'drizzle-orm/pg-core'
 import type { DbOrTx } from '../db/client.ts'
 import { departments, diagnoses, encounterAmendments, encounters, investigationResults, observations, patientConditions, patientHistoryEvents, patientMedications, prescriptionItems, users, visits } from '../db/schema.ts'
 import { ageOn, facilityToday, listAllergies, type PatientRow } from '../patients/service.ts'
-import { toObservation } from '../visits/service.ts'
+import { SIMULATED } from '../devices/provenance.ts'
+import { STAFF_FIRST, toObservation } from '../visits/service.ts'
 
 /** What an entry's origin is: its patient's when that is known, otherwise the deployment's (never one that disagrees with the patient). */
 export const entryOrigin = (patientOrigin: string, deployment: RecordOrigin): RecordOrigin => (patientOrigin === 'synthetic' || patientOrigin === 'clinical' ? patientOrigin : deployment)
@@ -189,8 +190,9 @@ export async function loadHistory(db: DbOrTx, p: PatientRow): Promise<PatientHis
       .selectDistinctOn([observations.kind], { o: observations, by: recorder.fullName })
       .from(observations)
       .leftJoin(recorder, eq(recorder.id, observations.recordedBy))
-      .where(and(eq(observations.patientId, p.id), eq(observations.enteredInError, false)))
-      .orderBy(observations.kind, desc(observations.measuredAt), desc(observations.createdAt)),
+      // What staff measured stands; a device's unverified reading only where they measured nothing of that kind; never a simulator's output.
+      .where(and(eq(observations.patientId, p.id), eq(observations.enteredInError, false), ne(observations.validationStatus, SIMULATED)))
+      .orderBy(observations.kind, STAFF_FIRST, desc(observations.measuredAt), desc(observations.createdAt)),
   ])
 
   // The newest result of every test, so a long run of one test cannot push the others off the screen; with the most recent ones overall.

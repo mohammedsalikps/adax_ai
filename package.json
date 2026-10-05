@@ -41,6 +41,8 @@
     "backup:restore": "node scripts/backup.mjs restore",
     "demo:seed": "npm run demo:seed --workspace @adaxai/api --",
     "demo:hospital": "npm run demo:hospital --workspace @adaxai/api --",
+    "demo:devices": "npm run demo:devices --workspace @adaxai/api --",
+    "devices:simulate": "npm run devices:simulate --workspace @adaxai/api --",
     "user:reset-password": "npm run user:reset-password --workspace @adaxai/api --",
     "audit:verify": "npm run audit:verify --workspace @adaxai/api --",
     "lint": "oxlint --deny-warnings apps packages scripts e2e && node scripts/thermal.mjs lint && node scripts/speech.mjs lint",

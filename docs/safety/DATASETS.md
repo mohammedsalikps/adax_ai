@@ -67,3 +67,14 @@
 ## Test fixtures
 
 Tests create their own throw-away synthetic patients, staff and records and delete nothing outside the disposable test and end-to-end databases. The thermal tests use public FLIR sample images fetched by `scripts/fetch-thermal-samples.mjs` (git-ignored; tests skip without them); their source and licence (MIT, National Drones) are recorded by the fetch script and in `samples/thermal/SOURCE.txt`, and they are third-party images, not clinic data.
+
+## Device simulator output (`npm run devices:simulate`) (slice V5)
+
+| | |
+| --- | --- |
+| What | Numbers produced by a program (`apps/api/src/devices/simulator.ts`, `device-sim-v1`) from a seed and a tick: heart rate, oxygen saturation, temperature and respiratory rate, in six scripted scenarios (steady, a climbing heart rate, a falling saturation, a fever, a gateway that sends nothing for a while, one that goes silent), and a short file of generated tones for the stethoscope boundary |
+| Origin | Generated arithmetic (a small deterministic number generator around fixed curves). **Not a recording of anyone, not derived from any dataset, not a physiological model.** The same seed and tick always give the same values |
+| Marking | Stored only through a device record registered as a simulator; the server stores it as `simulated` and the database refuses a row that says otherwise; shown as SIMULATED; left out of visit vital signs, the patient portal, every model's inputs and the record rules ([ADR 0018](../adr/0018-device-readings-states-gateway-and-simulator.md) §2.5) |
+| Use | Exercising the device boundary and its screens in development, demonstrations and tests. **Not a training set, not an evaluation set, not evidence about any device** |
+| Splits, metrics, failure cases | Not applicable (nothing is trained or evaluated on it) |
+| Limits | It shows that the states and labels work; it says nothing about how a real band or stethoscope behaves (noise, dropouts, motion artefact, clock drift, units) |

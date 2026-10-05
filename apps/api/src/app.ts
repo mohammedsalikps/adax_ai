@@ -61,6 +61,8 @@ export interface AppDeps {
   logger?: false | { stream: NodeJS.WritableStream }
   /** Longest one of Mana's two model calls may take, in milliseconds (default: the AI timeout setting, at most six minutes). Tests set a short one. */
   manaCallTimeoutMs?: number
+  /** The clock the device boundary reads (assignment windows, "seen", reading states); tests pass their own. Defaults to the system clock. */
+  clock?: () => number
 }
 
 export function buildApp(deps: AppDeps): FastifyInstance {
@@ -162,7 +164,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerRoutingRoutes(app, { db, routing })
   registerOversightRoutes(app, { db, providers, jobs, hostedKeyConfigured: !!deps.config.ai.anthropicApiKey })
   registerPortalRoutes(app, { db })
-  registerDeviceRoutes(app, { db, config: deps.config, settings, limiter })
+  registerDeviceRoutes(app, { db, config: deps.config, settings, limiter, clock: deps.clock })
 
   // API responses carry patient data: never store them in any cache (browser,
   // proxy or the web app's service worker), and set basic security headers.

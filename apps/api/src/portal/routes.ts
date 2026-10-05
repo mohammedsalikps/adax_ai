@@ -1,5 +1,6 @@
 import { CONSENT_LABELS, CONSENT_VERSIONS, CONSENT_WITHDRAWAL_EFFECTS_FOR_PATIENT, type ConsentType, consentWording, type NotificationPayload, type PortalAppointmentList, type PortalConsent, type PortalNotifications, WithdrawConsentRequest, type PortalHome, type PortalProfile, type PortalRecord, type PortalRecordSummary, type PortalThermalReport, type PortalVisit, type PortalVital } from '@adaxai/contracts'
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
+import { SIMULATED } from '../devices/provenance.ts'
 import { alias } from 'drizzle-orm/pg-core'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
@@ -255,7 +256,8 @@ export function registerPortalRoutes(app: FastifyInstance, deps: { db: Db }) {
 
   app.get('/api/portal/vitals', perm, async (req) => {
     const { patientId } = await self(req)
-    const rows = await db.select().from(observations).where(and(eq(observations.patientId, patientId), eq(observations.enteredInError, false))).orderBy(desc(observations.measuredAt)).limit(500)
+    // What a device simulator generated is not a measurement of the patient: it is never shown to them.
+    const rows = await db.select().from(observations).where(and(eq(observations.patientId, patientId), eq(observations.enteredInError, false), ne(observations.validationStatus, SIMULATED))).orderBy(desc(observations.measuredAt)).limit(500)
     await read(req, patientId, 'vitals')
     return { vitals: rows.map((o): PortalVital => ({ kind: o.kind as PortalVital['kind'], value: o.value, unit: o.unit, measuredAt: o.measuredAt.toISOString(), source: o.source as PortalVital['source'] })) }
   })

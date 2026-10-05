@@ -193,6 +193,19 @@ What it will **not** do: diagnose, order, prescribe, write to the diagnoses or t
 transcript or anything you rejected, or fall back to a hosted model. If a model answer is made of
 statements the record does not support, they are removed and the draft says **PARTIALLY AVAILABLE**.
 
+### Device readings with the simulator (no hardware exists)
+
+No device is connected to this build. To see the device layer, use the **simulator**, a program that generates values:
+
+1. Once: `npm run demo:devices` (registers two simulator records, attaches "Simulator band 1" to the demo patient and writes their tokens to `.data/sim/`).
+2. With the application running, in another terminal: `npm run devices:simulate` (steady values every five seconds; `-- --scenario dropout` goes silent for a while; `-- --scenario rising_heart_rate` climbs).
+3. Open the demo patient's consultation. The **Device readings** card shows the band with a dashed frame and **SIMULATED**, each value LIVE with its time. Stop the simulator: within 30 seconds the values turn STALE, and after two minutes the device is DISCONNECTED ("the last one received").
+4. Look at "This visit" and the banner: they still show what the nurse measured. The simulator's values are not in the visit's vital signs, the patient portal, or anything Mana or the consultation draft reads.
+5. "Attach a device" in the card attaches any free registered record; an administrator registers them under Admin > Devices (a simulator can only be registered as one, and stays one).
+6. Under **Stethoscope recordings**, "Record" records from this computer's microphone or any other audio input and stores it as "Recorded in the browser". `npm run devices:simulate -- --recording` sends generated tones through "Simulator stethoscope 1" once that record is attached to the patient; they appear as SIMULATED AUDIO.
+
+Say plainly when demonstrating: these are generated numbers on a labelled simulator; no band or stethoscope has been integrated or validated.
+
 ## 4. Signed record, drafts and integrity
 
 1. On the patient record, the visit links to the signed consultation.

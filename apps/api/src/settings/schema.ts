@@ -57,6 +57,11 @@ export const AppSettings = z
         images: z.object({ maxMb: z.number().min(1).max(100), types: z.array(z.enum(['image/jpeg', 'image/png', 'image/webp'])).min(1), maxPixels: z.number().int().min(1_000_000).max(200_000_000), previewMaxSide: z.number().int().min(256).max(8192) }).strict(),
       })
       .strict(),
+    // How current a device reading is said to be (V5): see contracts readingState. A display rule; the gate on what a device may send is not a setting.
+    devices: z
+      .object({ liveSeconds: z.number().int().min(2).max(3600), disconnectedSeconds: z.number().int().min(4).max(86_400), maxLateHours: z.number().int().min(1).max(720) })
+      .strict()
+      .refine((d) => d.disconnectedSeconds > d.liveSeconds, { message: 'disconnectedSeconds must be more than liveSeconds', path: ['disconnectedSeconds'] }),
     retention: z.object({ consultationAudioDays: z.number().int().min(0).max(3650) }).strict(),
     security: z
       .object({
@@ -67,6 +72,7 @@ export const AppSettings = z
             activationPerIp: LimitRule,
             passwordChangePerUser: LimitRule,
             deviceIngestPerToken: LimitRule,
+            deviceRecordingPerToken: LimitRule,
             aiAudioPerUser: LimitRule,
             aiStepPerUser: LimitRule,
           })

@@ -30,7 +30,7 @@ Support a **licensed clinician** in an outpatient consultation by:
 
 Inside: the web applications (doctor, nurse, patient, admin), the API, the PostgreSQL database, the thermal-processing service, locally hosted AI model servers (a speech model, [ADR 0014](../adr/0014-local-speech-service-and-capture-pipeline.md), and a language model, [ADR 0016](../adr/0016-local-ai-consultation-intelligence.md); both loopback only, both downloads approved by the owner), file storage on the same machine.
 
-Outside, and not controlled by ADAXAI: the operating system and network, the clinician's judgement, any wearable or stethoscope hardware (none is integrated today), and any hosted AI provider (off by default; if selected, patient-derived text or audio leaves the machine under the provider's terms).
+Outside, and not controlled by ADAXAI: the operating system and network, the clinician's judgement, any wearable or stethoscope hardware (none is integrated today: the device boundary is exercised by a labelled simulator, a program whose values are stored and shown as simulated and are not part of any record, [ADR 0018](../adr/0018-device-readings-states-gateway-and-simulator.md)), and any hosted AI provider (off by default; if selected, patient-derived text or audio leaves the machine under the provider's terms).
 
 ## Principles that follow from the intended use
 

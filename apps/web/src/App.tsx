@@ -37,6 +37,7 @@ import { LoginPage } from './pages/LoginPage.tsx'
 import { NotFoundPage } from './pages/NotFoundPage.tsx'
 import { AdminDevicesPage, StaffDevicesPage } from './pages/DevicesPages.tsx'
 import { AuscultationCard } from './components/clinical/AuscultationCard.tsx'
+import { DeviceReadingsCard } from './components/clinical/DeviceReadingsCard.tsx'
 import { PortalConsentsPage, PortalHomePage, PortalProfilePage, PortalRecordPage, PortalRecordsPage, PortalVisitsPage, PortalVitalsPage } from './pages/patient/PortalPages.tsx'
 import { ClinicalImagesCard } from './components/clinical/ClinicalImagesCard.tsx'
 import { ConsultationIntelligence } from './components/ai/ConsultationIntelligence.tsx'
@@ -52,6 +53,7 @@ const profileExtra = (p: PatientDetail) => (
   <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
     <PatientThermalCard patient={p} />
     <ClinicalImagesCard patientId={p.id} />
+    <DeviceReadingsCard patientId={p.id} />
     <AuscultationCard patientId={p.id} />
   </div>
 )
@@ -113,6 +115,7 @@ const router = createBrowserRouter([
             capturePanel={(e, inserter) => <CapturePanel encounter={e} inserter={inserter} />}
             leftPanel={(e, inserter) => (
               <>
+                <DeviceReadingsCard patientId={e.patient.id} encounterId={e.id} />
                 <AuscultationCard patientId={e.patient.id} encounterId={e.id} />
                 <ClinicalImagesCard patientId={e.patient.id} encounter={e} inserter={inserter} />
               </>

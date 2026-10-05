@@ -35,7 +35,7 @@ decisions: [docs/adr/](docs/adr/) · what the Doctor App actually does today:
 | Thermal data workflow | Clinician labels (versioned taxonomy, withdraw-only), data origin per image, experimental rule-based flags (not validated), de-identified dataset export (research consent only), evaluation pipeline that refuses to train without enough labelled data |
 | AI oversight | Admin AI operations (counts only), doctor review list of rejected/edited AI output, review-outcome snapshots as evaluation runs, checksummed prompt versions, model registry, settings snapshots |
 | Patient portal (PWA) | Activation with MRN + one-time code; the patient's own signed records with prescriptions and amendments, visits, vital signs, consents, profile and allergies, approved thermal measurements; installable (manifest, icons, service worker that caches only the app shell, never `/api/`) |
-| Devices | **Integration boundary only, no hardware integrated**: registry, assignment to consenting patients, token-authenticated gateway ingestion API (readings stored as *device, unverified*), stethoscope audio upload and playback. See [docs/DEVICES.md](docs/DEVICES.md) |
+| Devices (V5) | **Integration boundary with reading states and a labelled simulator; no hardware integrated.** Registry, assignment to a consenting patient (for a visit and a consultation, optionally until a time), a token-authenticated gateway that stores a batch **once**, accepts only the kinds a device may send (**never blood pressure**) and stores readings as *device, unverified*. In the consultation a **Device readings** card shows each value with its time and a **state** decided on the server's clock (live, stale, disconnected, no data, unavailable), re-read every 5 seconds; it is not a monitor and raises no alarm. Where staff and a device both supplied a value, **the staff measurement stands**. A **simulator** (`npm run demo:devices`, `npm run devices:simulate`) generates values to exercise all of this without hardware: what it sends is stored and shown as **SIMULATED**, and is never in a visit's vital signs, the patient portal, or anything a model or the record rules read. Stethoscope: upload, **recording in the browser** from an audio input, playback; no analysis. See [docs/DEVICES.md](docs/DEVICES.md), [ADR 0018](docs/adr/0018-device-readings-states-gateway-and-simulator.md) |
 | Record lifecycle | Visit and consultation state machines enforced by the API and the database, with status history (who, when, how, why); **My consultations** worklist of unsigned drafts from any day and recent signed records; discarding a draft with a reason (kept read-only); versioned signed-record verification including the amendment chain; see [ADR 0008](docs/adr/0008-record-lifecycle-and-signed-record-verification.md) |
 | Appointments and notifications | Booking and rescheduling by staff on the facility's clock, with no double booking for a doctor or a patient (database constraints), cancel and did-not-attend with reasons, status history, **check-in that creates or joins exactly one visit** (idempotent, race-safe) and starts no consultation, schedule pages for doctors, nurses and administrators (administrators see no patient identity or free text), the patient's own appointments in the portal. Messages go through an outbox with recorded attempts and safe retries; **the only channel is the patient portal: no SMS, email or push is sent**. See [ADR 0010](docs/adr/0010-appointments-visit-linkage-and-notification-outbox.md) |
 | Doctor workstation (slice V1) | **Today's patients** (tabs, day picker, row menu); a dashboard greeting the doctor with real counts and the day's patients in time order; a consultation workstation with a header (draft, elapsed time), a banner (allergies with severity, conditions, vital-sign status), vital signs with time and source, a **Past history** panel (summary, consultations, medications, allergies, investigations: typed in by staff, never deleted, mistakes marked *entered in error*), a rule-composed patient summary (not AI) and a profile side sheet. A synthetic hospital dataset: `npm run demo:hospital`. See [ADR 0013](docs/adr/0013-patient-history-typed-by-staff-never-deleted.md), [docs/AI_STATUS.md](docs/AI_STATUS.md) |
@@ -180,7 +180,7 @@ PostgreSQL keeps running after `npm run dev` exits; stop it with `npm run db:sto
 | Rule-based safety checks (allergy vs prescription incl. an illustrative group list, vital-sign flags, missing information, red-flag phrases, record conflicts) | Works without credentials; deterministic, versioned (`safety-rules-v1`, `record-compare-v1`) |
 | Routing suggestions | Works without credentials; deterministic |
 | Mana AI, the assistant (V4) | **Needs the local model** (`npm run llm:setup` once, then `npm run dev:llm`); no key. With the model not running it says "Mana is currently unavailable." and nothing else. A hosted model for it exists only behind the egress policy and a key and was never run |
-| Mana record rules (briefing, history, last prescription, vitals comparison, changes, allergies, diagnoses, search; slice 1) | Work without credentials; deterministic, versioned (`mana-record-v1`); the assistant's tools reuse them, and the slice-1 questions API remains (no screen) |
+| Mana record rules (briefing, history, last prescription, vitals comparison, changes, allergies, diagnoses, search; slice 1) | Work without credentials; deterministic, versioned (`mana-record-v2` since V5: what staff measured stands over a device's readings, and a simulator's values are not read); the assistant's tools reuse them, and the slice-1 questions API remains (no screen) |
 | Slice-1 Mana AI summaries (API only) | **Need `ANTHROPIC_API_KEY` AND hosted AI egress turned on (`AI_EGRESS_HOSTED=true`)**, and the patient's `ai_record_assistant` consent; otherwise the answer says why and shows the record answer only |
 | Note drafting, AI recommendations, Mana summaries, image description | **Need `ANTHROPIC_API_KEY` AND `AI_EGRESS_HOSTED=true`** (or `ai.egress.hostedProviders: true` in `config/adaxai.yaml`). **Hosted AI egress is off by default and a key alone enables nothing**: with it off the UI says "Hosted AI processing is switched off on this server, so no consultation text leaves this computer" and never shows placeholder output. With it on, pseudonymised transcript text (never audio) goes to the hosted provider after the patient's consent and the doctor's click; the screen says where |
 | Transcription of recorded or uploaded audio, live in 20-second parts | **Local speech service** (`faster-whisper` small, CPU) after `npm run speech:model`; no key, **no audio leaves this computer** (unless the clinic points `SPEECH_URL` at its own service on another computer on purpose, which the screens then say); finished text per part, no interim text; English is the supported language |
@@ -233,7 +233,7 @@ PostgreSQL keeps running after `npm run dev` exits; stop it with `npm run db:sto
 Patients see only finalised information about themselves: signed consultation records with
 prescriptions and later amendments, visits, measured vital signs (device readings marked as such),
 consents, profile and allergies, and doctor-approved thermal measurements. Drafts, transcripts,
-audio, photographs and AI output are never shown. The app is installable (manifest, icons); its
+audio, photographs, AI output and anything a device simulator generated are never shown. The app is installable (manifest, icons); its
 service worker caches only the application shell and hashed build files and never `/api/`
 responses (`apps/web/public/sw-policy.js`, unit-tested). Signing out clears all cached data in
 the page.
@@ -249,6 +249,7 @@ All services listen on localhost only.
 | Python service | <http://127.0.0.1:8001/health> (OpenAPI docs at `/docs`) |
 | PostgreSQL | `127.0.0.1:5433` |
 | Local language model (optional) | `127.0.0.1:8081` (`/health` answers without the secret; everything else needs it) |
+| Device gateway API | part of the API: `POST /api/device-ingest/readings`, `/heartbeat`, `/auscultations` (a device token, no session; [docs/DEVICES.md](docs/DEVICES.md)). No gateway program exists except the simulator |
 
 ## Commands
 
@@ -257,6 +258,8 @@ All services listen on localhost only.
 | `npm run setup` | One-time / repeatable local setup |
 | `npm run dev` | Start PostgreSQL (if needed), API, web and Python service |
 | `npm run demo:seed` | Add the synthetic demo patient (idempotent) |
+| `npm run demo:devices` | Register two **simulator** records (a band and a stethoscope; not devices), attach the band to the demo patient and write their gateway tokens to `.data/sim/` (idempotent; refused where data is clinical) |
+| `npm run devices:simulate -- [--scenario steady\|rising_heart_rate\|low_spo2\|fever\|no_readings\|dropout] [--seed n] [--interval s] [--count n] [--recording]` | The device simulator: posts **generated** values (or, with `--recording`, generated tones) to the running application as a gateway would, through a simulator record's token. The application stores and shows them as SIMULATED. Deterministic for a seed |
 | `npm run db:start` / `db:stop` / `db:status` | PostgreSQL lifecycle |
 | `npm run db:selftest` | Persistence check: write → clean stop → start → read, plus UTF-8 round-trip |
 | `npm run llm:setup` / `llm:status` / `llm:verify` / `dev:llm` | The local language model: download the pinned runtime and model after asking (hash-checked), show what is installed, re-check the model's SHA-256, run the server on loopback with the per-install secret |
@@ -366,9 +369,9 @@ validated strictly at start-up:
 
 | File | Contents | When changes apply |
 | --- | --- | --- |
-| [`config/adaxai.yaml`](config/adaxai.yaml) | AI features, models, effort, timeouts, live chunk length, context limits, Mana record window and outdated threshold, upload types and limits, retention, safety-rule groups and tolerances | **API restart** |
+| [`config/adaxai.yaml`](config/adaxai.yaml) | AI features, models, effort, timeouts, live chunk length, context limits, Mana record window and outdated threshold, upload types and limits, retention, safety-rule groups and tolerances, how long a device reading counts as live and how long a gateway may be silent before its device is shown as disconnected | **API restart** |
 | [`config/routing.yaml`](config/routing.yaml) | Routing rules, red-flag phrases and instructions, required intake | **At runtime** (re-read on change; an invalid edit keeps the last valid rules) |
-| `.env` | Secrets, ports, `DATA_ORIGIN`, `AI_NOTE_MODEL`, `AI_EGRESS_HOSTED`, `SPEECH_PROVIDER`, `SPEECH_URL`, `LLM_PROVIDER`, `LLM_URL`, `LLM_PORT`, `LLM_CTX`, `LLM_THREADS` (the old `AI_STT_*` settings are ignored; the model server's secret is in `.data/llm/api-key`, not in `.env`) | **Restart** |
+| `.env` | Secrets, ports, `DATA_ORIGIN`, `AI_NOTE_MODEL`, `AI_EGRESS_HOSTED`, `SPEECH_PROVIDER`, `SPEECH_URL`, `LLM_PROVIDER`, `LLM_URL`, `LLM_PORT`, `LLM_CTX`, `LLM_THREADS`, `DEVICE_LIVE_SECONDS`, `DEVICE_DISCONNECTED_SECONDS` (the old `AI_STT_*` settings are ignored; the model server's secret is in `.data/llm/api-key`, not in `.env`) | **Restart** |
 
 `DATA_ORIGIN` (default `synthetic`) is recorded on AI jobs, photographs, stethoscope recordings
 and thermal images; set `clinical` only in a real clinical deployment.
@@ -387,8 +390,12 @@ and thermal images; set `clinical` only in a real clinical deployment.
 - The allergy group list is illustrative and incomplete; it is not a drug or cross-reactivity
   database. Vital-sign flags use adult ranges only.
 - Thermal measurements depend on capture conditions; camera compatibility is unverified.
-- No device has been integrated; device readings can only arrive through the documented gateway
-  API and are always marked unverified.
+- No device has been integrated or validated; device readings can only arrive through the documented gateway
+  API and are always marked unverified. The only thing that has ever posted to it is the labelled simulator
+  (generated values, stored and shown as simulated) and the tests. A reading's state says how old it is and
+  whether its gateway is in contact, not whether the value is right. The device card is re-read every five
+  seconds: it is not a monitor, and nothing raises an alarm. No stethoscope has been tested; a recording made
+  in the browser comes from whatever audio input was chosen.
 - Prescriptions are not valid for dispensing in this build.
 
 **Security and operations**

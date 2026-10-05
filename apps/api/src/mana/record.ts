@@ -1,5 +1,6 @@
 import { type ManaSource, type ManaSourceStatus, VITALS, type VitalKind } from '@adaxai/contracts'
 import { and, asc, desc, eq, gte, inArray, lte, ne, sql } from 'drizzle-orm'
+import { SIMULATED } from '../devices/provenance.ts'
 import type { SessionUser } from '../auth/sessions.ts'
 import type { DbOrTx } from '../db/client.ts'
 import { allergies, diagnoses, encounterAmendments, encounters, facilities, investigationResults, observations, patientConditions, patientMedications, prescriptionItems, thermalCaptures, users, visits } from '../db/schema.ts'
@@ -86,7 +87,7 @@ export interface RecordOptions {
   includeHistory?: boolean | undefined
 }
 
-/** Readings kept per vital-sign kind and visit (the newest). */
+/** Readings kept per vital-sign kind, visit and source (the newest): what a device sent never pushes what staff measured out of the window. */
 const OBSERVATIONS_PER_KIND_AND_VISIT = 5
 
 const day = (d: Date) => d.toISOString().slice(0, 10)
@@ -219,13 +220,15 @@ export async function loadPatientRecord(db: DbOrTx, me: SessionUser, patientId: 
   }
 
   // Observations in the window (not entered in error), newest first. Bounded per
-  // kind and visit, so a burst of device readings cannot push this visit's or an
-  // earlier visit's readings out of the window (and make them look absent).
+  // kind, visit and source, so a burst of device readings cannot push this visit's or an
+  // earlier visit's readings, or what staff measured at the same visit, out of the window
+  // (and make them look absent). SIMULATED values are not read at all: a device simulator's
+  // output is not part of anyone's record, so neither a model nor the record rules ever see it.
   const since = new Date(Date.now() - opts.observationDays * 86_400_000)
   const ranked = db
-    .select({ id: observations.id, rn: sql<number>`row_number() over (partition by ${observations.kind}, ${observations.visitId} order by ${observations.measuredAt} desc)`.as('rn') })
+    .select({ id: observations.id, rn: sql<number>`row_number() over (partition by ${observations.kind}, ${observations.visitId}, ${observations.source} order by ${observations.measuredAt} desc)`.as('rn') })
     .from(observations)
-    .where(and(eq(observations.patientId, patient.id), eq(observations.enteredInError, false), gte(observations.measuredAt, since)))
+    .where(and(eq(observations.patientId, patient.id), eq(observations.enteredInError, false), gte(observations.measuredAt, since), ne(observations.validationStatus, SIMULATED)))
     .as('ranked')
   const keep = db.select({ id: ranked.id }).from(ranked).where(lte(ranked.rn, OBSERVATIONS_PER_KIND_AND_VISIT))
   const obs: ObservationRow[] = await db.select().from(observations).where(inArray(observations.id, keep)).orderBy(desc(observations.measuredAt))

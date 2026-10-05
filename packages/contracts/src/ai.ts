@@ -268,7 +268,7 @@ export const PROVENANCE_LABELS = {
   clinician_stated: 'Clinician said',
   transcript_unlabelled: 'Transcript (speaker not identified)',
   record: 'Existing record',
-  device_measured: 'Device measurement',
+  device_measured: 'Device reading (unverified)',
   staff_measured: 'Measured by staff',
   ai_generated: 'AI suggestion',
 } as const

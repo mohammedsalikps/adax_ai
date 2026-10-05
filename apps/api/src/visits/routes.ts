@@ -12,9 +12,11 @@ import { departments, encounters, observations, users, visits } from '../db/sche
 import { badRequest, conflict, HttpError, notFound } from '../http/errors.ts'
 import { parse } from '../http/validate.ts'
 import { ageOn, facilityToday, getPatientOr404 } from '../patients/service.ts'
-import { createVisit, getVisitOr404, loadVisits, toObservation, unitFor } from './service.ts'
+import { createVisit, getVisitOr404, loadVisits, standingWindow, toObservation, unitFor } from './service.ts'
 
 const IdParams = z.object({ id: z.uuid() })
+/** Of what a device sent, how many of the newest readings of each kind (per visit) the record's list of vital signs shows. */
+const DEVICE_READINGS_LISTED = 5
 
 async function assertDepartmentAndDoctor(db: DbOrTx, me: SessionUser, departmentId?: string, doctorId?: string | null) {
   if (departmentId) {
@@ -206,7 +208,9 @@ export function registerVisitRoutes(app: FastifyInstance, { db, encounterLookup 
       .select({ o: observations, by: recorder.fullName })
       .from(observations)
       .leftJoin(recorder, eq(recorder.id, observations.recordedBy))
-      .where(and(eq(observations.patientId, id), q.kind ? eq(observations.kind, q.kind) : undefined, q.includeErrors === 'true' ? undefined : eq(observations.enteredInError, false)))
+      // The record's vital signs: every staff measurement, and of what a device sent the newest few of each kind per visit (so that an hour of a
+      // band does not push what staff measured off the list). What a device SIMULATOR generated is not part of the record and is never listed here.
+      .where(inArray(observations.id, standingWindow(db, and(eq(observations.patientId, id), q.kind ? eq(observations.kind, q.kind) : undefined, q.includeErrors === 'true' ? undefined : eq(observations.enteredInError, false)), DEVICE_READINGS_LISTED)))
       .orderBy(desc(observations.measuredAt))
       .limit(q.limit)
     await audit(db, req, { action: 'observation.read', entityType: 'patient', entityId: id, patientId: id })

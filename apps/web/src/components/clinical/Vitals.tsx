@@ -38,6 +38,8 @@ export function VitalsInline({ vitals }: { vitals: Observation[] }) {
         <li key={o.id} className={o.flag && o.flag !== 'normal' ? 'font-medium' : ''}>
           <span className="text-ink-muted">{VITALS[o.kind].short}</span> {fmtValue(o)}
           <span className="text-xs text-ink-muted"> {o.unit}</span> <FlagLabel flag={o.flag} />
+          {/* A value nobody on the staff measured says so, here too: it stands only because staff measured nothing of this kind. */}
+          {o.source === 'device' && <span className="text-xs font-normal text-ink-muted"> ({o.validationStatus === 'simulated' ? 'simulated' : 'device, unverified'})</span>}
         </li>
       ))}
     </ul>
@@ -49,14 +51,17 @@ const worst = (a: VitalFlag | null, b: VitalFlag | null): VitalFlag | null => {
   return rank(a) >= rank(b) ? a : b
 }
 
-/** Where a reading came from and when, so a typed value and a device value are never mistaken for each other. */
+/** Where a reading came from and when, so a typed value, a device value and a simulator's value are never mistaken for each other. */
 export function readingSource(o: Pick<Observation, 'source' | 'validationStatus' | 'measuredAt'>): string {
-  return `${fmtTime(o.measuredAt)} · ${o.source === 'device' ? 'device, unverified' : 'entered by staff'}`
+  const how = o.validationStatus === 'simulated' ? 'simulated, not a measurement' : o.source === 'device' ? 'device, unverified' : 'entered by staff'
+  return `${fmtTime(o.measuredAt)} · ${how}`
 }
 
 /**
  * The latest vital signs as tiles. Each says when it was recorded and by whom or what (typed by staff, or from a device that is not
- * validated in this deployment); blood pressure is the two values together. There is no live feed: a reading is as old as its time says.
+ * validated in this deployment); blood pressure is the two values together. What staff measured stands; a device's value is here only where
+ * staff measured nothing of that kind. These tiles are not a live feed (a reading is as old as its time says): what an attached device is
+ * sending now, and how current it is, is on the "Device readings" card.
  */
 export function VitalsTiles({ vitals }: { vitals: Observation[] }) {
   if (!vitals.length) return <p className="rounded-lg bg-canvas px-3 py-2 text-sm text-ink-muted">No vital signs have been recorded for this visit.</p>

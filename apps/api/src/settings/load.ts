@@ -70,11 +70,14 @@ export class RoutingRulesSource {
 
 /**
  * Settings with the environment overrides applied (AI_NOTE_MODEL,
- * SPEECH_PROVIDER, SPEECH_URL, AI_EGRESS_HOSTED, LLM_PROVIDER, LLM_URL). Contains no secrets.
+ * SPEECH_PROVIDER, SPEECH_URL, AI_EGRESS_HOSTED, LLM_PROVIDER, LLM_URL, DEVICE_LIVE_SECONDS, DEVICE_DISCONNECTED_SECONDS). Contains no secrets.
  */
 export function effectiveSettings(settings: AppSettings, config: Config): AppSettings {
+  const devices = { ...settings.devices, liveSeconds: config.devices.liveSeconds ?? settings.devices.liveSeconds, disconnectedSeconds: config.devices.disconnectedSeconds ?? settings.devices.disconnectedSeconds }
+  if (devices.disconnectedSeconds <= devices.liveSeconds) throw new Error('Invalid device settings: DEVICE_DISCONNECTED_SECONDS (devices.disconnectedSeconds) must be more than DEVICE_LIVE_SECONDS (devices.liveSeconds).')
   return {
     ...settings,
+    devices,
     ai: {
       ...settings.ai,
       llm: { ...settings.ai.llm, model: config.ai.noteModel ?? settings.ai.llm.model },

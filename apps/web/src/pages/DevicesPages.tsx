@@ -1,7 +1,8 @@
-import { DEVICE_INTEGRATIONS, DEVICE_KINDS, type Device, type DeviceInput, type DeviceIntegration, type DeviceKind, type PatientSummary } from '@adaxai/contracts'
+import { DEVICE_INTEGRATIONS, DEVICE_KINDS, DEVICE_READING_KINDS, type Device, type DeviceInput, type DeviceIntegration, type DeviceKind, type PatientSummary, usesGateway, VITALS } from '@adaxai/contracts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Link2, Plus, Unlink } from 'lucide-react'
 import { useState } from 'react'
+import { SimulatedBadge } from '../components/clinical/DeviceReadingsCard.tsx'
 import { Button } from '../components/ui/Button.tsx'
 import { Dialog } from '../components/ui/Dialog.tsx'
 import { Alert, Badge, EmptyState, Spinner } from '../components/ui/Feedback.tsx'
@@ -10,21 +11,22 @@ import { Card, PageHeader } from '../components/ui/Layout.tsx'
 import { Table } from '../components/ui/Table.tsx'
 import { useToast } from '../components/ui/Toast.tsx'
 import { api, errorMessage, issuesToErrors } from '../lib/api.ts'
+import { devicesKey, useDevices } from '../lib/devices.ts'
 import { fmtDateTime } from '../lib/format.ts'
 import { useDocumentTitle } from '../lib/useDocumentTitle.ts'
-
-const devicesKey = ['devices'] as const
-const useDevices = () => useQuery({ queryKey: devicesKey, queryFn: () => api<{ devices: Device[] }>('/devices'), select: (d) => d.devices })
 
 function HardwareNotice() {
   return (
     <Alert tone="warning" title="No device has been connected or tested in this build" className="mb-6">
-      This page manages the integration boundary: a device registry, assignment to patients, a token-authenticated API for a future gateway, and uploads of stethoscope recordings. Readings that arrive through the gateway are stored as <em>device, unverified</em>. See docs/DEVICES.md for what physical device access is required.
+      This page manages the integration boundary: a device registry, assignment to patients, a token-authenticated API for a gateway, and stethoscope recordings. Readings that arrive through the gateway are stored as <em>device, unverified</em>; blood pressure is not accepted from any device. A record registered as a <strong>simulator</strong> is a program that generates values for development and tests: what it sends is stored and shown as <em>simulated</em> and is never a measurement. See docs/DEVICES.md for what physical device access is required.
     </Alert>
   )
 }
 
-function RegisterDialog({ onClose }: { onClose: () => void }) {
+/** What a device of this kind may send through the gateway: the gate (the same list the server enforces). */
+const allowedKinds = (kind: DeviceKind) => DEVICE_READING_KINDS[kind].map((k) => VITALS[k].label.toLowerCase()).join(', ')
+
+function RegisterDialog({ onClose, simulatorAllowed }: { onClose: () => void; simulatorAllowed: boolean }) {
   const qc = useQueryClient()
   const toast = useToast()
   const [v, setV] = useState<DeviceInput>({ kind: 'wearable_band', label: '', serialNumber: '', integration: 'not_integrated', manufacturer: '', model: '', notes: '' })
@@ -62,13 +64,26 @@ function RegisterDialog({ onClose }: { onClose: () => void }) {
         <TextField label="Serial number" required value={v.serialNumber} onChange={(e) => setV({ ...v, serialNumber: e.target.value })} error={errors.serialNumber} />
         <TextField label="Manufacturer (optional)" value={v.manufacturer ?? ''} onChange={(e) => setV({ ...v, manufacturer: e.target.value })} />
         <TextField label="Model (optional)" value={v.model ?? ''} onChange={(e) => setV({ ...v, model: e.target.value })} />
-        <SelectField label="Integration" value={v.integration} onChange={(e) => setV({ ...v, integration: e.target.value as DeviceIntegration })} hint="Choose “gateway” only for a device whose gateway has been built and tested.">
-          {Object.entries(DEVICE_INTEGRATIONS).map(([k, l]) => (
-            <option key={k} value={k}>
-              {l}
-            </option>
-          ))}
+        <SelectField label="Integration" value={v.integration} onChange={(e) => setV({ ...v, integration: e.target.value as DeviceIntegration })} hint="Choose “gateway” only for a device whose gateway has been built and tested. This cannot be changed to or from “simulator” later.">
+          {Object.entries(DEVICE_INTEGRATIONS)
+            .filter(([k]) => k !== 'simulator' || simulatorAllowed)
+            .map(([k, l]) => (
+              <option key={k} value={k}>
+                {l}
+              </option>
+            ))}
         </SelectField>
+        {v.integration === 'simulator' && (
+          <Alert tone="warning" title="This registers a simulator, not a device">
+            A simulator is a program that generates values. Everything it sends is stored and shown as simulated, is never part of a patient’s record, and is never given to the AI or shown to the patient. The record stays a simulator for good.
+          </Alert>
+        )}
+        {usesGateway(v.integration ?? 'not_integrated') && (
+          <p className="text-xs text-ink-muted">
+            {DEVICE_READING_KINDS[v.kind].length ? `Through the gateway this kind of device may send: ${allowedKinds(v.kind)}. Anything else, blood pressure included, is refused.` : 'This kind of device may send no readings through the gateway.'}
+            {v.kind === 'smart_stethoscope' ? ' A stethoscope’s gateway may send recordings.' : ''}
+          </p>
+        )}
         <TextAreaField label="Notes (optional)" rows={2} value={v.notes ?? ''} onChange={(e) => setV({ ...v, notes: e.target.value })} />
       </div>
     </Dialog>
@@ -79,7 +94,8 @@ function RegisterDialog({ onClose }: { onClose: () => void }) {
 export function AdminDevicesPage() {
   useDocumentTitle('Devices')
   const qc = useQueryClient()
-  const q = useDevices()
+  const list = useDevices()
+  const q = { ...list, data: list.data?.devices }
   const [registering, setRegistering] = useState(false)
   const [token, setToken] = useState<string | null>(null)
   const refresh = () => void qc.invalidateQueries({ queryKey: devicesKey })
@@ -113,8 +129,8 @@ export function AdminDevicesPage() {
             rowKey={(d) => d.id}
             empty={<div className="p-5"><EmptyState title="No devices registered" /></div>}
             columns={[
-              { key: 'n', header: 'Device', cell: (d) => <><p className="font-medium">{d.label}</p><p className="text-xs text-ink-muted">{DEVICE_KINDS[d.kind]} · {[d.manufacturer, d.model].filter(Boolean).join(' ') || 'make not recorded'} · SN {d.serialNumber}</p></> },
-              { key: 'i', header: 'Integration', cell: (d) => <span className="text-sm">{DEVICE_INTEGRATIONS[d.integration]}{d.hasToken ? <span className="block text-xs text-ink-muted">token issued {fmtDateTime(d.tokenCreatedAt)}</span> : null}</span> },
+              { key: 'n', header: 'Device', cell: (d) => <><p className="flex flex-wrap items-center gap-2 font-medium">{d.label}{d.simulated && <SimulatedBadge what="SIMULATOR" />}</p><p className="text-xs text-ink-muted">{DEVICE_KINDS[d.kind]} · {[d.manufacturer, d.model].filter(Boolean).join(' ') || 'make not recorded'} · SN {d.serialNumber}</p></> },
+              { key: 'i', header: 'Integration', cell: (d) => <span className="text-sm">{DEVICE_INTEGRATIONS[d.integration]}{d.hasToken ? <span className="block text-xs text-ink-muted">token issued {fmtDateTime(d.tokenCreatedAt)}</span> : null}{usesGateway(d.integration) ? <span className="block text-xs text-ink-muted">{d.lastSeenAt ? `last contact ${fmtDateTime(d.lastSeenAt)}` : 'no contact yet'}</span> : null}</span> },
               { key: 's', header: 'Status', cell: (d) => (d.status === 'active' ? <Badge tone="ok">Active</Badge> : <Badge>Retired</Badge>) },
               // Administrators manage devices, not patient records: they see that a device is in use, not by whom.
               { key: 'a', header: 'In use', cell: (d) => (d.assignment ? (d.assignment.patientName ? `${d.assignment.patientName} (${d.assignment.mrn})` : `Assigned to a patient since ${fmtDateTime(d.assignment.assignedAt)}`) : '—') },
@@ -124,7 +140,7 @@ export function AdminDevicesPage() {
                 cell: (d) =>
                   d.status === 'active' && (
                     <div className="flex flex-wrap gap-2">
-                      {d.integration === 'gateway_api' && (
+                      {usesGateway(d.integration) && (
                         <Button size="sm" variant="secondary" icon={<KeyRound aria-hidden="true" className="size-4" />} loading={issue.isPending && issue.variables === d.id} onClick={() => issue.mutate(d.id)}>
                           {d.hasToken ? 'Replace token' : 'Issue token'}
                         </Button>
@@ -139,7 +155,7 @@ export function AdminDevicesPage() {
           />
         )}
       </Card>
-      {registering && <RegisterDialog onClose={() => setRegistering(false)} />}
+      {registering && <RegisterDialog simulatorAllowed={!!list.data?.simulatorAllowed} onClose={() => setRegistering(false)} />}
     </>
   )
 }
@@ -149,9 +165,10 @@ function AssignDialog({ device, onClose }: { device: Device; onClose: () => void
   const toast = useToast()
   const [query, setQuery] = useState('')
   const [patientId, setPatientId] = useState('')
+  const [until, setUntil] = useState('')
   const search = useQuery({ queryKey: ['patients', 'search', query], queryFn: () => api<{ patients: PatientSummary[] }>('/patients', { query: { q: query } }), enabled: query.trim().length >= 2, select: (d) => d.patients })
   const assign = useMutation({
-    mutationFn: () => api<Device>(`/devices/${device.id}/assignments`, { method: 'POST', body: { patientId } }),
+    mutationFn: () => api<Device>(`/devices/${device.id}/assignments`, { method: 'POST', body: { patientId, ...(until && { validUntil: new Date(until).toISOString() }) } }),
     onSuccess: () => (void qc.invalidateQueries({ queryKey: devicesKey }), toast('success', 'Device assigned'), onClose()),
   })
   return (
@@ -171,7 +188,8 @@ function AssignDialog({ device, onClose }: { device: Device; onClose: () => void
       }
     >
       <div className="space-y-3 text-sm">
-        <p className="text-ink-muted">The patient must have consented to device readings. Readings are stored only while the device is assigned.</p>
+        <p className="text-ink-muted">The patient must have consented to device readings. Readings are stored only while the device is assigned. If the patient has an open visit today, the readings are filed under it.</p>
+        {device.simulated && <Alert tone="warning">This is a simulator, not a device: what it sends is generated, is shown as SIMULATED, and never becomes part of the patient’s record.</Alert>}
         {assign.isError && <Alert tone="error">{errorMessage(assign.error)}</Alert>}
         <TextField label="Find patient (name, MRN or phone)" value={query} onChange={(e) => setQuery(e.target.value)} />
         {search.data && (
@@ -184,6 +202,7 @@ function AssignDialog({ device, onClose }: { device: Device; onClose: () => void
             ))}
           </SelectField>
         )}
+        <TextField label="Assigned until (optional)" type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} hint="Readings measured after this time are refused. Leave empty to keep it assigned until someone ends it." />
       </div>
     </Dialog>
   )
@@ -194,7 +213,8 @@ export function StaffDevicesPage() {
   useDocumentTitle('Devices')
   const qc = useQueryClient()
   const toast = useToast()
-  const q = useDevices()
+  const list = useDevices()
+  const q = { ...list, data: list.data?.devices }
   const [assigning, setAssigning] = useState<Device | null>(null)
   const end = useMutation({
     mutationFn: (assignmentId: string) => api(`/device-assignments/${assignmentId}/end`, { method: 'POST', body: { reason: 'Ended by staff' } }),
@@ -212,14 +232,19 @@ export function StaffDevicesPage() {
         {active.map((d) => (
           <li key={d.id}>
             <Card>
-              <p className="font-medium">{d.label}</p>
+              <p className="flex flex-wrap items-center gap-2 font-medium">
+                {d.label}
+                {d.simulated && <SimulatedBadge what="SIMULATOR" />}
+              </p>
               <p className="text-xs text-ink-muted">
                 {DEVICE_KINDS[d.kind]} · {DEVICE_INTEGRATIONS[d.integration]}
+                {usesGateway(d.integration) ? ` · ${d.lastSeenAt ? `last contact ${fmtDateTime(d.lastSeenAt)}` : 'no contact yet'}` : ''}
               </p>
               {d.assignment ? (
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm">
                   <span>
                     Assigned to <strong>{d.assignment.patientName}</strong> ({d.assignment.mrn}) since {fmtDateTime(d.assignment.assignedAt)}
+                    {d.assignment.validUntil ? `, until ${fmtDateTime(d.assignment.validUntil)}` : ''}
                   </span>
                   <Button size="sm" variant="secondary" icon={<Unlink aria-hidden="true" className="size-4" />} loading={end.isPending && end.variables === d.assignment.id} onClick={() => end.mutate(d.assignment!.id)}>
                     End assignment

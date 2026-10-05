@@ -73,6 +73,9 @@ const EnvSchema = z.object({
   LLM_API_KEY: z.string().optional().transform((v) => v || undefined),
   /** A file holding that secret (scripts/llm.mjs makes .data/llm/api-key). Used when LLM_API_KEY is not set. */
   LLM_API_KEY_FILE: z.string().optional().transform((v) => v || undefined),
+  /** Optional overrides of config/adaxai.yaml (devices.liveSeconds, devices.disconnectedSeconds): how current a device reading is said to be. */
+  DEVICE_LIVE_SECONDS: z.union([z.coerce.number().int().min(2).max(3600), z.literal('')]).optional().transform((v) => (v === '' ? undefined : v)),
+  DEVICE_DISCONNECTED_SECONDS: z.union([z.coerce.number().int().min(4).max(86_400), z.literal('')]).optional().transform((v) => (v === '' ? undefined : v)),
 })
 
 export interface DbConfig {
@@ -98,6 +101,8 @@ export interface Config {
   /** Absolute path for uploaded files (git-ignored). */
   storageDir: string
   maxUploadBytes: number
+  /** Env overrides of `devices` in config/adaxai.yaml; undefined means "use the file". */
+  devices: { liveSeconds: number | undefined; disconnectedSeconds: number | undefined }
   ai: {
     anthropicApiKey: string | undefined
     /** Env overrides; undefined means "use config/adaxai.yaml". */
@@ -144,6 +149,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     cookieSecure: e.COOKIE_SECURE ? e.COOKIE_SECURE === 'true' : e.NODE_ENV === 'production',
     storageDir: path.resolve(REPO_ROOT, e.STORAGE_DIR),
     maxUploadBytes: e.MAX_UPLOAD_MB * 1024 * 1024,
+    devices: { liveSeconds: e.DEVICE_LIVE_SECONDS, disconnectedSeconds: e.DEVICE_DISCONNECTED_SECONDS },
     ai: {
       anthropicApiKey: e.ANTHROPIC_API_KEY,
       noteModel: e.AI_NOTE_MODEL,

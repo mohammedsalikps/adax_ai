@@ -87,7 +87,7 @@ describe('making a draft', () => {
     // The allergy is stated by the record and the drafted... nothing is conflicting here: no medicine was drafted.
     expect(s.draft!.items.find((i) => i.section === 'allergies')!.support).toBe('supported')
     // The newest draft carries the explicit rules' own check, whether or not the model was used.
-    expect(s.draft!.recordCheck.rulesVersion).toBe('record-check-v1')
+    expect(s.draft!.recordCheck.rulesVersion).toBe('record-check-v2')
   })
 
   it('records that the draft reached the doctor once, with ids and counts and never a word of it, however often the screen asks again', async () => {
@@ -469,7 +469,7 @@ describe('no model, no draft', () => {
     expect(s.status).toMatchObject({ available: false, state: 'unavailable', reason: 'Local AI unavailable.', local: true })
     expect(s.draft).toBeNull()
     expect(s.canGenerate).toBe(false)
-    expect(s.recordCheck).toMatchObject({ rulesVersion: 'record-check-v1' })
+    expect(s.recordCheck).toMatchObject({ rulesVersion: 'record-check-v2' })
     expect((await adminQuery('SELECT count(*)::int AS n FROM consultation_drafts')).rows[0].n).toBe(0)
   })
 

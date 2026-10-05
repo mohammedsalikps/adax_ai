@@ -51,7 +51,7 @@ Implemented tables are listed in `apps/api/src/db/schema.ts`. Planned items are 
 | Flow | visits (daily tokens), **visit_status_events**, **appointments**, **appointment_status_events**, **notifications**, **notification_attempts**, observations (vitals; `source`, `validation_status`, device) |
 | Record | encounters (signed snapshot + versioned content hash, or discarded with who/when/why), **encounter_status_events**, diagnoses, prescription_items, encounter_amendments (numbered, hash-linked), **note_insertions** |
 | AI | ai_jobs, ai_runs, ai_prompt_versions, ai_settings_snapshots, ai_models, transcripts, **transcript_chunks**, transcript_segments, **transcript_segment_speakers**, clinical_facts, ai_recommendations, ai_evidence, ai_review_actions, **mana_questions**, *(planned)* transcript_corrections (text corrections; speaker review is built) |
-| Imaging and devices | clinical_images, image_analyses, thermal_* tables, devices, device_assignments, auscultation_recordings, *(planned)* device_batches, alert_rules, alerts, alert_events |
+| Imaging and devices | clinical_images, image_analyses, thermal_* tables, devices (a record may be a **simulator**, for good), device_assignments (patient, visit, consultation, optional end time), **device_batches** (one accepted gateway request, stored once), auscultation_recordings (how each arrived; simulated or not), *(planned)* alert_rules, alerts, alert_events |
 | ML | evaluation_runs, dataset_memberships, *(planned)* model cards and evaluation datasets for text and speech |
 
 ### Patient history (slice V1)
@@ -198,7 +198,7 @@ The retrieval layer, the record answers and the rules below were built in slice 
 
 ### Record answers
 
-`apps/api/src/mana/answers.ts`, rules `mana-record-v1`.
+`apps/api/src/mana/answers.ts`, rules `mana-record-v2` (`-v1` until slice V5).
 
 Intents:
 - briefing;

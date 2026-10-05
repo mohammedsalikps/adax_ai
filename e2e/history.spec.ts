@@ -177,7 +177,7 @@ test('the doctor starts a consultation from today’s patients and has the patie
 
   // What is not built says so, and nothing pretends.
   await expect(page.getByTestId('writing-pad')).toContainText('Not available yet')
-  await expect(page.getByRole('region', { name: 'Stethoscope recordings' })).toContainText('No stethoscope is connected directly')
+  await expect(page.getByRole('region', { name: 'Stethoscope recordings' })).toContainText('No stethoscope has been connected to or tested with this system')
 
   await expectNoAxeViolations(page)
   await expectNoHorizontalOverflow(page)

@@ -11,7 +11,8 @@ import { aiReviewActions, departments, observations, patients, routingSuggestion
 import { conflict, notFound } from '../http/errors.ts'
 import { parse } from '../http/validate.ts'
 import { ageOn } from '../patients/service.ts'
-import { getVisitOr404 } from '../visits/service.ts'
+import { SIMULATED } from '../devices/provenance.ts'
+import { getVisitOr404, STAFF_FIRST } from '../visits/service.ts'
 import type { RoutingRulesSource } from '../settings/load.ts'
 import { suggestRouting } from './engine.ts'
 
@@ -86,9 +87,14 @@ export function registerRoutingRoutes(app: FastifyInstance, deps: { db: Db; rout
     if (v.status === 'in_consultation') throw conflict(WITH_DOCTOR, 'visit_in_consultation')
     const rules = routing.current()
     const p = (await db.query.patients.findFirst({ where: eq(patients.id, v.patientId) }))!
-    const obs = await db.select().from(observations).where(and(eq(observations.visitId, id), eq(observations.enteredInError, false))).orderBy(desc(observations.measuredAt))
-    const latestByKind = new Map<string, number>()
-    for (const o of obs) if (!latestByKind.has(o.kind)) latestByKind.set(o.kind, o.value)
+    // What stands for each kind at this visit: the newest value staff measured, or a device's newest reading where staff measured none. NEVER a
+    // device simulator's output: generated numbers must not make a visit urgent, raise a red flag or count as the intake's vital signs.
+    const obs = await db
+      .selectDistinctOn([observations.kind])
+      .from(observations)
+      .where(and(eq(observations.visitId, id), eq(observations.enteredInError, false), ne(observations.validationStatus, SIMULATED)))
+      .orderBy(observations.kind, STAFF_FIRST, desc(observations.measuredAt))
+    const latestByKind = new Map<string, number>(obs.map((o) => [o.kind, o.value]))
     const depts = await db.select({ id: departments.id, code: departments.code, name: departments.name }).from(departments).where(and(eq(departments.facilityId, me.facilityId), eq(departments.isActive, true)))
     const loads = await db
       .select({ id: users.id, fullName: users.fullName, departmentId: users.departmentId, load: sql<number>`count(${visits.id})::int` })

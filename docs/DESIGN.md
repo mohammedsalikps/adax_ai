@@ -220,6 +220,19 @@ The reference is a clinical workstation: dense, calm, one patient in focus. Thes
 
 **Not built:** streaming text, a way to put an answer into the note (a doctor copies what they choose), a separate Mana page, voice.
 
+## 4f. Device readings (slice V5): a state on every value, and SIMULATED said out loud
+
+The card sits in the consultation's left column under "This visit", and on the patient record. It follows the plan's rule that **measured data, model output and clinician interpretation are never mixed**, with one more separation: a **simulator's** values are neither.
+
+- **One device, one block.** The label, the kind, when it was attached (and until when), the device's state, the last contact from its gateway with its age, and the reason for any state that is not live, in a sentence.
+- **One kind, one tile**, two to a row at every width: the name, a **state chip** on its own line (LIVE with a dot, STALE, DISCONNECTED, or "No reading"), the value (greyed when not live), a flag against the adult range for a device value, "Measured 10:15:42 · 8 s ago" or "Last measured …", and what it is: "Device · unverified" or "Simulated · not a measurement".
+- **States are words, always**; colour repeats them (ok, pending, down, neutral) and is never the only cue. The chip is sized so that the longest word fits the narrowest tile (checked in the browser at five widths).
+- **SIMULATED** is a dashed frame around the device block and each tile, a dashed "SIMULATED" chip beside the state, and a sentence: "A simulator generates these values. They are not measurements of this patient and are not part of the record." Simulated values carry no range flag. The same chip marks simulator records in the device lists and simulated audio in the stethoscope list.
+- **Nothing is filled in.** No device attached: "Unavailable. No device is attached to this patient." No consent: says so and disables "Attach a device". The server unreachable: an error line with the time of the last read; the values stay, ageing.
+- **Not a monitor.** A footer says what live, stale and disconnected mean with the configured seconds, that the card is re-read every few seconds, and that it raises no alarm. There is no live region on the values (a screen reader is not told every five seconds); the states are text.
+- **Seconds matter here**: times on this card show seconds, and ages are "just now" (under five seconds), "12 s ago", "3 min ago".
+- **Stethoscope recordings**: "Record" (in the browser, from a chosen audio input, with a sentence that the system cannot tell what an input is) beside "Add recording" (a file); each recording says how it arrived.
+
 ## 5. Rules the screens follow
 
 - **No fake controls.** A control appears only if the product can do it.

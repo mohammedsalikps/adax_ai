@@ -110,6 +110,18 @@ mana:
   # Upper bound on record text sent to the AI provider for one question.
   maxContextChars: 30000
 
+# Device readings (V5): how current a reading from a device is said to be. A display rule, not clinical guidance: it says how old a value
+# is and whether its gateway is still in contact, nothing about whether the value is right (every device reading is "unverified").
+# Env DEVICE_LIVE_SECONDS and DEVICE_DISCONNECTED_SECONDS override these (the end-to-end tests use short ones).
+devices:
+  # A reading measured at most this many seconds ago is LIVE; an older one is STALE.
+  liveSeconds: 30
+  # A device whose gateway has not been heard from for longer than this is DISCONNECTED (must be more than liveSeconds).
+  disconnectedSeconds: 120
+  # A gateway may send what it buffered while it was out of contact, but not for ever: a reading or recording measured more than this many
+  # hours before it arrives is refused. It bounds how far back a device token can write into a patient's record.
+  maxLateHours: 24
+
 # Request limits per client address, account, user or device token. They
 # slow down password guessing and token abuse; the per-account sign-in lockout
 # (5 wrong passwords, 15 minutes) still applies. Kept in memory: a restart
@@ -121,6 +133,8 @@ security:
     activationPerIp: { max: 20, windowSeconds: 900 }
     passwordChangePerUser: { max: 10, windowSeconds: 900 }
     deviceIngestPerToken: { max: 600, windowSeconds: 60 }
+    # Stethoscope recordings sent by a gateway are files of up to the audio limit each: far fewer of them are allowed per token.
+    deviceRecordingPerToken: { max: 12, windowSeconds: 60 }
     # Per signed-in user: audio parts and uploads (a live recording sends about three parts a minute) and the steps that cost the most to run
     # (note drafts, important points, recommendations). Beyond the limit a request is refused with 429 and the time to wait.
     aiAudioPerUser: { max: 60, windowSeconds: 60 }

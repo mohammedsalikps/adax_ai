@@ -102,7 +102,7 @@ describe('Mana record answers (explicit rules, no AI provider)', () => {
     expect(res.statusCode).toBe(201)
     const a = ManaAnswer.parse(res.json())
     expect(a.intent).toBe('last_prescription')
-    expect(a.record.rulesVersion).toBe('mana-record-v1')
+    expect(a.record.rulesVersion).toBe('mana-record-v2')
 
     const metformin = statements(a).find((s) => s.kind === 'documented' && s.text.startsWith('Metformin'))!
     expect(metformin.text).toContain('500 mg')
@@ -381,7 +381,7 @@ describe('inserting AI output into the note', () => {
     let enc = Encounter.parse(res.json())
     expect(enc.note.pastHistory).toBe('Allergy to Penicillin (rash), per record.')
     expect(enc.version).toBe(e2.version + 1)
-    expect(enc.aiInsertions).toEqual([expect.objectContaining({ section: 'pastHistory', subjectType: 'mana_answer', subjectId: a.id, producedBy: 'record rules mana-record-v1; text chosen and edited by the doctor', insertedByName: 'Test t.doctor', retained: true })])
+    expect(enc.aiInsertions).toEqual([expect.objectContaining({ section: 'pastHistory', subjectType: 'mana_answer', subjectId: a.id, producedBy: 'record rules mana-record-v2; text chosen and edited by the doctor', insertedByName: 'Test t.doctor', retained: true })])
 
     // The same text from the same answer goes into a section once.
     expect((await insert({ version: enc.version, section: 'pastHistory', text: 'Allergy to Penicillin (rash), per record.', subjectType: 'mana_answer', subjectId: a.id })).json().error).toBe('already_inserted')

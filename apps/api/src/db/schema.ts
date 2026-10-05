@@ -358,16 +358,19 @@ export const observations = pgTable(
     unit: text('unit').notNull(),
     measuredAt: timestamp('measured_at', { withTimezone: true }).notNull().defaultNow(),
     source: observationSource('source').notNull().default('manual'),
+    /** manual_entry | device_unverified | simulated (a device simulator generated it: not a measurement). Checked by the database (migration 0029). */
     validationStatus: text('validation_status').notNull().default('manual_entry'),
     /** Device that produced the value (source = device). */
     deviceId: uuid('device_id').references((): AnyPgColumn => devices.id),
+    /** The gateway batch a device reading arrived in (V5; older device readings have none). */
+    deviceBatchId: uuid('device_batch_id').references((): AnyPgColumn => deviceBatches.id),
     recordedBy: uuid('recorded_by').references(() => users.id),
     enteredInError: boolean('entered_in_error').notNull().default(false),
     enteredInErrorReason: text('entered_in_error_reason'),
     enteredInErrorBy: uuid('entered_in_error_by').references(() => users.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('observations_patient_kind_idx').on(t.patientId, t.kind, t.measuredAt), index('observations_visit_idx').on(t.visitId)],
+  (t) => [index('observations_patient_kind_idx').on(t.patientId, t.kind, t.measuredAt), index('observations_visit_idx').on(t.visitId), index('observations_device_idx').on(t.deviceId, t.measuredAt).where(sql`${t.deviceId} is not null`), index('observations_device_kind_idx').on(t.deviceId, t.kind, t.measuredAt).where(sql`${t.deviceId} is not null`)],
 )
 
 // ---------------------------------------------------------------------------
@@ -1191,7 +1194,10 @@ export const thermalDatasetExports = pgTable('thermal_dataset_exports', {
 /**
  * A registered device. `integration` states honestly how data gets in:
  * manual_upload (files uploaded by staff), gateway_api (a separate gateway
- * posts readings with the device token) or not_integrated.
+ * posts readings with the device token), not_integrated, or simulator: not a
+ * device at all but a program that generates values. A record is a simulator
+ * from the start or never (database trigger, migration 0029), and what arrives
+ * through one is stored as simulated.
  */
 export const devices = pgTable(
   'devices',
@@ -1213,6 +1219,8 @@ export const devices = pgTable(
     /** SHA-256 of the gateway token; the token itself is shown once and never stored. */
     ingestTokenHash: text('ingest_token_hash'),
     tokenCreatedAt: timestamp('token_created_at', { withTimezone: true }),
+    /** When the gateway last presented this device's token (any request): what "disconnected" is decided from. */
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     createdBy: uuid('created_by').references(() => users.id),
     ...timestamps,
   },
@@ -1231,10 +1239,14 @@ export const deviceAssignments = pgTable(
       .notNull()
       .references(() => patients.id),
     visitId: uuid('visit_id').references(() => visits.id),
+    /** The consultation the device was attached in, when it was attached from one (V5). */
+    encounterId: uuid('encounter_id').references(() => encounters.id),
     assignedBy: uuid('assigned_by')
       .notNull()
       .references(() => users.id),
     assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Readings measured at or after this time are refused (null: until the assignment is ended). Set when assigned, never changed. */
+    validUntil: timestamp('valid_until', { withTimezone: true }),
     endedAt: timestamp('ended_at', { withTimezone: true }),
     endedBy: uuid('ended_by').references(() => users.id),
     endReason: text('end_reason'),
@@ -1242,7 +1254,41 @@ export const deviceAssignments = pgTable(
   (t) => [uniqueIndex('device_assignments_one_open_uq').on(t.deviceId).where(sql`${t.endedAt} is null`), index('device_assignments_patient_idx').on(t.patientId)],
 )
 
-/** A stethoscope (auscultation) recording uploaded as a file. Append-only. */
+/**
+ * One accepted request of a device gateway: a batch of readings, or one stethoscope recording. Append-only. The key makes ingestion idempotent:
+ * a gateway that sends a batch again (a retry after a lost answer) gets the first answer and nothing is stored twice; the same key with other
+ * content is refused. `simulated` is copied from the device record at the time: it never comes from what the sender says.
+ */
+export const deviceBatches = pgTable(
+  'device_batches',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    facilityId: uuid('facility_id')
+      .notNull()
+      .references(() => facilities.id),
+    deviceId: uuid('device_id')
+      .notNull()
+      .references(() => devices.id),
+    assignmentId: uuid('assignment_id')
+      .notNull()
+      .references(() => deviceAssignments.id),
+    patientId: uuid('patient_id')
+      .notNull()
+      .references(() => patients.id),
+    /** readings | auscultation */
+    kind: text('kind').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    /** SHA-256 of what was sent, in a fixed form: tells a repeat from a different batch under the same key. */
+    payloadSha256: text('payload_sha256').notNull(),
+    measuredAt: timestamp('measured_at', { withTimezone: true }).notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    itemCount: integer('item_count').notNull(),
+    simulated: boolean('simulated').notNull(),
+  },
+  (t) => [uniqueIndex('device_batches_key_uq').on(t.deviceId, t.idempotencyKey), index('device_batches_patient_idx').on(t.patientId, t.measuredAt), index('device_batches_assignment_idx').on(t.assignmentId)],
+)
+
+/** A stethoscope (auscultation) recording: a file chosen by staff, a recording made in the browser, or one sent by a gateway. Append-only. */
 export const auscultationRecordings = pgTable(
   'auscultation_recordings',
   {
@@ -1262,6 +1308,14 @@ export const auscultationRecordings = pgTable(
     site: text('site').notNull(),
     note: text('note'),
     dataOrigin: text('data_origin').notNull(),
+    /** file_upload | browser_recording | gateway (V5). None is a verified stethoscope connection. */
+    captureMethod: text('capture_method').notNull().default('file_upload'),
+    /** Generated by a simulator: tones, not a body sound. Copied from the device record, never from what the sender says. */
+    simulated: boolean('simulated').notNull().default(false),
+    durationMs: integer('duration_ms'),
+    /** The name the browser gave the audio input (browser recordings); as reported, not verified. */
+    inputLabel: text('input_label'),
+    deviceBatchId: uuid('device_batch_id').references(() => deviceBatches.id),
     createdBy: uuid('created_by').references(() => users.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

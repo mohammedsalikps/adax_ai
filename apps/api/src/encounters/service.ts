@@ -7,7 +7,7 @@ import type { DbOrTx } from '../db/client.ts'
 import { allergies, departments, diagnoses, encounterAmendments, encounters, facilities, observations, patients, prescriptionItems, users, visits } from '../db/schema.ts'
 import { conflict, deniedNotFound, forbidden, notFound } from '../http/errors.ts'
 import { ageOn, fullName } from '../patients/service.ts'
-import { toObservation } from '../visits/service.ts'
+import { standingWindow, toObservation } from '../visits/service.ts'
 import { loadInsertions } from './insertions.ts'
 
 export type EncounterRow = typeof encounters.$inferSelect
@@ -77,7 +77,9 @@ export async function loadEncounter(db: DbOrTx, me: SessionUser, e: EncounterRow
       .select({ o: observations, by: recorder.fullName })
       .from(observations)
       .leftJoin(recorder, eq(recorder.id, observations.recordedBy))
-      .where(and(eq(observations.visitId, v.id), eq(observations.enteredInError, false)))
+      // The visit's vital signs: every measurement staff took, and of what a device sent only its newest reading of each kind (the stream, with its
+      // states, is on the device readings card; a band worn for an hour would otherwise add thousands of rows here). Never a simulator's output.
+      .where(inArray(observations.id, standingWindow(db, and(eq(observations.visitId, v.id), eq(observations.enteredInError, false)), 1)))
       .orderBy(desc(observations.measuredAt), desc(observations.createdAt)),
     db
       .select({ a: encounterAmendments, by: author.fullName })

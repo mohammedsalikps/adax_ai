@@ -1,9 +1,10 @@
 import { flagVital, type Observation, VITALS, type Visit, type VitalKind } from '@adaxai/contracts'
-import { and, asc, eq, inArray, sql, type SQL } from 'drizzle-orm'
+import { and, asc, eq, inArray, lte, ne, or, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SessionUser } from '../auth/sessions.ts'
 import type { DbOrTx } from '../db/client.ts'
 import { allergies, appointments, dailyTokenCounters, departments, facilities, observations, patients, users, visits } from '../db/schema.ts'
+import { SIMULATED } from '../devices/provenance.ts'
 import { deniedNotFound } from '../http/errors.ts'
 import { ageOn, fullName } from '../patients/service.ts'
 
@@ -37,7 +38,34 @@ export function toObservation(o: ObservationRow, ageYears: number | null, record
   }
 }
 
-/** Latest valid value per vital kind for each visit. */
+/**
+ * What stands for each vital kind at a visit: the newest value staff measured, or, where staff measured nothing of that kind, the newest reading a
+ * device sent (unverified, and shown as such). A device sends a value every few seconds: its stream never displaces a measurement someone took.
+ */
+export const STAFF_FIRST = sql`(${observations.source} = 'manual') desc`
+
+/**
+ * The observations worth reading out of what may be a stream, as a subquery of ids: every measurement staff took, and of what a device sent only
+ * the newest `devicePerKind` of each kind at each visit. NEVER a device simulator's output. A band sends a value every few seconds for as long as
+ * it is worn: a reader that took "the newest rows" would return nothing but the band, and one that took "all rows" would return thousands.
+ */
+export function standingWindow(db: DbOrTx, where: SQL | undefined, devicePerKind: number) {
+  const ranked = db
+    .select({
+      id: observations.id,
+      source: observations.source,
+      rn: sql<number>`row_number() over (partition by ${observations.kind}, ${observations.visitId}, ${observations.source} order by ${observations.measuredAt} desc)`.as('rn'),
+    })
+    .from(observations)
+    .where(and(where, ne(observations.validationStatus, SIMULATED)))
+    .as('ranked')
+  return db
+    .select({ id: ranked.id })
+    .from(ranked)
+    .where(or(eq(ranked.source, 'manual'), lte(ranked.rn, devicePerKind)))
+}
+
+/** That value per vital kind for each visit. A device simulator's output is not a reading of the patient and is never in a visit's summary. */
 async function latestVitalsByVisit(db: DbOrTx, visitIds: string[], ages: Map<string, number>) {
   const out = new Map<string, Observation[]>()
   if (!visitIds.length) return out
@@ -46,8 +74,8 @@ async function latestVitalsByVisit(db: DbOrTx, visitIds: string[], ages: Map<str
     .selectDistinctOn([observations.visitId, observations.kind], { o: observations, by: recorder.fullName })
     .from(observations)
     .leftJoin(recorder, eq(recorder.id, observations.recordedBy))
-    .where(and(inArray(observations.visitId, visitIds), eq(observations.enteredInError, false)))
-    .orderBy(observations.visitId, observations.kind, sql`${observations.measuredAt} desc`)
+    .where(and(inArray(observations.visitId, visitIds), eq(observations.enteredInError, false), ne(observations.validationStatus, SIMULATED)))
+    .orderBy(observations.visitId, observations.kind, STAFF_FIRST, sql`${observations.measuredAt} desc`)
   for (const { o, by } of rows) {
     const list = out.get(o.visitId!) ?? []
     list.push(toObservation(o, ages.get(o.visitId!) ?? null, by))

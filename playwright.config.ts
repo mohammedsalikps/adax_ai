@@ -92,6 +92,10 @@ export default defineConfig({
         SPEECH_PROVIDER: 'local',
         // Opt-in real-model run (e2e/capture-real.spec.ts): E2E_SPEECH_URL points at a running local speech service instead of the stand-in.
         SPEECH_URL: process.env.E2E_SPEECH_URL ?? `http://127.0.0.1:${PORTS.mockSpeech}`,
+        // Device reading states (e2e/devices-live.spec.ts): short limits, so that a reading can be watched going from live to stale and its device to
+        // disconnected in seconds instead of minutes. The limits are a display rule; nothing else depends on them.
+        DEVICE_LIVE_SECONDS: '6',
+        DEVICE_DISCONNECTED_SECONDS: '14',
       },
       reuseExistingServer: false,
       timeout: 60_000,

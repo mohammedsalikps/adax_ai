@@ -1,5 +1,6 @@
 import { type Provenance, VITALS, type VitalKind } from '@adaxai/contracts'
 import { and, desc, eq, gte, inArray, ne } from 'drizzle-orm'
+import { standingWindow } from '../visits/service.ts'
 import type { DbOrTx } from '../db/client.ts'
 import { allergies, diagnoses, encounters, observations, patients, prescriptionItems, thermalCaptures, visits } from '../db/schema.ts'
 import { ageOn } from '../patients/service.ts'
@@ -80,14 +81,18 @@ export async function buildPatientContext(db: DbOrTx, encounter: typeof encounte
   const obs = await db
     .select()
     .from(observations)
-    .where(and(eq(observations.patientId, patient.id), eq(observations.enteredInError, false), gte(observations.measuredAt, since)))
+    // Every staff measurement, and of what a device sent only the newest few of each kind per visit: a band's stream must not push what staff
+    // measured out of the sixty rows. A device simulator's values are not part of the record and are never given to a model or to the rules.
+    .where(inArray(observations.id, standingWindow(db, and(eq(observations.patientId, patient.id), eq(observations.enteredInError, false), gte(observations.measuredAt, since)), 3)))
     .orderBy(desc(observations.measuredAt))
     .limit(60)
-  const visitObservations = obs.filter((o) => o.visitId === encounter.visitId)
+  // At this visit what staff measured stands: the rules take the first reading of each kind, so staff measurements come first (newest first
+  // within each), and a device's unverified reading is the one that counts only where staff measured nothing of that kind.
+  const visitObservations = obs.filter((o) => o.visitId === encounter.visitId).sort((a, b) => Number(a.source === 'device') - Number(b.source === 'device'))
   for (const o of obs) {
     const kind = o.kind as VitalKind
     const here = o.visitId === encounter.visitId
-    add('V', { sourceType: 'observation', sourceId: o.id, provenance: o.source === 'device' ? 'device_measured' : 'staff_measured', text: `${VITALS[kind].label} ${fmtValue(kind, o.value)} measured ${here ? 'at this visit' : day(o.measuredAt)}${o.source === 'device' ? ' by device' : ''}` })
+    add('V', { sourceType: 'observation', sourceId: o.id, provenance: o.source === 'device' ? 'device_measured' : 'staff_measured', text: `${VITALS[kind].label} ${fmtValue(kind, o.value)} measured ${here ? 'at this visit' : day(o.measuredAt)}${o.source === 'device' ? ' by a device (unverified)' : ''}` })
   }
 
   for (const [key, label] of NOTE_LABELS) {

@@ -56,7 +56,7 @@ export const ManaSource = z.object({
   /** Record field, e.g. "Assessment", "Prescription", "Temperature". */
   field: z.string(),
   status: z.enum(Object.keys(MANA_SOURCE_STATUS) as [ManaSourceStatus, ...ManaSourceStatus[]]),
-  /** record | clinician_stated | staff_measured | device_measured */
+  /** record | clinician_stated | staff_measured | device_measured (a device reading, unverified; a simulator's output is never a source) */
   provenance: z.string(),
   excerpt: z.string(),
 })

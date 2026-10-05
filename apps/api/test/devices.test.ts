@@ -77,7 +77,7 @@ describe('gateway ingestion boundary', () => {
     expect((await ingest(token, reading({ measuredAt: new Date(Date.now() + 3_600_000).toISOString() }))).statusCode).toBe(400)
     const ok = await ingest(token, reading())
     expect(ok.statusCode).toBe(201)
-    expect(ok.json()).toEqual({ stored: 2, validationStatus: 'device_unverified' })
+    expect(ok.json()).toMatchObject({ stored: 2, duplicate: false, validationStatus: 'device_unverified' })
 
     const obs = (await call(ctx.app, 'GET', `/api/patients/${p.id}/observations`, { cookie: nurse })).json()
     const list = (obs.observations ?? obs) as { source: string; validationStatus: string; kind: string }[]
