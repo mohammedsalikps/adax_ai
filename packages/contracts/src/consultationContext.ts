@@ -14,6 +14,8 @@ export const EVIDENCE_TRUST = {
   measured: 'Measured',
   measured_unverified: 'Device reading, unverified',
   simulated: 'SIMULATED, not a measurement',
+  /** A conversation whose audio was synthetic demo audio (computer voices playing a script), transcribed by the real speech model: nothing a patient said. */
+  synthetic_audio: 'Synthetic demo audio, not a real consultation',
   observed: 'Said in the consultation',
   /** An important point found in the conversation by fixed rules and not yet decided by the doctor (one a model found is `model_output`). */
   extracted: 'Extracted from the conversation, to review',

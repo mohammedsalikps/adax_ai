@@ -702,7 +702,8 @@ describe('thermal summaries (API)', () => {
       await review(simSummary.id, { decision: 'accepted' })
       await generated(pendingOnly.capture.id) // never reviewed
 
-      expect(MANA_RULES_VERSION).toBe('mana-record-v3')
+      // v4 since G14 changed the medicines answer; the thermal items read are those of v3.
+      expect(MANA_RULES_VERSION).toBe('mana-record-v4')
       const me = sessionOf('doctor')
       const record = await loadPatientRecord(ctx.db, me, p.id, { encounterId: e.id, maxEncounters: 10, observationDays: 365 })
       const thermal = record.items.filter((i) => i.sourceType === 'thermal_capture')

@@ -36,7 +36,8 @@ export const ANSWER_SCHEMA_VERSION = MANA_ANSWER_PROMPT.schemaVersion
 // v3 (D2): a statement that restates a fact of the consultation context keeps that fact's trust (see TRUST_MUST_SAY and the rules after it).
 // v4: an extracted point must be said to be one; nothing is added to a recording, a thermal measurement or a simulator's output, however short the word
 // (NOTHING_ADDED); "staff measured" is the staff's word, not a device's.
-export const ANSWER_CHECKS_VERSION = 'mana-answer-checks-v4'
+// v5 (HERO): a statement that rests on a conversation of synthetic demo audio says "synthetic" (TRUST_MUST_SAY).
+export const ANSWER_CHECKS_VERSION = 'mana-answer-checks-v5'
 
 export interface AnswerFact {
   ref: string
@@ -379,14 +380,15 @@ const CLAIM_WORD =
 
 /**
  * D2: how far a fact of the consultation context can be trusted is part of what it says, and a statement that restates it keeps it. A statement that rests on a
- * fact of one of these trusts must say so in its own words: a device's reading is "unverified", a simulator's value "SIMULATED", a stethoscope recording "not
- * analysed", a point extracted from the conversation and not yet decided by the doctor "extracted" or "to review" (or "not yet reviewed", "not confirmed"), AI
+ * fact of one of these trusts must say so in its own words: a device's reading is "unverified", a simulator's value "SIMULATED", a conversation of synthetic
+ * demo audio "synthetic", a stethoscope recording "not analysed", a point extracted from the conversation and not yet decided by the doctor "extracted" or "to review" (or "not yet reviewed", "not confirmed"), AI
  * output is the AI's ("AI", "extracted", "draft", "to review", "Mana"). Without them it would hand the doctor the value as more than it is: it is removed. (The
  * consultation tool gives the model no SIMULATED item at all; the rule is there for any fact that ever carries that trust.)
  */
 const TRUST_MUST_SAY: Partial<Record<EvidenceTrust, RegExp>> = {
   measured_unverified: /\bunverified\b/i,
   simulated: /\bsimulated\b/i,
+  synthetic_audio: /\bsynthetic\b/i,
   recorded: /\bnot\s+(?:been\s+|yet\s+)?analy[sz]ed\b/i,
   extracted: /\b(?:extracted|to\s+review|not\s+(?:yet\s+)?reviewed|not\s+confirmed)\b/i,
   model_output: /\b(?:AI|extracted|draft|to\s+review|Mana)\b/i,

@@ -11,7 +11,10 @@ import type { ItemData, PatientRecord, RecordItem, SignedConsultation } from './
  */
 // v3 (V6): the thermal items read changed: no simulated capture, none after a withdrawal of thermal imaging consent, the measured values and the
 // doctor-reviewed summary.
-export const MANA_RULES_VERSION = 'mana-record-v3'
+// v4 (ML audit G14): the medicines answer starts with the patient's medicine list as recorded (current medicines, and those marked stopped), before the last
+// signed prescription and today's draft, each under a title that says where it comes from; an empty list is "No current medicines are recorded." The record
+// answers now read that list (record.ts includeMedicineList), so the allergy rules compare it with the allergies too, and the AI summary may see it.
+export const MANA_RULES_VERSION = 'mana-record-v4'
 
 /** Question classification (first match wins). Suggested questions carry their intent explicitly. */
 const INTENT_RULES: [ManaIntent, RegExp][] = [
@@ -144,8 +147,28 @@ function medicationLines(c: Ctx, meds: (RecordItem & { data: Extract<ItemData, {
   return meds.map((m) => doc(m.data.summary, [m.ref]))
 }
 
+/** The title of the medicine list's section: where the list comes from, so it is never read as a prescription. */
+export const MEDICINE_LIST_TITLE = 'Current medicines · medicine list in the record (entered by staff, not a prescription)'
+
+/**
+ * The patient's medicine list as staff entered it (G14): the current medicines, then those marked stopped. Left out when the list was not read for this
+ * answer (nothing is then said about it, rather than "none"); an empty list is "No current medicines are recorded.", never "none".
+ */
+function medicineListSection(c: Ctx): ManaSection | null {
+  if (!c.r.medicineListRead) return null
+  const list = c.r.items.filter(isData('patient_medication'))
+  const current = list.filter((m) => m.data.status !== 'stopped')
+  const stopped = list.filter((m) => m.data.status === 'stopped')
+  const out: ManaStatement[] = current.map((m) => doc(`${m.data.summary}; entered on the medicine list ${c.date(m.date)}.`, [m.ref]))
+  if (!current.length) out.push(absent('No current medicines are recorded.'))
+  if (stopped.length) out.push(doc(`Marked stopped on the list: ${stopped.map((m) => m.data.drugName).join(', ')}.`, stopped.map((m) => m.ref)))
+  return { title: MEDICINE_LIST_TITLE, statements: out }
+}
+
 function lastPrescriptionSections(c: Ctx): ManaSection[] {
   const sections: ManaSection[] = []
+  const list = medicineListSection(c)
+  if (list) sections.push(list)
   const last = c.lastPrescribed
   const out: ManaStatement[] = []
   if (!last) {
@@ -410,12 +433,12 @@ export function answerFromRecord(intent: ManaIntent, record: PatientRecord, ques
 /** Record items the AI summary may see for an intent (patient-scoped, bounded; never the whole database). */
 export function itemsForGeneration(intent: ManaIntent, record: PatientRecord, cited: Set<string>, maxChars: number): RecordItem[] {
   const pick: Record<ManaIntent, ItemData['t'][]> = {
-    briefing: ['allergy', 'allergy_status', 'note', 'diagnosis', 'medication', 'amendment', 'observation', 'visit', 'thermal'],
+    briefing: ['allergy', 'allergy_status', 'note', 'diagnosis', 'medication', 'patient_medication', 'amendment', 'observation', 'visit', 'thermal'],
     history_summary: ['allergy', 'allergy_status', 'note', 'diagnosis', 'medication', 'amendment', 'visit'],
     changes_since_last: ['allergy', 'allergy_status', 'note', 'diagnosis', 'medication', 'amendment', 'observation', 'visit'],
-    last_prescription: ['allergy', 'allergy_status', 'medication', 'amendment'],
+    last_prescription: ['allergy', 'allergy_status', 'medication', 'patient_medication', 'amendment'],
     vitals_compare: ['observation', 'visit'],
-    allergies: ['allergy', 'allergy_status', 'medication'],
+    allergies: ['allergy', 'allergy_status', 'medication', 'patient_medication'],
     diagnoses: ['diagnosis', 'note', 'amendment'],
     search: [],
   }

@@ -594,6 +594,11 @@ export const transcripts = pgTable(
       .notNull()
       .references(() => encounters.id),
     source: text('source').notNull(),
+    /**
+     * Where the audio came from (HERO): microphone | upload | demo_synthetic (computer voices playing a script, accepted only where simulators are allowed).
+     * Null for typed or pasted text, and for transcripts of audio made before it was recorded (migration 0032 claims nothing about those).
+     */
+    audioOrigin: text('audio_origin'),
     audioFileId: uuid('audio_file_id').references(() => files.id),
     sttRunId: uuid('stt_run_id').references(() => aiRuns.id),
     /** final | live (recording in progress; segments still being added) */
@@ -609,6 +614,8 @@ export const transcripts = pgTable(
     // Two recordings cannot run at once on one consultation (two tabs, a retry): the second is refused.
     uniqueIndex('transcripts_one_live_uq').on(t.encounterId).where(sql`status = 'live'`),
     check('transcripts_end_reason_check', sql`${t.endReason} is null or ${t.endReason} in ('doctor_stopped', 'consent_withdrawn', 'stale_replaced', 'error')`),
+    // Audio from a microphone or a demo is a recording's (its parts come from the browser); an uploaded file is an upload; typed text has no audio.
+    check('transcripts_audio_origin_check', sql`${t.audioOrigin} is null or (${t.audioOrigin} = 'upload' and ${t.source} = 'audio_upload') or (${t.audioOrigin} in ('microphone', 'demo_synthetic') and ${t.source} = 'browser_recording')`),
   ],
 )
 

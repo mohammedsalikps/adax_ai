@@ -94,6 +94,10 @@ export function Menu({ label, items, align = 'end', trigger, triggerClassName }:
     if (e.key === 'ArrowDown' && !open) {
       e.preventDefault()
       openMenu()
+    } else if (e.key === 'Escape' && open) {
+      // Focus stays on the button when no item can take it (every item disabled, such as a menu that only says why it offers nothing).
+      e.preventDefault()
+      close(true)
     }
   }
   const onListKey = (e: KeyboardEvent) => {

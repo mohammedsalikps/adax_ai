@@ -602,6 +602,23 @@ describe('CASE H: a simulator', () => {
   })
 })
 
+// HERO §3: a conversation of synthetic demo audio (computer voices playing a script, transcribed by the real speech model) is never "said in the
+// consultation": it says what it is, and so do the points found in it.
+describe('CASE H2: a conversation of synthetic demo audio', () => {
+  it('says so on the conversation and on the points found in it; a typed conversation beside it is what it is', async () => {
+    const c = await consultation()
+    const [t] = await ctx.db.insert(transcripts).values({ encounterId: c.e.id, source: 'browser_recording', audioOrigin: 'demo_synthetic', status: 'final', createdBy: fx.users.doctor, createdAt: at(5) }).returning({ id: transcripts.id })
+    await ctx.db.insert(transcriptSegments).values([{ transcriptId: t!.id, seq: 1, label: 'S1', speaker: null, speakerSource: 'none', text: 'My daughter has had a fever for three days.', createdAt: at(6) }])
+    const pid = await point(c, t!.id, { category: 'symptom', text: 'fever for three days', when: at(7) })
+    const typed = await transcript(c, [['Doctor', 'Any cough?']], 8)
+    const out = await context(c.e.id)
+    wellFormed(out)
+    expect(item(out, `transcript:${t!.id}`)).toMatchObject({ trust: 'synthetic_audio', status: 'SYNTHETIC · Ended', detail: expect.stringMatching(/^Synthetic demo audio: computer voices, not a real consultation; transcribed by the speech model · last line at /) })
+    expect(item(out, `point:${pid}`)).toMatchObject({ trust: 'extracted', detail: 'From synthetic demo audio' })
+    expect(item(out, `transcript:${typed}`)).toMatchObject({ trust: 'observed', status: 'Ended', detail: expect.stringMatching(/^Typed · /) })
+  })
+})
+
 describe('CASE I: who may read it', () => {
   it('another facility gets "not found", and the probe is audited; a patient-portal session is refused', async () => {
     const c = await consultation()

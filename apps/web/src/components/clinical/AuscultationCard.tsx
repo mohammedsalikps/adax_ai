@@ -12,6 +12,7 @@ import { SelectField, TextField } from '../ui/Form.tsx'
 import { Card } from '../ui/Layout.tsx'
 import { useToast } from '../ui/Toast.tsx'
 import { recordingLength } from '../workspace/summaries/state.ts'
+import { Waveform } from '../workspace/Waveform.tsx'
 import { SimulatedBadge } from './DeviceReadingsCard.tsx'
 
 /** The patient's recordings (this card reads them; the stethoscope module's summary observes the same query and never fetches it). */
@@ -36,6 +37,20 @@ function captureLine(r: AuscultationRecording): string {
   // The server measures no length: it says who timed it ("12.3 s, timed by the browser").
   if (r.durationMs) parts.push(recordingLength(r))
   return parts.join(' · ')
+}
+
+/** Where a recording came from, as a mark beside its site: a simulator's is SIMULATED AUDIO (dashed), drawn by the caller. */
+const PROVENANCE: Record<AuscultationRecording['captureMethod'], string> = { browser_recording: 'BROWSER', gateway: 'DEVICE GATEWAY', file_upload: 'UPLOADED FILE' }
+
+/**
+ * Which device, if any, a recording came through, and what is known of it: no stethoscope has been connected to or tested with this system, so
+ * a gateway's device is unverified, a browser recording is from whatever audio input the computer has, and a simulator is not a device.
+ */
+function deviceLine(r: AuscultationRecording): string {
+  if (r.simulated) return `Simulator${r.device ? ` “${r.device.label}”` : ''}: generated tones, not a stethoscope.`
+  if (r.captureMethod === 'gateway') return `Device: ${r.device ? `“${r.device.label}”` : 'not named'}, through its gateway. Unverified: no stethoscope has been tested with this system.`
+  if (r.captureMethod === 'browser_recording') return 'Device: none connected. Recorded from an audio input of this computer.'
+  return 'Device: none connected. A file added by staff.'
 }
 
 function microphoneProblem(e: unknown): string {
@@ -325,10 +340,62 @@ function UploadDialog({ patientId, encounterId, onClose }: { patientId: string; 
 }
 
 /**
+ * One recording: its site, where it came from (BROWSER, DEVICE GATEWAY, UPLOADED FILE, or SIMULATED AUDIO for a simulator's generated tones),
+ * whether it was made in this consultation, its player and, in the consultation (`consultation`), the amplitude of the file over time (read
+ * and drawn only once it is on the screen; captioned "Amplitude of the recording. Not an analysis."), then when, who, how it was captured and
+ * through which device.
+ */
+function Recording({ r, encounterId, consultation }: { r: AuscultationRecording; encounterId?: string | undefined; consultation: boolean }) {
+  const player = useRef<HTMLAudioElement>(null)
+  const name = `${r.simulated ? 'Simulated audio' : 'Stethoscope recording'}, ${AUSCULTATION_SITES[r.site]}, ${fmtDateTime(r.createdAt)}`
+  return (
+    <li className={`text-sm ${r.simulated ? 'rounded-lg border border-dashed border-ink/50 p-2' : ''}`} data-testid="auscultation" data-capture={r.captureMethod} data-simulated={r.simulated}>
+      <p className="flex flex-wrap items-center gap-2 font-medium">
+        {AUSCULTATION_SITES[r.site]}
+        {r.simulated ? (
+          <SimulatedBadge what="SIMULATED AUDIO" />
+        ) : (
+          <span className="inline-flex items-center rounded-md border border-ink/60 bg-surface px-1.5 py-px text-[0.6875rem] leading-4 font-semibold tracking-wide text-ink" data-testid="auscultation-provenance">
+            <span className="sr-only">Source: </span>
+            {PROVENANCE[r.captureMethod]}
+          </span>
+        )}
+        {consultation && !!encounterId && r.encounterId === encounterId && (
+          <Badge tone="brand">
+            <span data-testid="auscultation-this-consultation">This consultation</span>
+          </Badge>
+        )}
+      </p>
+      {r.simulated && <p className="text-xs font-medium">Generated tones from a simulator: not a body sound, and not a recording of this patient.</p>}
+      {consultation && (
+        <div className="mt-1.5">
+          <Waveform src={`/api/files/${r.fileId}`} label={name} audio={player} simulated={r.simulated} />
+        </div>
+      )}
+      <audio ref={player} controls preload="none" src={`/api/files/${r.fileId}`} className="mt-1 w-full" aria-label={name} />
+      <p className="text-xs text-ink-muted">
+        {fmtDateTime(r.createdAt)}
+        {r.createdByName ? ` · ${r.createdByName}` : ''} · {(r.sizeBytes / 1024).toFixed(0)} KB
+        {r.dataOrigin !== 'clinical' ? ' · synthetic data' : ''}
+        {r.note ? ` · ${r.note}` : ''}
+      </p>
+      <p className="text-xs text-ink-muted" data-testid="auscultation-capture">
+        {captureLine(r)}
+      </p>
+      <p className="text-xs text-ink-muted" data-testid="auscultation-device">
+        {deviceLine(r)}
+      </p>
+    </li>
+  )
+}
+
+/**
  * Stethoscope recordings: an audio file chosen by staff (for example exported from a digital stethoscope's own app), a recording made in the
  * browser from an audio input, or one sent by a device gateway. Recording, upload and playback only: no stethoscope has been connected to or
  * tested with this build, and nothing is analysed. A recording made by a simulator is generated tones and is marked SIMULATED.
- * `variant="consultation"` (opt in): the recordings made in this consultation are marked as such, and a list that cannot be loaded says so with a retry.
+ * `variant="consultation"` (opt in): the recordings made in this consultation are marked as such, each one's amplitude is drawn from its file
+ * (components/workspace/Waveform.tsx: read only once it is on the screen; not an analysis), the card says that no model analyses a recording,
+ * and a list that cannot be loaded says so with a retry.
  */
 export function AuscultationCard({ patientId, encounterId, variant }: { patientId: string; encounterId?: string; variant?: 'consultation' | undefined }) {
   const patient = usePatient(patientId)
@@ -341,7 +408,7 @@ export function AuscultationCard({ patientId, encounterId, variant }: { patientI
       title="Stethoscope recordings"
       actions={
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="secondary" icon={<Mic aria-hidden="true" className="size-4" />} disabled={!consented} onClick={() => setDialog('record')}>
+          <Button size="sm" variant="secondary" icon={<Mic aria-hidden="true" className="size-4" />} disabled={!consented} onClick={() => setDialog('record')} data-testid="auscultation-record">
             Record
           </Button>
           <Button size="sm" variant="secondary" icon={<Stethoscope aria-hidden="true" className="size-4" />} disabled={!consented} onClick={() => setDialog('upload')}>
@@ -351,6 +418,11 @@ export function AuscultationCard({ patientId, encounterId, variant }: { patientI
       }
     >
       <p className="mb-2 text-xs text-ink-muted">Audio recorded or uploaded by staff, or sent by a device gateway. No stethoscope has been connected to or tested with this system, and recordings are not analysed.</p>
+      {consultation && (
+        <p className="mb-2 text-xs font-medium" data-testid="auscultation-no-analysis">
+          No clinical sound analysis: recordings are not analysed by any model.
+        </p>
+      )}
       {patient.data && !consented && <Alert tone="info" className="mb-2">Record the patient’s consent to device readings before adding recordings.</Alert>}
       {q.isPending && <Spinner />}
       {consultation && q.isError && !q.data && <ErrorState title="Stethoscope recordings could not be loaded" error={q.error} onRetry={() => void q.refetch()} retrying={q.isFetching} />}
@@ -362,28 +434,7 @@ export function AuscultationCard({ patientId, encounterId, variant }: { patientI
       {q.data && !q.data.length && <p className="text-sm text-ink-muted">{consultation ? 'No recording available.' : 'No recordings.'}</p>}
       <ul className="space-y-3">
         {q.data?.map((r) => (
-          <li key={r.id} className={`text-sm ${r.simulated ? 'rounded-lg border border-dashed border-ink/50 p-2' : ''}`} data-testid="auscultation" data-capture={r.captureMethod} data-simulated={r.simulated}>
-            <p className="flex flex-wrap items-center gap-2 font-medium">
-              {AUSCULTATION_SITES[r.site]}
-              {r.simulated && <SimulatedBadge what="SIMULATED AUDIO" />}
-              {consultation && !!encounterId && r.encounterId === encounterId && (
-                <Badge tone="brand">
-                  <span data-testid="auscultation-this-consultation">This consultation</span>
-                </Badge>
-              )}
-            </p>
-            {r.simulated && <p className="text-xs font-medium">Generated tones from a simulator: not a body sound, and not a recording of this patient.</p>}
-            <audio controls preload="none" src={`/api/files/${r.fileId}`} className="w-full" aria-label={`${r.simulated ? 'Simulated audio' : 'Stethoscope recording'}, ${AUSCULTATION_SITES[r.site]}, ${fmtDateTime(r.createdAt)}`} />
-            <p className="text-xs text-ink-muted">
-              {fmtDateTime(r.createdAt)}
-              {r.createdByName ? ` · ${r.createdByName}` : ''} · {(r.sizeBytes / 1024).toFixed(0)} KB
-              {r.dataOrigin !== 'clinical' ? ' · synthetic data' : ''}
-              {r.note ? ` · ${r.note}` : ''}
-            </p>
-            <p className="text-xs text-ink-muted" data-testid="auscultation-capture">
-              {captureLine(r)}
-            </p>
-          </li>
+          <Recording key={r.id} r={r} encounterId={encounterId} consultation={consultation} />
         ))}
       </ul>
       {dialog === 'upload' && <UploadDialog patientId={patientId} encounterId={encounterId} onClose={() => setDialog(null)} />}

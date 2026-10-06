@@ -3,6 +3,7 @@ import {
   type ConsultationAi,
   type ConsultDraft,
   type ConsultItem,
+  type ConsultProgress,
   type ConsultSource,
   CONSULT_NOTE_SECTION,
   type DraftStatus,
@@ -30,7 +31,7 @@ import { sha256 } from '../ai/jobs.ts'
 import { AiProviderError } from '../ai/providers.ts'
 import type { AppSettings } from '../settings/schema.ts'
 import { RECORD_CHECK_VERSION } from '../mana/answers.ts'
-import { buildConsultationInputs, type ConsultationInputs, type DeviceReading, deviceReadingsIn, deviceStream, diffManifests, idInKey, type ManifestDiff, type ManifestEntry, staleSummary, withoutDeviceStream } from './inputs.ts'
+import { buildConsultationInputs, type ConsultationInputs, type DeviceReading, deviceReadingsIn, deviceStream, diffManifests, idInKey, inputsUsedOf, type ManifestDiff, type ManifestEntry, staleSummary, withoutDeviceStream } from './inputs.ts'
 import { CONSULT_PROMPT, CONSULT_SCHEMA_VERSION, ConsultOutput, renderUserMessage } from './prompt.ts'
 import { VALIDATION_VERSION, validateDraft } from './validate.ts'
 
@@ -73,6 +74,11 @@ const settingsOf = (s: AppSettings) => ({ maxContextChars: s.ai.reasoning.maxCon
 
 export class ConsultationService {
   private readonly running = new Map<string, AbortController>()
+  /**
+   * How far the model has got with each draft it is writing, as the model server last said (ConsultDraft.progress). In memory only: it is about a call
+   * in progress in this process, so a restart loses it with the call (the sweep then fails the draft).
+   */
+  private readonly progress = new Map<string, ConsultProgress>()
 
   constructor(private readonly d: ConsultDeps) {}
 
@@ -128,7 +134,9 @@ export class ConsultationService {
 
   private async toDraft(row: DraftRow, inputs: ConsultationInputs | null): Promise<ConsultDraft> {
     const { db } = this.d
-    const itemRows = await db.select({ i: consultationDraftItems, by: users.fullName }).from(consultationDraftItems).leftJoin(users, eq(users.id, consultationDraftItems.decidedBy)).where(eq(consultationDraftItems.draftId, row.id)).orderBy(asc(consultationDraftItems.createdAt))
+    // A draft being made has no statements yet (they are stored in the step that finishes it): the screen polls this, so they are not looked for.
+    const generating = row.status === 'generating'
+    const itemRows = generating ? [] : await db.select({ i: consultationDraftItems, by: users.fullName }).from(consultationDraftItems).leftJoin(users, eq(users.id, consultationDraftItems.decidedBy)).where(eq(consultationDraftItems.draftId, row.id)).orderBy(asc(consultationDraftItems.createdAt))
     const ids = itemRows.map((r) => r.i.id)
     const evidence = ids.length ? await db.select().from(aiEvidence).where(and(eq(aiEvidence.subjectType, 'consultation_item'), inArray(aiEvidence.subjectId, ids))).orderBy(asc(aiEvidence.createdAt)) : []
     const inserted = ids.length ? new Set((await db.select({ id: noteInsertions.subjectId }).from(noteInsertions).where(and(eq(noteInsertions.subjectType, 'consultation_item'), inArray(noteInsertions.subjectId, ids)))).map((r) => r.id)) : new Set<string>()
@@ -182,6 +190,9 @@ export class ConsultationService {
       version: row.version,
       status: row.status as DraftStatus,
       phase: (row.phase as ConsultDraft['phase']) ?? null,
+      progress: generating && row.phase === 'running' ? (this.progress.get(row.id) ?? null) : null,
+      // What reached the model: only once the record was sent to it (startedAt), and never for a draft that asked the model nothing.
+      inputsUsed: row.startedAt && !row.insufficient ? inputsUsedOf(manifest) : null,
       stale: !!summary,
       staleSummary: summary,
       insufficient: row.insufficient,
@@ -360,14 +371,21 @@ export class ConsultationService {
       const [still] = await db.select({ status: encounters.status }).from(encounters).where(eq(encounters.id, row.encounterId))
       if (still?.status !== 'in_progress') throw new HttpError(409, 'consultation_closed', 'The consultation was closed while the draft was waiting for the model, so nothing was sent to it.')
       sent = true
-      await db.update(consultationDrafts).set({ phase: 'running', startedAt: new Date(), updatedAt: new Date() }).where(and(eq(consultationDrafts.id, row.id), eq(consultationDrafts.status, 'generating')))
+      const startedAt = new Date()
+      await db.update(consultationDrafts).set({ phase: 'running', startedAt, updatedAt: new Date() }).where(and(eq(consultationDrafts.id, row.id), eq(consultationDrafts.status, 'generating')))
       const user = renderUserMessage({ patientLine: inputs.patientLine, today: inputs.today, items: inputs.items })
       const runBase: RunRecord = { kind: 'consultation_draft', provider: model.provider, model: model.model, capability: 'llm', promptVersion: CONSULT_PROMPT.id, inputSha256: sha256(user), locality: model.local ? 'local' : 'external' }
+      const maxTokens = this.d.settings.ai.reasoning.maxOutputTokens
+      // What the model server says of its progress is kept for the screen while it writes; null (its stream could not be read) takes it away again.
+      const onProgress = (p: { generatedTokens: number } | null) => {
+        if (!p) this.progress.delete(row.id)
+        else if (this.running.has(row.id)) this.progress.set(row.id, { generatedTokens: p.generatedTokens, maxTokens, startedAt: startedAt.toISOString(), updatedAt: new Date().toISOString() })
+      }
       const outcome = await jobs.attempt(
         req,
         job,
         async () => {
-          const result = await model.generate({ prompt: CONSULT_PROMPT, user, schema: ConsultOutput, schemaName: 'consultation_draft', maxOutputTokens: this.d.settings.ai.reasoning.maxOutputTokens, signal: ac.signal })
+          const result = await model.generate({ prompt: CONSULT_PROMPT, user, schema: ConsultOutput, schemaName: 'consultation_draft', maxOutputTokens: maxTokens, signal: ac.signal, onProgress })
           const validated = validateDraft(result.output, inputs, { outdatedDays: this.d.settings.mana.outdatedDays })
           const status: DraftStatus = validated.stats.removed > 0 || (!validated.items.length && !validated.insufficient) ? 'partial' : 'ready'
           return {
@@ -402,6 +420,7 @@ export class ConsultationService {
     } finally {
       if (held) gate.release()
       this.running.delete(row.id)
+      this.progress.delete(row.id)
     }
   }
 

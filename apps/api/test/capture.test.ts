@@ -11,7 +11,7 @@ import { departments, facilities, transcripts, users } from '../src/db/schema.ts
 import { hashPassword } from '../src/auth/password.ts'
 import { loadAppSettings } from '../src/settings/load.ts'
 import type { AppSettings } from '../src/settings/schema.ts'
-import { adminQuery, call, createFixture, createTestApp, type Fixture, login, resetDatabase, samplePatient, TEST_PASSWORD, type TestContext } from './helpers.ts'
+import { adminQuery, call, createFixture, createTestApp, type Fixture, login, resetDatabase, samplePatient, TEST_PASSWORD, type TestContext, testConfig } from './helpers.ts'
 import { FakeTranscriber, multipartAudio, startSpeechStub, type SpeechStub, webm } from './speech-support.ts'
 
 // Live consultation capture (V2): local speech-to-text, the recording's lifecycle and consent, timestamps, speaker assignment by the doctor,
@@ -806,6 +806,71 @@ describe('uploads are judged by their content, and the costly steps are rate-lim
       expect((await chunk(limited, tid, doctor, { chunkIndex: '9', offsetMs: '0' })).statusCode).toBe(429)
     } finally {
       await limited.close()
+    }
+  })
+})
+
+// HERO §3: a recording of synthetic demo audio (computer voices playing a script, sent as a live recording's parts) says so for good: on the transcript,
+// while it runs, and in the audit. It is accepted only where simulators are allowed. What hears it is the speech model (here the test's stand-in).
+describe('where the audio came from', () => {
+  const startWith = (ctx: TestContext, eid: string, cookie: string, body: unknown) => call(ctx.app, 'POST', `/api/encounters/${eid}/live-transcripts`, { cookie, body })
+
+  it('a demo recording records its origin, and every place that gives the transcript carries it; the microphone is the default', async () => {
+    const { e, doctor } = await open(withSpeech)
+    speech.script = () => [seg('My daughter has had a fever for three days and a mild cough.', 0, 4000)]
+    const res = await startWith(withSpeech, e.id, doctor, { audioOrigin: 'demo_synthetic' })
+    expect(res.statusCode).toBe(201)
+    const tid = res.json().transcriptId as string
+    expect(EncounterAi.parse(res.json()).transcripts.find((t) => t.id === tid)).toMatchObject({ source: 'browser_recording', audioOrigin: 'demo_synthetic', status: 'live' })
+    expect((await capture(withSpeech, e.id, doctor)).live).toMatchObject({ transcriptId: tid, audioOrigin: 'demo_synthetic' })
+    expect((await chunk(withSpeech, tid, doctor, { chunkIndex: '0', offsetMs: '0' })).statusCode).toBe(201)
+    const ended = EncounterAi.parse((await call(withSpeech.app, 'POST', `/api/transcripts/${tid}/end`, { cookie: doctor })).json())
+    expect(ended.transcripts[0]).toMatchObject({ id: tid, audioOrigin: 'demo_synthetic', status: 'final', segments: [{ text: 'My daughter has had a fever for three days and a mild cough.' }] })
+    expect((await capture(withSpeech, e.id, doctor)).live).toMatchObject({ transcriptId: null, audioOrigin: null })
+    const audit = (await adminQuery("SELECT action, details FROM audit_events WHERE action IN ('ai.live_start', 'ai.audio_chunk') ORDER BY occurred_at")).rows
+    expect(audit).toEqual([
+      { action: 'ai.live_start', details: expect.objectContaining({ encounterId: e.id, audioOrigin: 'demo_synthetic' }) },
+      { action: 'ai.audio_chunk', details: expect.objectContaining({ transcriptId: tid, audioOrigin: 'demo_synthetic' }) },
+    ])
+    // Started without saying: the microphone. A typed transcript has no audio, so no origin.
+    const other = await open(withSpeech)
+    const mic = (await startLive(withSpeech, other.e.id, other.doctor)).json().transcriptId as string
+    const typed = EncounterAi.parse((await call(withSpeech.app, 'POST', `/api/encounters/${other.e.id}/transcripts`, { cookie: other.doctor, body: { text: 'Patient: I have a cough.', source: 'typed' } })).json())
+    expect(typed.transcripts.map((t) => [t.id === mic ? 'live' : t.source, t.audioOrigin])).toEqual([
+      ['live', 'microphone'],
+      ['typed', null],
+    ])
+    // An origin a recording cannot have is refused.
+    expect((await startWith(withSpeech, other.e.id, other.doctor, { audioOrigin: 'upload' })).statusCode).toBe(400)
+  })
+
+  it('an uploaded file is an upload, and one recorded in the browser and sent whole is the microphone', async () => {
+    const { e, doctor } = await open(withSpeech)
+    speech.script = () => [seg('Doctor, I have had a headache.', 0, 2600)]
+    for (const source of ['audio_upload', 'browser_recording']) {
+      const m = multipartAudio({ source }, { name: 'visit.wav', type: 'audio/wav', data: Buffer.from('RIFFxxxxWAVE') })
+      expect((await withSpeech.app.inject({ method: 'POST', url: `/api/encounters/${e.id}/audio`, headers: { ...m.headers, cookie: doctor, 'x-adaxai-csrf': '1' }, payload: m.payload })).statusCode).toBe(201)
+    }
+    expect((await ai(withSpeech, e.id, doctor)).transcripts.map((t) => [t.source, t.audioOrigin])).toEqual([
+      ['audio_upload', 'upload'],
+      ['browser_recording', 'microphone'],
+    ])
+  })
+
+  it('is refused where simulators are not allowed (a clinical deployment) before anything is made, and the database refuses an origin that does not fit', async () => {
+    const clinical = createTestApp({ config: { ...testConfig, dataOrigin: 'clinical' }, ai: providers(), settings: manyLogins() })
+    try {
+      const { e, doctor } = await open(clinical)
+      const res = await startWith(clinical, e.id, doctor, { audioOrigin: 'demo_synthetic' })
+      expect([res.statusCode, res.json().error]).toEqual([409, 'demo_audio_not_allowed'])
+      expect((await adminQuery('SELECT count(*)::int AS n FROM transcripts')).rows[0].n).toBe(0)
+      // The microphone is recorded there as anywhere.
+      expect((await startLive(clinical, e.id, doctor)).statusCode).toBe(201)
+      for (const [source, origin] of [['typed', 'demo_synthetic'], ['typed', 'microphone'], ['audio_upload', 'demo_synthetic'], ['browser_recording', 'upload'], ['browser_recording', 'speakers']]) {
+        await expect(adminQuery('INSERT INTO transcripts (encounter_id, source, status, audio_origin) VALUES ($1, $2, $3, $4)', [e.id, source, 'final', origin]), `${source}/${origin}`).rejects.toMatchObject({ code: '23514' })
+      }
+    } finally {
+      await clinical.close()
     }
   })
 })

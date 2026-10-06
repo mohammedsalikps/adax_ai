@@ -4,7 +4,7 @@
 // (m:ss, from the click on this page or from the server's own times). No browser, no server.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { EncounterAi } from '@adaxai/contracts'
+import type { ConsultInputsUsed, EncounterAi } from '@adaxai/contracts'
 import {
   type AiFacts,
   ANALYSIS_COVERAGE,
@@ -14,23 +14,34 @@ import {
   analysisSteps,
   analysisTiming,
   analyzeControl,
+  analyzedInputs,
+  analyzedTitle,
+  analyzedTotal,
   attemptDraft,
   CHECKING_MODEL,
   type DraftFacts,
   draftTiming,
   draftView,
+  fmtCount,
   fmtDuration,
   MODEL_BUSY,
   MODEL_STATE_UNREAD,
   modelStep,
+  nextWriting,
+  NO_WRITING,
   NOT_SAVED,
   NOTE_LOCKED,
   type NoteSaveState,
+  READING_SENT,
   rulesRunOf,
   rulesStep,
   savedForAnalysis,
   saveStep,
   startRefusal,
+  withPolledProgress,
+  type Writing,
+  writingCap,
+  writingText,
 } from '../src/lib/analysis.ts'
 import { fmtClock } from '../src/lib/devices.ts'
 
@@ -345,4 +356,141 @@ test('the timing line: elapsed from the click while a run is under way, the serv
   assert.equal(analysisTiming({ clickedAt: 1_000, now: 9_000, ask: { state: 'failed', message: MODEL_BUSY }, ai: ai() }), null)
   assert.equal(analysisTiming({ clickedAt: null, now: 0, ask: null, ai: ai({ draft: draft({ status: 'cancelled', latencyMs: null, completedAt: null }) }) }), null)
   assert.equal(analysisTiming({ clickedAt: null, now: 0, ask: null, ai: ai() }), null)
+})
+
+const progress = (generatedTokens: number, s: number, maxTokens = 2600) => ({ generatedTokens, maxTokens, startedAt: iso(0), updatedAt: new Date(T0 + s * 1000).toISOString() })
+
+test('the model step says the model reads what was sent while the server counts 0, then that it writes; never a count it did not report', () => {
+  const running = (p: ReturnType<typeof progress> | null) => draft({ status: 'generating', phase: 'running', completedAt: null, latencyMs: null, progress: p })
+  const step = (d: DraftFacts) => modelStep({ state: 'sent', draft: d }, ai({ draft: d })).detail
+  assert.equal(step(running(progress(0, 1))), READING_SENT)
+  assert.equal(READING_SENT, 'Reading what was sent')
+  assert.equal(step(running(progress(20, 2))), 'Writing the draft')
+  // No progress from the server (it does not stream, or the stream could not be read): the phase alone, as before.
+  assert.equal(step(running(null)), 'Writing the draft')
+  // Waiting for the model: no progress is read even if one were there.
+  assert.equal(step(draft({ status: 'generating', phase: 'queued', completedAt: null, latencyMs: null, progress: progress(0, 1) })), 'Waiting for the local model')
+})
+
+test('the writing speed comes from two successive progress values of the same draft, by the server’s clock; nothing is estimated', () => {
+  const D = 'draft-1'
+  // The first value gives no speed; nor does one taken while the model still read (0 tokens: that time was reading).
+  const a = nextWriting(NO_WRITING, D, progress(0, 1))
+  assert.deepEqual(a, { sample: { draftId: D, tokens: 0, at: T0 + 1000 }, rate: null })
+  const b = nextWriting(a, D, progress(20, 2.5))
+  assert.equal(b.rate, null)
+  // 20 → 64 tokens in 1 s: 44 tokens/s.
+  const c = nextWriting(b, D, progress(64, 3.5))
+  assert.equal(c.rate, 44)
+  // The same value read again keeps what was found.
+  assert.equal(nextWriting(c, D, progress(64, 3.5)), c)
+  // Out of order (an older answer arriving late): ignored.
+  assert.equal(nextWriting(c, D, progress(40, 3)), c)
+  // Too close together to say anything, or no growth: no speed.
+  assert.equal(nextWriting(c, D, progress(70, 3.6)).rate, null)
+  assert.equal(nextWriting(c, D, progress(64, 4.5)).rate, null)
+  // Another draft starts again; progress gone clears it.
+  assert.deepEqual(nextWriting(c, 'draft-2', progress(100, 9)), { sample: { draftId: 'draft-2', tokens: 100, at: T0 + 9000 }, rate: null })
+  assert.equal(nextWriting(c, D, null), NO_WRITING)
+  const bad: Writing = nextWriting(c, D, { generatedTokens: 5, maxTokens: 10, updatedAt: 'not a time' })
+  assert.equal(bad, NO_WRITING)
+})
+
+test('the progress line: tokens written and the speed when there is one; the cap said as a cap; never a percentage or a time left', () => {
+  assert.equal(writingText(null, null), null)
+  assert.equal(writingText({ generatedTokens: 0 }, null), READING_SENT)
+  assert.equal(writingText({ generatedTokens: 1 }, null), '1 token')
+  assert.equal(writingText({ generatedTokens: 812 }, 43.6), '812 tokens · 44 tokens/s')
+  assert.equal(writingText({ generatedTokens: 1640 }, null), '1,640 tokens')
+  // A speed that rounds to nothing is not shown.
+  assert.equal(writingText({ generatedTokens: 12 }, 0.2), '12 tokens')
+  assert.equal(writingCap({ maxTokens: 2600 }), 'at most 2,600 tokens')
+  for (const s of [writingText({ generatedTokens: 812 }, 44), writingCap({ maxTokens: 2600 })]) assert.doesNotMatch(s!, /%|remaining|left|ETA|estimat|almost/i)
+  assert.equal(fmtCount(0), '0')
+  assert.equal(fmtCount(999), '999')
+  assert.equal(fmtCount(12345), '12,345')
+  assert.equal(fmtCount(1234567), '1,234,567')
+})
+
+test('the polled progress is put on the draft the state shows only when it is the same draft and both say it is being made', () => {
+  const generating = draft({ status: 'generating', phase: 'queued', completedAt: null, latencyMs: null })
+  const state = ai({ draft: generating })
+  const polled = { id: generating.id, status: 'generating' as const, phase: 'running' as const, progress: progress(120, 4) }
+  const merged = withPolledProgress(state, polled)!
+  assert.equal(merged.draft!.phase, 'running')
+  assert.deepEqual(merged.draft!.progress, progress(120, 4))
+  // The state is not changed in place.
+  assert.equal(state.draft!.phase, 'queued')
+  // Another draft, a finished one, or nothing polled: the state as it is.
+  assert.equal(withPolledProgress(state, { ...polled, id: 'other' }), state)
+  assert.equal(withPolledProgress(state, { ...polled, status: 'ready' }), state)
+  const ready = ai({ draft: draft() })
+  assert.equal(withPolledProgress(ready, { ...polled, id: draft().id }), ready)
+  assert.equal(withPolledProgress(state, null), state)
+  assert.equal(withPolledProgress(undefined, polled), undefined)
+})
+
+const used = (over: Partial<{ [K in keyof ConsultInputsUsed]: Partial<ConsultInputsUsed[K]> }> = {}): ConsultInputsUsed => ({
+  conversation: { confirmedPoints: 0, ...over.conversation },
+  history: { items: 0, allergies: 0, allergyStatus: 0, conditions: 0, medicines: 0, results: 0, previousConsultations: 0, previousConsultationItems: 0, earlierVisitReasons: 0, ...over.history },
+  note: { items: 0, sections: 0, diagnoses: 0, prescriptionItems: 0, visitReason: 0, ...over.note },
+  vitals: { staff: 0, device: 0, ...over.vitals },
+  thermal: { images: 0, reviewedSummaries: 0, ...over.thermal },
+  total: (over.total as number | undefined) ?? 0,
+})
+
+test('"Mana analyzed": what reached the model, from the draft’s own counts; the stethoscope is never analysed; nothing sent is not "none"', () => {
+  const full = analyzedInputs(
+    used({
+      conversation: { confirmedPoints: 3 },
+      history: { items: 12, allergies: 1, conditions: 2, medicines: 1, results: 3, previousConsultations: 1, previousConsultationItems: 4 },
+      note: { items: 4, sections: 3, visitReason: 1 },
+      vitals: { staff: 4, device: 3 },
+      thermal: { images: 1 },
+      total: 27,
+    }),
+  )
+  assert.deepEqual(
+    full.map((i) => [i.key, i.label, i.sent, i.text]),
+    [
+      ['conversation', 'Conversation', true, '3 confirmed points'],
+      ['history', 'History', true, '12 record items'],
+      ['note', 'Your note', true, '3 sections, the reason for the visit'],
+      ['vitals', 'Vitals', true, '4 staff, 3 device, unverified'],
+      ['thermal', 'Thermal', true, '1 approved image'],
+      ['stethoscope', 'Stethoscope', false, 'recordings are not analysed'],
+    ],
+  )
+  // The record's parts as sent; no allergy entry and no status line sent is said as that, not as "no allergies".
+  assert.equal(full[1]!.detail, '1 allergy, 2 conditions, 1 medicine on the list, 3 results, 1 earlier consultation')
+  assert.equal(analyzedInputs(used({ history: { items: 2, conditions: 2 } }))[1]!.detail, 'nothing on allergies, 2 conditions')
+  assert.equal(analyzedInputs(used({ history: { items: 1, allergyStatus: 1 } }))[1]!.detail, 'the allergy status')
+  const none = analyzedInputs(used())
+  assert.deepEqual(
+    none.map((i) => [i.key, i.sent, i.text]),
+    [
+      ['conversation', false, 'no confirmed point was sent (the transcript and the audio never are)'],
+      ['history', false, 'nothing from the record was sent'],
+      ['note', false, 'nothing from today’s note was sent'],
+      ['vitals', false, 'no vital sign was sent (a simulator’s values never are)'],
+      ['thermal', false, 'no approved image was sent'],
+      ['stethoscope', false, 'recordings are not analysed'],
+    ],
+  )
+  for (const i of none) assert.doesNotMatch(i.text, /^none$|no allergies|no medicines/i)
+  // Only staff or only a device; summaries reviewed with the images.
+  assert.equal(analyzedInputs(used({ vitals: { staff: 2 } }))[3]!.text, '2 staff')
+  assert.equal(analyzedInputs(used({ vitals: { device: 1 } }))[3]!.text, '1 device, unverified')
+  assert.equal(analyzedInputs(used({ thermal: { images: 2, reviewedSummaries: 1 } }))[4]!.text, '2 approved images, 1 reviewed summary')
+  // The stethoscope whatever the counts.
+  assert.equal(full.find((i) => i.key === 'stethoscope')!.sent, false)
+  assert.equal(analyzedTotal({ total: 27 }), '27 sources sent to the local model')
+  assert.equal(analyzedTotal({ total: 1 }), '1 source sent to the local model')
+})
+
+test('the list’s heading says what became of the draft: analyzed once it has statements, sent while it writes or after it stopped', () => {
+  assert.equal(analyzedTitle({ status: 'ready' }), 'Mana analyzed')
+  assert.equal(analyzedTitle({ status: 'partial' }), 'Mana analyzed')
+  assert.equal(analyzedTitle({ status: 'generating' }), 'Sent to the local model')
+  for (const status of ['failed', 'cancelled', 'unavailable'] as const) assert.equal(analyzedTitle({ status }), 'Sent to the local model before it stopped')
 })

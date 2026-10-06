@@ -88,9 +88,20 @@ export type TranscriptChunk = z.infer<typeof TranscriptChunk>
 export const TRANSCRIPT_END_REASONS = { doctor_stopped: 'Stopped by the doctor', consent_withdrawn: 'Stopped: consent was withdrawn', stale_replaced: 'Ended: a newer recording was started', error: 'Ended after an error' } as const
 export const TranscriptEndReason = z.enum(Object.keys(TRANSCRIPT_END_REASONS) as [keyof typeof TRANSCRIPT_END_REASONS, ...(keyof typeof TRANSCRIPT_END_REASONS)[]])
 
+/**
+ * Where a transcript's audio came from: a microphone in the consultation room, an uploaded file, or synthetic demo audio (computer voices playing a written
+ * script, sent as a live recording's parts where simulators are allowed: never a real consultation). Recorded when the transcript is made; the speech model
+ * that transcribes it is real in every case.
+ */
+export const AUDIO_ORIGINS = { microphone: 'Microphone', upload: 'Uploaded audio', demo_synthetic: 'Synthetic demo audio' } as const
+export type AudioOrigin = keyof typeof AUDIO_ORIGINS
+export const AudioOrigin = z.enum(Object.keys(AUDIO_ORIGINS) as [AudioOrigin, ...AudioOrigin[]])
+
 export const Transcript = z.object({
   id: z.uuid(),
   source: TranscriptSource,
+  /** Null for typed or pasted text (no audio), and for a transcript of audio made before the origin was recorded (not known). */
+  audioOrigin: AudioOrigin.nullable(),
   /** live: a recording in progress, segments still arriving chunk by chunk. */
   status: z.enum(['final', 'live']),
   audioFileId: z.uuid().nullable(),
@@ -117,6 +128,13 @@ export const SpeakerAssignmentRequest = z.object({
   assignments: z.array(z.object({ segmentId: z.string().regex(/^S\d{1,5}$/, 'Use a segment label such as S3'), speaker: SpeakerLabel })).min(1, 'Choose at least one line').max(200, 'At most 200 lines at once'),
 })
 export type SpeakerAssignmentRequest = z.infer<typeof SpeakerAssignmentRequest>
+
+/**
+ * Starts a live recording. `audioOrigin` says what its parts will be: the microphone (the default), or synthetic demo audio, which a deployment accepts only
+ * where simulators are allowed (not clinical, not production); the transcript then says so wherever it is shown.
+ */
+export const StartLiveTranscriptRequest = z.object({ audioOrigin: z.enum(['microphone', 'demo_synthetic']).default('microphone') })
+export type StartLiveTranscriptRequest = z.input<typeof StartLiveTranscriptRequest>
 
 export const EndTranscriptRequest = z.object({ reason: z.enum(['doctor_stopped', 'consent_withdrawn']).default('doctor_stopped') })
 export type EndTranscriptRequest = z.input<typeof EndTranscriptRequest>
@@ -344,7 +362,8 @@ export type ClinicalFact = z.infer<typeof ClinicalFact>
 export const CaptureStatus = z.object({
   consent: z.object({ granted: z.boolean(), scope: z.enum(['ongoing', 'encounter']).nullable(), recordedAt: z.string().nullable(), current: z.boolean() }),
   speech: SpeechStatus,
-  live: z.object({ transcriptId: z.uuid().nullable(), startedAt: z.string().nullable(), lastChunkAt: z.string().nullable() }),
+  /** The recording in progress, if any, with where its audio comes from (null when none is running). */
+  live: z.object({ transcriptId: z.uuid().nullable(), startedAt: z.string().nullable(), lastChunkAt: z.string().nullable(), audioOrigin: AudioOrigin.nullable() }),
   /** False when recording must not start (no consent, no local speech service, consultation closed), with the reason in words. */
   canRecord: z.boolean(),
   blockedReason: z.string().nullable(),

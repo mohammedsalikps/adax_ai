@@ -32,6 +32,16 @@ export interface StructuredRequest<T extends z.ZodType> {
   maxOutputTokens: number
   /** Aborts the call (a doctor cancelled, or the server is closing). */
   signal?: AbortSignal | undefined
+  /**
+   * Told how far the model has got while it writes, at most every half second (a client that can stream asks for the answer as a stream for this; the
+   * answer is the same either way). Null means no more can be said: the stream could not be read and the answer is being asked for again without one.
+   */
+  onProgress?: ((p: GenerationProgress | null) => void) | undefined
+}
+
+export interface GenerationProgress {
+  /** What the model has written so far, counted as the server sends it: one per streamed piece, or the server's own count when it gives one. 0 while it reads the input. */
+  generatedTokens: number
 }
 
 export interface StructuredResult<T> {

@@ -167,6 +167,16 @@ export function conversationState(a: ConversationAiCore | null | undefined, c: C
 
 const TRANSCRIPT_SOURCE: Record<string, string> = { browser_recording: 'Microphone recording', audio_upload: 'Uploaded audio', typed: 'Typed transcript', pasted: 'Typed transcript' }
 
+/**
+ * Whether a transcript's audio was the synthetic demo consultation (computer voices played through the speakers, transcribed by the real local
+ * speech model), as the transcript itself records it (`audioOrigin: 'demo_synthetic'`). Read loosely, so an older transcript without the field
+ * is simply not a demo.
+ */
+export const isDemoAudio = (t: unknown): boolean => !!t && typeof t === 'object' && (t as { audioOrigin?: unknown }).audioOrigin === 'demo_synthetic'
+
+/** The closed module's words when nothing has been recorded or typed in this consultation (its action is Record). */
+export const NOT_RECORDED_YET = 'Not recorded yet'
+
 export interface ConversationView {
   state: SummaryState
   facts: InputModuleFacts['conversation']
@@ -177,6 +187,10 @@ export interface ConversationView {
   /** At most two short lines, shown while the module is closed: nothing the chip already says. */
   compact: string[]
   meta: string | null
+  /** Nothing recorded or typed yet, and nothing being recorded: the closed module offers Record. */
+  empty: boolean
+  /** The newest transcript's audio was the synthetic demo consultation: said wherever the transcript is summarised. */
+  demo: boolean
 }
 
 /**
@@ -193,7 +207,7 @@ export function conversationView(i: { ai?: EncounterAi | undefined; capture?: Ca
   const state = conversationState(a, c, i.failed)
   if (!i.ai || !a) {
     const line = a === null || i.failed.ai ? 'The conversation could not be read just now.' : 'Reading the conversation…'
-    return { state, facts: null, confirmedPoints: null, lines: [line], compact: [line], meta: null }
+    return { state, facts: null, confirmedPoints: null, lines: [line], compact: [line], meta: null, empty: false, demo: false }
   }
   const transcripts = list<Transcript>(i.ai.transcripts)
   const latest = transcripts.find((t) => t.id === a.liveId) ?? transcripts.at(-1) ?? null
@@ -211,7 +225,7 @@ export function conversationView(i: { ai?: EncounterAi | undefined; capture?: Ca
     compact.push(lines[0]!, a.points ? `Points: ${a.toReview} to review · ${a.confirmed} confirmed` : 'No important points yet.')
   } else {
     lines.push('Nothing recorded or typed yet.')
-    compact.push('Nothing recorded or typed yet.')
+    compact.push(NOT_RECORDED_YET)
     const speech = speechNow(a, c)
     const why = !a.consented
       ? 'The patient’s consent to recording is not recorded.'
@@ -231,8 +245,9 @@ export function conversationView(i: { ai?: EncounterAi | undefined; capture?: Ca
     if (why && !panelSays) lines.push(why)
     if (why && !chipSays) compact.push(why)
   }
+  const demo = isDemoAudio(latest)
   let meta: string | null = null
-  if (latest) meta = `${TRANSCRIPT_SOURCE[latest.source] ?? 'Transcript'} · ${fmtTime(latest.createdAt)}`
+  if (latest) meta = `${demo ? 'Synthetic demo audio' : (TRANSCRIPT_SOURCE[latest.source] ?? 'Transcript')} · ${fmtTime(latest.createdAt)}`
   else {
     const s = i.capture?.speech ?? i.ai.status?.stt
     if (s) {
@@ -241,7 +256,7 @@ export function conversationView(i: { ai?: EncounterAi | undefined; capture?: Ca
       meta = `Speech-to-text ${where}${s.model ? ` (${s.model})` : ''}${at ? ` · checked ${at}` : ''}`
     }
   }
-  return { state, facts: { transcripts: a.transcripts, points: a.points }, confirmedPoints: a.confirmed, lines, compact, meta }
+  return { state, facts: { transcripts: a.transcripts, points: a.points }, confirmedPoints: a.confirmed, lines, compact, meta, empty: !a.liveId && !a.transcripts, demo }
 }
 
 // --- 2 History ---------------------------------------------------------------------------------------------------------------------------------
@@ -273,11 +288,16 @@ export interface HistoryView {
   status: 'loaded' | 'loading' | 'error'
   /** A line while there is nothing to show. */
   message: string | null
-  /** The allergies with their severity, "No known allergies", or "Allergy status not recorded"; `tone` down when one is severe, warn when a severity or the status is not recorded. */
+  /**
+   * The allergies with their severity, "No known allergies (recorded)", or "Allergy status not recorded" (missing is not none); `tone` down when
+   * one is severe, warn when a severity or the status is not recorded.
+   */
   allergies: { text: string; tone: 'down' | 'warn' | 'neutral' } | null
+  /** No allergy and no "no known allergies" on the record: the closed module offers to record the allergy status. */
+  allergyStatusMissing: boolean
   conditions: string | null
   record: string | null
-  /** Closed: the open conditions and the current medicines, counted, in one short line. */
+  /** Closed: the last consultation, the open conditions and the current medicines in one short line, each saying when none is recorded. */
   counts: string | null
   reason: string | null
   meta: string | null
@@ -290,7 +310,19 @@ export function historyView(i: { history?: PatientHistory | undefined; failed: b
   const core = h === undefined ? undefined : historyCore(h)
   if (!h || !core) {
     const unread = core === null || i.failed
-    return { state: historyState(core, i.failed), facts: null, status: unread ? 'error' : 'loading', message: unread ? 'The patient’s history could not be read just now.' : 'Reading the patient’s history…', allergies: null, conditions: null, record: null, counts: null, reason, meta: null }
+    return {
+      state: historyState(core, i.failed),
+      facts: null,
+      status: unread ? 'error' : 'loading',
+      message: unread ? 'The patient’s history could not be read just now.' : 'Reading the patient’s history…',
+      allergies: null,
+      allergyStatusMissing: false,
+      conditions: null,
+      record: null,
+      counts: null,
+      reason,
+      meta: null,
+    }
   }
   const allergies = list<PatientHistory['allergies'][number]>(h.allergies)
   const more = (n: number) => (n > NAMED ? ` +${n - NAMED}` : '')
@@ -303,7 +335,7 @@ export function historyView(i: { history?: PatientHistory | undefined; failed: b
         tone: allergies.some((a) => a.severity === 'severe') ? 'down' : allergies.some((a) => a.severity !== 'mild' && a.severity !== 'moderate') ? 'warn' : 'neutral',
       }
     : h.noKnownAllergies
-      ? { text: 'No known allergies', tone: 'neutral' }
+      ? { text: 'No known allergies (recorded)', tone: 'neutral' }
       : { text: 'Allergy status not recorded', tone: 'warn' }
   const open = list<PatientHistory['conditions'][number]>(h.conditions).filter((c) => c.status !== 'resolved' && c.status !== 'entered_in_error')
   const conditions = open.length
@@ -315,16 +347,20 @@ export function historyView(i: { history?: PatientHistory | undefined; failed: b
   const current = list<PatientHistory['medications'][number]>(h.medications).filter((m) => m.status === 'current').length
   const results = list(h.investigations).length + Math.max(0, h.more?.investigations ?? 0)
   const last = list<PatientHistory['consultations'][number]>(h.consultations)[0]
-  const record = `${count(current, 'current medicine')} · ${count(results, 'result')} · ${last ? `last consultation ${fmtDate(last.date)}` : 'no earlier consultation'}`
+  // Missing is not none: a count of zero is said as nothing recorded, never "0" or "none".
+  const medicines = current ? count(current, 'current medicine') : 'No current medicines recorded'
+  const consultation = last ? `last consultation ${fmtDate(last.date)}` : 'No previous consultation found'
+  const record = `${medicines} · ${results ? count(results, 'result') : 'No results recorded'} · ${consultation}`
   return {
     state: historyState(core, i.failed),
     facts: core,
     status: 'loaded',
     message: null,
     allergies: allergyLine,
+    allergyStatusMissing: !allergies.length && !h.noKnownAllergies,
     conditions,
     record,
-    counts: `${open.length ? count(open.length, 'open condition') : 'No open condition'} · ${count(current, 'current medicine')}`,
+    counts: `${last ? `Last consultation ${fmtDate(last.date)}` : 'No previous consultation found'} · ${open.length ? count(open.length, 'open condition') : 'No open condition recorded'} · ${medicines}`,
     reason,
     meta: `Patient record · as of ${fmtClock(h.generatedAt)}`,
   }
@@ -516,8 +552,15 @@ export interface VitalsView {
   compact: CompactVitals | null
   /** Other kinds staff measured, in one line ("BP 120/80 mmHg · Wt 70.0 kg"). */
   also: string | null
-  /** The devices, when something about them is not in the tiles (none attached, not read, not updated). */
+  /** The devices, when something about them is not in the tiles (none attached, attached and silent, not read, not updated). */
   deviceLine: string | null
+  /**
+   * The devices as the closed module says them: none attached (it offers Attach device, when the consent allows), attached but nothing received
+   * yet ("Waiting for the device's first reading"), attached and sending, or not known (not read, or not updated).
+   */
+  devices: 'none' | 'waiting' | 'sending' | 'unknown'
+  /** The patient's consent to device readings is recorded: a device can be attached. */
+  canAttach: boolean
   consentLine: string | null
   /** The patient is under 18: no reference range is applied (none is implemented for children). */
   paediatric: boolean
@@ -562,15 +605,19 @@ export function vitalsView(i: { vitals: Observation[]; dateOfBirth?: string | nu
     })
     .join(' · ')
   const fresh = !!aged && !i.devicesFailed && i.nowLocal - aged.receivedAt <= 2 * DEVICE_POLL_MS + 1000
+  const received = aged ? aged.view.devices.reduce((n, d) => n + d.readings.length, 0) : 0
+  const devices: VitalsView['devices'] = !aged || !fresh ? 'unknown' : !aged.view.devices.length ? 'none' : received ? 'sending' : 'waiting'
   const deviceLine = !aged
     ? i.devices || i.devicesFailed
       ? 'Device readings could not be read just now.'
       : null
     : !fresh
       ? `Device readings not updated since ${clockOf(aged.receivedAt)}.`
-      : aged.view.devices.length
-        ? null
-        : 'No device attached.'
+      : devices === 'none'
+        ? 'No device attached.'
+        : devices === 'waiting'
+          ? 'Waiting for the device’s first reading.'
+          : null
   const consent = aged?.view.consent
   const consentLine = consent === 'missing' ? 'Consent to device readings is not recorded, so no device can be attached.' : consent === 'outdated' ? 'Consent to device readings must be recorded again before a device is attached.' : null
   const age = i.dateOfBirth ? ageFrom(i.dateOfBirth, i.today) : Number.NaN
@@ -584,6 +631,8 @@ export function vitalsView(i: { vitals: Observation[]; dateOfBirth?: string | nu
     compact: tiles.some((t) => t.values.length) ? compactVitals(tiles) : null,
     also: also || null,
     deviceLine,
+    devices,
+    canAttach: consent === 'granted',
     consentLine,
     paediatric: Number.isFinite(age) && age < 18,
     now: aged?.now ?? null,
@@ -658,6 +707,8 @@ export interface StethoscopeView {
   last: { site: string; length: string; simulated: boolean } | null
   consentLine: string | null
   meta: string | null
+  /** No recording in this consultation and nothing stops one being added (the consent is not missing): the closed module offers Record. */
+  canRecord: boolean
 }
 
 export function stethoscopeView(i: { recordings?: unknown; failed: boolean; patient?: Pick<PatientDetail, 'consents'> | undefined; encounterId: string }): StethoscopeView {
@@ -666,18 +717,19 @@ export function stethoscopeView(i: { recordings?: unknown; failed: boolean; pati
   if (!core) {
     const unread = core === null || i.failed
     const line = unread ? 'The recordings could not be read just now.' : 'Reading the recordings…'
-    return { state: stethoscopeState(core, consent, i.failed), facts: null, compact: line, count: line, last: null, consentLine: null, meta: null }
+    return { state: stethoscopeState(core, consent, i.failed), facts: null, compact: line, count: line, last: null, consentLine: null, meta: null, canRecord: false }
   }
   const newest = ofConsultation(i.recordings, i.encounterId)[0]
   const earlier = core.earlier ? ` · ${count(core.earlier, 'earlier recording')} of this patient` : ''
   return {
     state: stethoscopeState(core, consent, i.failed),
     facts: { recordings: core.recordings, simulated: core.simulated },
-    compact: newest ? `${count(core.recordings, 'recording')} · ${shortSite(AUSCULTATION_SITES[newest.site] ?? 'Site not stated')} · ${recordingClock(newest)}` : 'No recording in this consultation',
+    compact: newest ? `${count(core.recordings, 'recording')} · ${shortSite(AUSCULTATION_SITES[newest.site] ?? 'Site not stated')} · ${recordingClock(newest)}` : 'No recording yet',
     count: core.recordings ? `${count(core.recordings, 'recording')} in this consultation${earlier}` : `No recording in this consultation${earlier}`,
     last: newest ? { site: AUSCULTATION_SITES[newest.site] ?? 'Site not stated', length: recordingLength(newest), simulated: !!newest.simulated } : null,
     consentLine: consent === 'withdrawn' ? 'The patient withdrew consent to device readings: no recording can be added.' : consent === 'missing' ? 'Consent to device readings is not recorded, so no recording can be added.' : null,
     meta: newest ? `${AUSCULTATION_CAPTURE[newest.captureMethod] ?? 'Recording'}${newest.createdByName ? `, ${newest.createdByName}` : ''} · ${fmtTime(newest.createdAt)}` : null,
+    canRecord: !newest && consent !== 'missing' && consent !== 'withdrawn',
   }
 }
 
@@ -752,8 +804,10 @@ export interface ThermalView {
   facts: InputModuleFacts['thermal']
   analysis: { approvedThermal: number; simulatedThermal: number; thermalConsentWithdrawn: boolean }
   newest: ThermalNewest | null
-  /** "Images: 3 (approved 1)", or that there is none, or that the list is not read. */
+  /** "Images: 3 (approved 1)", "Thermal image not captured", or that the list is not read. */
   images: string
+  /** No image in this consultation and nothing stops one being captured (the consent is not missing): the closed module offers Capture thermal. */
+  canCapture: boolean
   consentLine: string | null
   camera: string
   /** The thermal model as the server describes it: MODEL UNAVAILABLE today (`chip`), with what to say beside it. */
@@ -785,6 +839,7 @@ export function thermalView(i: { captures?: unknown; failed: boolean; patient?: 
       analysis: { approvedThermal: 0, simulatedThermal: 0, thermalConsentWithdrawn: consent === 'withdrawn' },
       newest: null,
       images: core === null || i.failed ? 'The thermal images could not be read just now.' : 'Reading the thermal images…',
+      canCapture: false,
       consentLine: null,
       camera,
       model,
@@ -811,7 +866,8 @@ export function thermalView(i: { captures?: unknown; failed: boolean; patient?: 
     facts: { images: core.images, simulated: core.simulated },
     analysis: { approvedThermal: core.approvedReal, simulatedThermal: core.simulatedAll, thermalConsentWithdrawn: consent === 'withdrawn' },
     newest,
-    images: core.images ? `Images: ${core.images} (approved ${core.approved})` : 'No image in this consultation yet',
+    images: core.images ? `Images: ${core.images} (approved ${core.approved})` : 'Thermal image not captured',
+    canCapture: !core.images && consent !== 'missing' && consent !== 'withdrawn',
     consentLine: consent === 'withdrawn' ? 'The patient withdrew consent to thermal imaging: no image can be captured.' : consent === 'missing' ? 'Consent to thermal imaging is not recorded, so no image can be captured.' : null,
     camera,
     model,

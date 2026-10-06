@@ -67,6 +67,8 @@ test('a simulated value is marked SIMULATED, a device value UNVERIFIED, AI outpu
     rule_output: 'plain',
     model_output: 'ai',
     recorded: 'plain',
+    // Added with the demo consultation (the contract's new trust): synthetic demo audio is marked like a simulator's output.
+    synthetic_audio: 'simulated',
   })
   // The words are the contract's; a simulated value says it is not a measurement, and a rule-extracted point is not called AI.
   assert.equal(trustLabel('simulated'), 'SIMULATED, not a measurement')

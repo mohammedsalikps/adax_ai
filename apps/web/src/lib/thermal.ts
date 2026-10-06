@@ -131,20 +131,21 @@ export function thermalSourceLabel(c: { captureSource?: ThermalCaptureSource | n
 }
 
 /**
- * Fetches the float32 temperature matrix (°C, row-major). A read that hangs is given up after 4 seconds and tried again at once (up to three
- * times), instead of leaving the image "loading" for as long as the page is open: through the development server's proxy about one read in
- * four of this file was seen to stall with no answer for 20 s and more, while the same file read straight from the API answered in 20 to 60 ms.
- * A healthy answer takes well under a second, so 4 seconds gives up only on a read that will not come.
+ * Fetches the float32 temperature matrix (°C, row-major). A read that hangs is given up after 2.5 seconds and tried again almost at once (up
+ * to four times), instead of leaving the image "loading" for as long as the page is open: through the development server's proxy about one
+ * read in four of this file was seen to stall with no answer for 20 s and more, while the same file read straight from the API answered in 20
+ * to 60 ms. A healthy answer takes well under a second, so 2.5 seconds gives up only on a read that will not come, and a stalled read costs
+ * the small picture in the thermal module about 3 s instead of 4 to 5.
  */
 export function useMatrix(c: ThermalCapture | undefined) {
   return useQuery({
     queryKey: ['thermal-matrix', c?.matrixFileId],
     enabled: !!c,
     staleTime: Infinity,
-    retry: (count, e) => !(e instanceof ApiError && e.status >= 400 && e.status < 500) && count < 3,
-    retryDelay: (n) => 250 * (n + 1),
+    retry: (count, e) => !(e instanceof ApiError && e.status >= 400 && e.status < 500) && count < 4,
+    retryDelay: (n) => 150 * (n + 1),
     queryFn: async () => {
-      const res = await fetch(`/api/files/${c!.matrixFileId}`, { credentials: 'same-origin', signal: AbortSignal.timeout(4_000) })
+      const res = await fetch(`/api/files/${c!.matrixFileId}`, { credentials: 'same-origin', signal: AbortSignal.timeout(2_500) })
       if (!res.ok) throw new ApiError(res.status, 'matrix_unavailable', 'The temperature data could not be loaded.')
       const buf = await res.arrayBuffer()
       if (buf.byteLength !== c!.width * c!.height * 4) throw new ApiError(500, 'matrix_size', 'The temperature data has an unexpected size.')

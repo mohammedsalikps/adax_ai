@@ -26,7 +26,22 @@ let server: http.Server
 let url: string
 let seen: Seen[] = []
 /** The next replies, by path. */
-let reply: { status: number; body: unknown; headers?: Record<string, string>; delayMs?: number; raw?: string; stream?: { chunks: number; size: number } }
+let reply: { status: number; body: unknown; headers?: Record<string, string>; delayMs?: number; raw?: string; stream?: { chunks: number; size: number }; sse?: Sse }
+/**
+ * A streamed answer, as llama-server sends one when asked for a stream: a first piece with the role, one piece per token, a last piece that says why it
+ * stopped (with its own counts), then [DONE]. `broken` sends a piece that is not JSON; `cut` stops before the last piece; `error` sends an error piece.
+ * Asked without a stream, the same server answers whole with the same text.
+ */
+interface Sse {
+  pieces: string[]
+  finish?: string
+  everyMs?: number
+  broken?: boolean
+  cut?: boolean
+  error?: boolean
+  /** Answers a stream request with a whole answer (a server that does not stream). */
+  ignoreStream?: boolean
+}
 let healthReply: { status: number; body: unknown }
 let modelsReply: { status: number; body: unknown }
 
@@ -46,6 +61,27 @@ beforeAll(async () => {
       if (req.url === '/v1/models') return send(modelsReply.status, modelsReply.body)
       if (req.url === '/v1/chat/completions') {
         const r = reply
+        if (r.sse) {
+          const s = r.sse
+          const whole = s.pieces.join('')
+          const usage = { prompt_tokens: 120, completion_tokens: s.pieces.length }
+          if (!seen.at(-1)!.body!.stream || s.ignoreStream) return send(200, { id: 'cmpl-2', model: PINNED.alias, choices: [{ index: 0, finish_reason: s.finish ?? 'stop', message: { role: 'assistant', content: whole } }], usage })
+          res.writeHead(200, { 'content-type': 'text/event-stream' })
+          const piece = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`
+          const base = { id: 'cmpl-2', model: PINNED.alias, object: 'chat.completion.chunk' }
+          const out: string[] = [piece({ ...base, choices: [{ index: 0, finish_reason: null, delta: { role: 'assistant', content: null } }] })]
+          s.pieces.forEach((p, n) => out.push(n === 1 && s.broken ? 'data: {not json\n\n' : n === 1 && s.error ? piece({ error: { code: 500, message: 'server detail' } }) : piece({ ...base, choices: [{ index: 0, finish_reason: null, delta: { content: p } }] })))
+          if (!s.cut) out.push(piece({ ...base, choices: [{ index: 0, finish_reason: s.finish ?? 'stop', delta: {} }], timings: { cache_n: 20, prompt_n: 100, predicted_n: s.pieces.length } }), 'data: [DONE]\n\n')
+          let i = 0
+          const next = () => {
+            if (i >= out.length || res.destroyed) return res.end()
+            // Split one piece across two writes, as a network may: the client must put lines back together.
+            const p = out[i++]!
+            res.write(p.slice(0, 7))
+            res.write(p.slice(7), () => setTimeout(next, s.everyMs ?? 0))
+          }
+          return next()
+        }
         // A reply of unknown length, sent in pieces: the client must stop reading it at its cap.
         if (r.stream) {
           res.writeHead(200, { 'content-type': 'application/json' })
@@ -244,3 +280,96 @@ describe('a request', () => {
     expect(e).toMatchObject({ code: 'unavailable', message: 'Local AI unavailable.', retryable: true })
   })
 })
+
+// Streaming (HERO §1): asked with `onProgress`, the client asks for a stream to say how far the model has got. The answer must be the one the server would
+// have sent whole (verified against the real llama-server too; see the integrator notes), and anything about the stream that cannot be read is not guessed at.
+describe('a request that reports progress', () => {
+  const answer = { items: [{ text: 'Fever for three days.', refs: ['R1'] }] }
+  const piecesOf = (s: string, size = 3) => Array.from({ length: Math.ceil(s.length / size) }, (_, n) => s.slice(n * size, n * size + size))
+  /** A request with `onProgress`: each value it is told (null when progress is withdrawn), and when, in milliseconds since the request, if `at` is given. */
+  const streamed = (c: LocalLlmClient, got: (number | null)[], signal?: AbortSignal, at?: number[]) => {
+    const t0 = Date.now()
+    return c.generate({
+      prompt: PROMPT,
+      user: 'SOURCES\n[R1] 2026-10-04 | Reason | recorded | record: Fever',
+      schema: Out,
+      schemaName: 'test_draft',
+      maxOutputTokens: 500,
+      signal,
+      onProgress: (p) => {
+        at?.push(Date.now() - t0)
+        got.push(p ? p.generatedTokens : null)
+      },
+    })
+  }
+
+  it('asks for a stream with the request otherwise unchanged, puts the text together in order, and counts what the model wrote', async () => {
+    const text = JSON.stringify(answer)
+    reply = { status: 200, body: null, sse: { pieces: piecesOf(text) } }
+    const got: (number | null)[] = []
+    const r = await streamed(client(), got)
+    expect(r.output).toEqual(answer)
+    // The server's own counts, from its last piece: what it read (cached and new) and what it wrote.
+    expect(r).toMatchObject({ inputTokens: 120, outputTokens: piecesOf(text).length, finishReason: 'stop', requestId: 'cmpl-2', model: PINNED.alias })
+    expect(got[0]).toBe(0)
+    expect(got.at(-1)).toBe(piecesOf(text).length)
+    const s = seenRequests()
+    expect(s).toHaveLength(1)
+    expect(s[0]!.body).toMatchObject({ temperature: 0, max_tokens: 500, stream: true })
+    expect(Object.keys(s[0]!.body!).sort()).toEqual(['max_tokens', 'messages', 'model', 'response_format', 'stream', 'temperature'])
+  })
+
+  it('passes progress on at most every half second while the model writes, each value at least the one before', async () => {
+    reply = { status: 200, body: null, sse: { pieces: piecesOf(JSON.stringify(answer), 1), everyMs: 30 } }
+    const got: (number | null)[] = []
+    const at: number[] = []
+    await streamed(client(), got, undefined, at)
+    // The first (0, the stream is open) and the last (the final count) are always said; between them, no two closer than 500 ms.
+    const between = at.slice(1, -1)
+    for (let n = 1; n < between.length; n++) expect(between[n]! - between[n - 1]!).toBeGreaterThanOrEqual(495)
+    expect(got.length).toBeGreaterThanOrEqual(3)
+    expect([...got].sort((a, b) => a! - b!)).toEqual(got)
+  })
+
+  it('a server that answers a stream request whole is read as a whole answer, once', async () => {
+    reply = { status: 200, body: null, sse: { pieces: piecesOf(JSON.stringify(answer)), ignoreStream: true } }
+    const got: (number | null)[] = []
+    expect((await streamed(client(), got)).output).toEqual(answer)
+    expect(seenRequests()).toHaveLength(1)
+    expect(got).toEqual([])
+  })
+
+  it('a stream that cannot be read is not guessed at: the same request is made again without a stream, and progress is withdrawn', async () => {
+    for (const broken of [{ broken: true }, { cut: true }]) {
+      seen = []
+      reply = { status: 200, body: null, sse: { pieces: piecesOf(JSON.stringify(answer)), ...broken } }
+      const got: (number | null)[] = []
+      expect((await streamed(client(), got)).output).toEqual(answer)
+      const s = seenRequests()
+      expect(s.map((x) => x.body!.stream)).toEqual([true, false])
+      // Apart from asking for a stream, the second request is the first.
+      expect({ ...s[1]!.body, stream: true }).toEqual(s[0]!.body)
+      expect(got.at(-1)).toBeNull()
+    }
+  })
+
+  it('an error the server sends inside the stream is a failure in words, never its own words; a draft cut off for length is refused', async () => {
+    reply = { status: 200, body: null, sse: { pieces: piecesOf(JSON.stringify(answer)), error: true } }
+    const e = await failure(streamed(client(), []))
+    expect(e).toMatchObject({ code: 'api_stream', retryable: true })
+    expect(e.message).not.toMatch(/server detail/)
+    reply = { status: 200, body: null, sse: { pieces: piecesOf('{"items":['), finish: 'length' } }
+    expect(await failure(streamed(client(), []))).toMatchObject({ code: 'truncated' })
+  })
+
+  it('stops when asked to, and after the time it was given, in the middle of a stream', async () => {
+    reply = { status: 200, body: null, sse: { pieces: piecesOf(JSON.stringify(answer), 1), everyMs: 50 } }
+    const ac = new AbortController()
+    const p = failure(streamed(client({ timeoutMs: 10_000 }), [], ac.signal))
+    setTimeout(() => ac.abort(), 200)
+    expect(await p).toMatchObject({ code: 'cancelled', retryable: false })
+    expect(await failure(streamed(client({ timeoutMs: 300 }), []))).toMatchObject({ code: 'timeout', retryable: true })
+  })
+})
+
+const seenRequests = () => seen.filter((s) => s.url === '/v1/chat/completions')

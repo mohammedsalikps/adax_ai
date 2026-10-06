@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --test test/sw-policy.test.mjs test/entry.test.ts test/session.test.ts test/focus.test.ts test/vitals.test.ts test/capture.test.ts test/devices.test.ts test/thermal.test.ts test/thermalCamera.test.ts test/consultationContext.test.ts test/workspace.test.ts test/analysis.test.ts test/workflow.test.ts test/moduleState.test.ts test/summaries.test.ts test/thermalResearch.test.ts"
+    "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --test test/sw-policy.test.mjs test/entry.test.ts test/session.test.ts test/focus.test.ts test/vitals.test.ts test/capture.test.ts test/devices.test.ts test/thermal.test.ts test/thermalCamera.test.ts test/consultationContext.test.ts test/workspace.test.ts test/analysis.test.ts test/workflow.test.ts test/moduleState.test.ts test/summaries.test.ts test/thermalResearch.test.ts test/shortcuts.test.ts test/demoConsultation.test.ts"
   },
   "dependencies": {
     "@adaxai/contracts": "*",

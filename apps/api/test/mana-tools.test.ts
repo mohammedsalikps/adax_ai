@@ -13,7 +13,7 @@ import { runTool } from '../src/mana/assistant/tools.ts'
 import { type ManaCtx } from '../src/mana/assistant/types.ts'
 import { facilityToday } from '../src/patients/service.ts'
 import { loadAppSettings } from '../src/settings/load.ts'
-import { adminQuery, call, createTestApp, login, resetDatabase, TEST_PASSWORD, testConfig } from './helpers.ts'
+import { adminQuery, call, createTestApp, login, resetDatabase, samplePatient, TEST_PASSWORD, testConfig } from './helpers.ts'
 
 // The tools are the only way Mana reaches a record, and none of them writes. These tests run them as a doctor of one clinic against a synthetic clinic
 // (a second clinic, a few patients with histories, today's queue and appointments) and check what they return, to whom, and what they refuse.
@@ -105,6 +105,22 @@ describe('what a tool returns', () => {
     const previous = await runTool(mk(), plan({ tool: 'get_consultation', patient: `mrn:${world.p.meena.mrn}`, which: 'previous' }))
     expect(previous.status).toBe('not_found')
     expect(previous.findings[0]!.kind).toBe('absent')
+  })
+
+  // ML audit G14: the medicines topic left out the medicine list staff recorded.
+  it('gives the medicines a patient takes from the medicine list as recorded, before what was prescribed, each labelled; an empty list is said so', async () => {
+    const nurse = await login(ctx.app, 't.nurse')
+    const p = (await call(ctx.app, 'POST', '/api/patients', { cookie: nurse, body: samplePatient({ givenName: 'Medlist', familyName: 'Synthetic', dateOfBirth: '2020-03-01', phone: '98400 99001' }) })).json() as { id: string }
+    const c = mk('doctor', { encounterId: null, patientId: p.id })
+    const none = await runTool(c, plan({ tool: 'get_patient_record', patient: 'current', topic: 'medicines' }))
+    expect(none.findings.map((f) => f.text)).toEqual(['No current medicines are recorded.', 'There is no signed consultation in the record.'])
+    const doctor = await login(ctx.app, 't.doctor')
+    expect((await call(ctx.app, 'POST', `/api/patients/${p.id}/medications`, { cookie: doctor, body: { drugName: 'Salbutamol', strength: '100 mcg', form: 'inhaler', dose: '2 puffs', frequency: 'when wheezy' } })).statusCode).toBe(201)
+    const r = await runTool(c, plan({ tool: 'get_patient_record', patient: 'current', topic: 'medicines' }))
+    expect(r.status).toBe('ok')
+    expect(r.facts[0]!.text).toMatch(/^Current medicines · medicine list in the record \(entered by staff, not a prescription\): Salbutamol, 100 mcg, inhaler, dose 2 puffs, when wheezy; entered on the medicine list /)
+    expect(r.facts[0]!.items[0]).toMatchObject({ kind: 'patient_record', label: expect.stringMatching(/Current medicine/) })
+    expect(texts(r)).not.toMatch(/No current medicines/)
   })
 
   it('says a patient has no visits, or no investigation results, as a statement about the record and not as a fact about the patient', async () => {
@@ -774,6 +790,14 @@ describe('the consultation context as Mana’s facts (a context made by hand)', 
       expect(all(out), topic).not.toMatch(/Sentinel-rejected/)
     }
     expect(contextFacts(c, 'consultation_recorded', view()).facts.map((f) => f.text)).toEqual([expect.stringMatching(/^Important point: Symptom: “Sentinel-kept wheeze”\. Reviewed by the doctor\./)])
+  })
+
+  it('a conversation of synthetic demo audio is a fact that says so (and is never "said in the consultation")', () => {
+    const c = context({ evidence: [ev('transcript:t', 'transcript', { title: 'Conversation: 8 lines', detail: 'Synthetic demo audio: computer voices, not a real consultation; transcribed by the speech model · last line at 10:41', status: 'SYNTHETIC · Ended', trust: 'synthetic_audio', target: 'conversation' })] })
+    const out = contextFacts(c, 'consultation_recorded', view())
+    expect(out.facts.map((f) => f.text)).toEqual([expect.stringMatching(/^Conversation: 8 lines\. Synthetic demo audio, not a real consultation\. SYNTHETIC · Ended, .*Synthetic demo audio: computer voices, not a real consultation/)])
+    expect(out.facts[0]!.trust).toBe('synthetic_audio')
+    expect(all(out)).not.toMatch(/Said in the consultation/)
   })
 
   it('says that nothing waits for review only when every kind was counted, and says which could not be read', () => {

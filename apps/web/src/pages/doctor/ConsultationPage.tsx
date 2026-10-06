@@ -4,14 +4,16 @@ import {
   type Encounter,
   FREQUENCY_PRESETS,
   INSERTION_SUBJECTS,
+  type Medication,
   NOTE_SECTIONS,
   type NoteInsertion,
   type NoteFields,
+  type PatientHistory,
   type PrescriptionItemInput,
   signIssues,
   VISIT_STATUS_LABELS,
 } from '@adaxai/contracts'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CircleAlert,
   CircleCheck,
@@ -19,24 +21,29 @@ import {
   CloudUpload,
   FilePlus2,
   HeartPulse,
+  IdCard,
+  Keyboard,
   LoaderCircle,
   Mic,
   PanelRightOpen,
+  Pill,
   Plus,
   Printer,
+  Repeat,
   Sparkles,
   Stethoscope,
   Thermometer,
   Trash2,
 } from 'lucide-react'
-import { memo, type ReactNode, type RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, type MouseEvent, type ReactNode, type RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
+import { DEMO_PLAY_TESTID, useDemoConsultationOffered } from '../../components/capture/DemoConsultation.tsx'
 import { AllergyItems } from '../../components/clinical/AllergyItems.tsx'
-import { ConsultationBanner, PatientStrip } from '../../components/clinical/ConsultationBanner.tsx'
+import { ConsultationBanner, HIDE_WHEN_COMPACT, PatientStrip } from '../../components/clinical/ConsultationBanner.tsx'
 import { ConsultationHeader, useOnScreen } from '../../components/clinical/ConsultationHeader.tsx'
 import { ConsultationStatus, type ToolSection } from '../../components/clinical/ConsultationStatus.tsx'
 import { PastHistoryPanel } from '../../components/clinical/PastHistory.tsx'
-import { ageSex, PatientBanner } from '../../components/clinical/PatientBanner.tsx'
+import { PatientBanner } from '../../components/clinical/PatientBanner.tsx'
 import { PatientProfileDrawer } from '../../components/clinical/PatientProfileDrawer.tsx'
 import { DiscardDraftDialog, RecordVerificationCard, StatusHistoryCard } from '../../components/clinical/RecordLifecycle.tsx'
 import { Timeline } from '../../components/clinical/Timeline.tsx'
@@ -51,7 +58,7 @@ import { Card } from '../../components/ui/Layout.tsx'
 import { PanelBoundary } from '../../components/ui/PanelBoundary.tsx'
 import { useToast } from '../../components/ui/Toast.tsx'
 import { AnalyzeButton } from '../../components/workspace/AnalyzeButton.tsx'
-import { ModuleShell } from '../../components/workspace/ModuleShell.tsx'
+import { ModuleShell, runModuleAction } from '../../components/workspace/ModuleShell.tsx'
 import { ConversationMeta, ConversationSummary, useConversationModule } from '../../components/workspace/summaries/ConversationSummary.tsx'
 import { HistoryMeta, HistorySummary, useHistoryModule } from '../../components/workspace/summaries/HistorySummary.tsx'
 import { StethoscopeMeta, StethoscopeSummary, useStethoscopeModule } from '../../components/workspace/summaries/StethoscopeSummary.tsx'
@@ -64,12 +71,14 @@ import { useMe, useStillSamePerson } from '../../lib/auth.tsx'
 import { usePortalBase } from '../../lib/clinical.ts'
 import { encounterKey, useEncounter, useStartConsultation } from '../../lib/encounters.ts'
 import { fmtDate, fmtDateTime, fmtTime } from '../../lib/format.ts'
+import { historyKey } from '../../lib/history.ts'
 import { consultKey } from '../../lib/consult.ts'
 import { contextKey } from '../../lib/consultationContext.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
+import { isMacPlatform, isTypingTarget, type Shortcut, shortcutOf, shortcutRows } from '../../lib/shortcuts.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
 import { medicineCount } from '../../lib/workflow.ts'
-import { type PartId, revealPart, showPart } from '../../lib/workspace.ts'
+import { MODULES, type PartId, revealPart, showPart } from '../../lib/workspace.ts'
 
 export interface Draft {
   note: NoteFields
@@ -94,10 +103,8 @@ export interface ConsultationPanels {
   devices?: SidePanel
   /** Module 4: the stethoscope recordings. */
   stethoscope?: SidePanel
-  /** Module 5 (V6): thermal imaging for this patient and this encounter, with the research view. */
+  /** Module 5 (V6): thermal imaging for this patient and this encounter, with the research view. Its summary has its own quick actions. */
   thermal?: SidePanel
-  /** Module 5's quick actions, shown while the module is closed (its full panel has the same ones once it is open). */
-  thermalActions?: SidePanel
   /** The Mana area: the analysis' progress, the Mana result, the consultation overview with the safety rules, and Ask Mana. */
   mana?: SidePanel
   /** Beside the prescription: "Before you prescribe" (the medication considerations, what Mana never does, the allergy name check). */
@@ -203,13 +210,84 @@ function DiagnosesEditor({ items, onChange }: { items: DiagnosisInput[]; onChang
   )
 }
 
+/** A medicine on the patient's list as a prescription row: what the list records, the duration and instructions left for the doctor. */
+const rxFromMedication = (m: Pick<Medication, 'drugName' | 'strength' | 'form' | 'dose' | 'route' | 'frequency'>): PrescriptionItemInput => ({
+  drugName: m.drugName,
+  strength: m.strength ?? '',
+  form: m.form ?? '',
+  dose: m.dose,
+  route: m.route ?? '',
+  frequency: m.frequency,
+  duration: '',
+  instructions: '',
+})
+
+const medicineName = (m: Pick<Medication, 'drugName' | 'strength' | 'form'>) => [m.drugName, m.strength, m.form].filter(Boolean).join(' ')
+
+/** The class of a secondary control drawn as a link or a menu's button, the same as the secondary Button beside it (44px). */
+const SECONDARY_CONTROL = 'inline-flex min-h-control items-center gap-2 rounded-md border border-line-strong bg-surface px-4 text-sm font-medium shadow-card hover:bg-canvas'
+
+/**
+ * "Repeat a current medicine": a menu of the medicines the patient's record lists as current (the medicine list staff keep, not an earlier
+ * prescription), each with its strength, form, dose and frequency as recorded. Choosing one adds a new row filled from that entry: the doctor's
+ * act, and from then on the row is the doctor's to change like any other (the duration and the instructions are left for the doctor). It reads
+ * the history the prescription's allergy list already reads (observed: no request of its own). Missing is not none: when the list is not read
+ * yet, cannot be read, or has no current medicine, the menu says so and offers nothing.
+ */
+function RepeatMedicineMenu({ patientId, items, onRepeat }: { patientId: string; items: PrescriptionItemInput[]; onRepeat: (m: Medication) => void }) {
+  const history = useQuery({ queryKey: historyKey(patientId), queryFn: () => api<PatientHistory>(`/patients/${patientId}/history`), enabled: false })
+  const current = history.data?.medications.filter((m) => m.status === 'current') ?? null
+  const prescribed = new Set(items.map((p) => (p.drugName ?? '').trim().toLowerCase()).filter(Boolean))
+  const note = (text: string): MenuItem => ({ label: text, name: text, disabled: true, onSelect: () => undefined })
+  const menu: MenuItem[] = !current
+    ? [note(history.isError ? 'The medicine list could not be read just now' : 'The medicine list has not been read yet')]
+    : !current.length
+      ? [note('No current medicines recorded')]
+      : current.map((m) => {
+          const name = medicineName(m)
+          const how = [m.dose, m.route, m.frequency].filter(Boolean).join(' · ')
+          const already = prescribed.has(m.drugName.trim().toLowerCase())
+          return {
+            name: `${name} ${m.id}`,
+            icon: <Pill aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />,
+            label: (
+              <span className="min-w-0 py-1.5">
+                <span className="block break-words">{name}</span>
+                <span className="block text-xs font-normal break-words text-ink-muted">
+                  {how}
+                  {m.startedOn ? ` · on the list since ${fmtDate(m.startedOn)}` : ' · on the list'}
+                  {already ? ' · already in this prescription' : ''}
+                </span>
+              </span>
+            ),
+            onSelect: () => onRepeat(m),
+          }
+        })
+  return (
+    <Menu
+      label="Repeat a current medicine"
+      items={menu}
+      align="end"
+      trigger={
+        <>
+          <Repeat aria-hidden="true" className="size-4" />
+          Repeat a current medicine
+        </>
+      }
+      triggerClassName={SECONDARY_CONTROL}
+    />
+  )
+}
+
 /**
  * The doctor's prescription, written by the doctor alone: one numbered row per medicine (medicine, strength and form; dose, route, frequency
  * and duration; instructions), each field with its own label, laid out by the width of the card. Nothing an AI writes is ever put here; the
  * "Before you prescribe" lane beside it keeps the medication considerations apart. It is a draft, saved as it is written, until the
- * consultation is signed. `onPrintPreview` (the doctor's workspace) adds "Print preview": the existing print page in a new tab, so the
- * consultation (a recording, the device readings) goes on here; it shows what the server holds, marked there as a draft that is not a valid
- * prescription, and the click sends any pending edits to be saved as it opens (an edit made a moment before may still be on its way).
+ * consultation is signed. In the doctor's workspace (`onPrintPreview`) it also offers:
+ * - "Repeat a current medicine" (see RepeatMedicineMenu);
+ * - "Preview & print": the click saves what is pending first (`onPrintPreview`, the page's save chain), then opens the existing print page in
+ *   a new tab, so the consultation (a recording, the device readings) goes on here; that page shows what the server holds, marked there as a
+ *   draft that is not a valid prescription. A click with a modifier (a new tab or window, chosen by the doctor) is left to the browser.
  * `allergyCheck`: the workspace runs the fixed rules' allergy name match when the doctor analyses, and the footer says so.
  */
 function PrescriptionEditor({
@@ -222,30 +300,58 @@ function PrescriptionEditor({
   encounter: Encounter
   items: PrescriptionItemInput[]
   onChange: (next: PrescriptionItemInput[]) => void
-  onPrintPreview?: () => void
+  onPrintPreview?: () => Promise<NoteSaveState>
   allergyCheck?: boolean
 }) {
+  const toast = useToast()
   const set = (i: number, patch: Partial<PrescriptionItemInput>) => onChange(items.map((d, j) => (j === i ? { ...d, ...patch } : d)))
+  // A row added by the doctor's choice ("Repeat a current medicine") takes focus once it is drawn, so the doctor goes on in it.
+  const [focusRow, setFocusRow] = useState<number | null>(null)
+  useEffect(() => {
+    if (focusRow === null) return
+    document.querySelector<HTMLInputElement>(`[data-rx-row="${focusRow}"] input`)?.focus()
+    setFocusRow(null)
+  }, [focusRow, items.length])
+  const repeat = (m: Medication) => {
+    onChange([...items, rxFromMedication(m)])
+    setFocusRow(items.length)
+    toast('success', `Medicine ${items.length + 1} filled from the medicine list. Check each field and add the duration.`)
+  }
+  const [opening, setOpening] = useState(false)
+  const printUrl = `/print/encounters/${encounter.id}`
+  const preview = async (e: MouseEvent<HTMLAnchorElement>) => {
+    if (!onPrintPreview || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    e.preventDefault()
+    if (opening) return
+    setOpening(true)
+    let saved: NoteSaveState
+    try {
+      saved = await onPrintPreview()
+    } catch {
+      saved = 'error'
+    } finally {
+      setOpening(false)
+    }
+    // Opened by this click (a few hundred milliseconds after it, once saved): a browser that still blocks it is told so, with the way round it.
+    const tab = window.open(printUrl, '_blank')
+    if (tab) tab.opener = null
+    else toast('warning', 'The browser did not open the preview in a new tab. Use Preview & print again, or allow pop-ups for this site.')
+    if (saved === 'error' || saved === 'conflict' || saved === 'blocked') toast('warning', 'Your latest changes could not be saved: the preview shows what was saved before them.')
+  }
   return (
     <Card
       title="Prescription"
       actions={
         <div className="flex flex-wrap items-center gap-2">
+          {onPrintPreview && <RepeatMedicineMenu patientId={encounter.patient.id} items={items} onRepeat={repeat} />}
           {onPrintPreview && (
-            <Link
-              to={`/print/encounters/${encounter.id}`}
-              target="_blank"
-              rel="noopener"
-              onClick={onPrintPreview}
-              className="inline-flex min-h-control items-center gap-2 rounded-md border border-line-strong bg-surface px-4 text-sm font-medium shadow-card hover:bg-canvas"
-              data-testid="print-preview"
-            >
-              <Printer aria-hidden="true" className="size-4" />
-              Print preview
-              <span className="sr-only"> (opens in a new tab)</span>
+            <Link to={printUrl} target="_blank" rel="noopener" onClick={(e) => void preview(e)} aria-busy={opening || undefined} className={SECONDARY_CONTROL} data-testid="print-preview">
+              {opening ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <Printer aria-hidden="true" className="size-4" />}
+              Preview & print
+              <span className="sr-only"> the prescription (saves first, then opens in a new tab)</span>
             </Link>
           )}
-          <Button variant="secondary" icon={<Plus aria-hidden="true" className="size-4" />} onClick={() => onChange([...items, emptyRx()])}>
+          <Button variant="secondary" icon={<Plus aria-hidden="true" className="size-4" />} onClick={() => onChange([...items, emptyRx()])} data-rx-add>
             Add medicine
           </Button>
         </div>
@@ -265,7 +371,7 @@ function PrescriptionEditor({
       </datalist>
       <ol className="space-y-3">
         {items.map((p, i) => (
-          <li key={i} className="min-w-0 rounded-lg border border-line">
+          <li key={i} className="min-w-0 rounded-lg border border-line" data-rx-row={i}>
             <div className="flex items-center justify-between gap-2 rounded-t-lg border-b border-line bg-canvas py-1 pr-1 pl-3">
               <p className="text-sm font-semibold tabular-nums">Medicine {i + 1}</p>
               <Button size="sm" variant="ghost" aria-label={`Remove medicine ${i + 1}`} icon={<Trash2 aria-hidden="true" className="size-4" />} onClick={() => onChange(items.filter((_, j) => j !== i))}>
@@ -388,6 +494,59 @@ function ReviewAndSignDialog({ draft, encounter, insertions, onClose, onSign, si
 }
 
 /**
+ * "Keyboard shortcuts" (Shift+? or the header's menu): every key the consultation takes, named as this computer names it, and when it is not
+ * taken. A table, so each key is read with what it does.
+ */
+function ShortcutsDialog({ open, mac, onClose }: { open: boolean; mac: boolean; onClose: () => void }) {
+  return (
+    <Dialog open={open} onClose={onClose} title="Keyboard shortcuts" testId="keyboard-shortcuts">
+      <div className="space-y-3 text-sm">
+        <table className="w-full border-collapse">
+          <caption className="sr-only">Keyboard shortcuts in this consultation</caption>
+          <thead>
+            <tr className="border-b border-line text-left text-xs text-ink-muted">
+              <th scope="col" className="py-1.5 pr-3 font-medium">
+                Keys
+              </th>
+              <th scope="col" className="py-1.5 font-medium">
+                What it does
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {shortcutRows(mac).map((r) => (
+              <tr key={r.does} className="border-b border-line align-top last:border-b-0">
+                <td className="py-2 pr-3 whitespace-nowrap">
+                  {r.keys.map((combo, i) => (
+                    <span key={i} className="inline-flex items-center gap-1">
+                      {combo.map((k, j) => (
+                        <span key={j} className="inline-flex items-center gap-1">
+                          {j > 0 && (
+                            <span aria-hidden="true" className="text-ink-muted">
+                              +
+                            </span>
+                          )}
+                          <kbd className="inline-flex min-w-6 items-center justify-center rounded border border-line-strong bg-canvas px-1.5 py-0.5 font-sans text-xs font-semibold text-ink shadow-card">{k}</kbd>
+                        </span>
+                      ))}
+                    </span>
+                  ))}
+                </td>
+                <td className="py-2">
+                  {r.does}
+                  {r.note && <span className="block text-xs text-ink-muted">{r.note}</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="text-xs text-ink-muted">Every other key is left to what you are typing and to the browser. Undo and redo in the note work as usual.</p>
+      </div>
+    </Dialog>
+  )
+}
+
+/**
  * Publishes on `ref`'s element, as `--room`, the height between its top and the bottom of the screen, kept current as the page scrolls and
  * changes size. A sticky column uses it for its height from 1024px (see the classes that read it): where it sticks, under the bars, its
  * height is the rest of the screen; but when the page opens it starts lower (the development notice and the workflow strip are above it), and
@@ -425,6 +584,13 @@ function useRoomBelow(ref: RefObject<HTMLElement | null>) {
   }, [ref])
 }
 
+/**
+ * The conversation panel's own "Play demo consultation" (its demo player, components/capture/DemoConsultation.tsx), used from the closed module:
+ * the module opens, comes into view, and that button is focused and pressed (ModuleShell runModuleAction), so there is one demo player on the
+ * page. When it is not there or is off (the speech service not ready, a recording running), the module is left open where the panel says why.
+ */
+const playDemo = () => void runModuleAction('tools-conversation', { testId: DEMO_PLAY_TESTID })
+
 /** The inputs rail's props, all unchanged while the doctor types (see ConsultationEditor): typing in the note does not draw the rail again. */
 interface InputsRailProps {
   encounter: Encounter
@@ -453,6 +619,8 @@ const InputsRail = memo(function InputsRail({ encounter, panels, inserter, inser
   const vitals = useVitalsModule(encounter)
   const stethoscope = useStethoscopeModule(encounter)
   const thermal = useThermalModule(encounter)
+  // Offered only where the panel offers it: simulators allowed (the device and thermal simulators' gate) and the recording consent present.
+  const demoAllowed = useDemoConsultationOffered(encounter)
   const slot = (key: 'conversation' | 'devices' | 'stethoscope' | 'thermal', label: string) => {
     const render = panels[key]
     return render ? <ToolSlot render={render} encounter={encounter} inserter={inserter} insertions={insertions} label={label} /> : null
@@ -475,15 +643,20 @@ const InputsRail = memo(function InputsRail({ encounter, panels, inserter, inser
           which carries the sticky bar away at the bottom of the page. */}
       <div data-scroller className="relative min-w-0 space-y-1.5 lg:min-h-0 lg:space-y-1.25 lg:overflow-y-auto lg:overscroll-contain lg:pr-2 lg:pb-2 lg:pl-1">
         {/* The workflow strip's "Inputs" leads here (lib/workspace.ts showPart: inside the rail, so only the rail moves). Its top is the top of
-            the Mana area's heading (and of the note's, where they stand side by side). One short line under it says whose inputs these are. */}
+            the Mana area's heading (and of the note's, where they stand side by side). Whose inputs these are is in the bar above (the name,
+            age, sex and MRN stay there while the page scrolls), so no line repeats it here: the room goes to the modules. */}
         <h2 id="consultation-inputs" tabIndex={-1} className="scroll-mt-20 rounded px-1 text-lg font-semibold focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand lg:scroll-mt-0">
           Consultation inputs
         </h2>
-        <p className="-mt-1 truncate px-1 text-xs text-ink-muted" data-testid="inputs-patient">
-          <span className="font-medium text-ink">{p.fullName}</span>{' '}
-          · {ageSex(p)} · Token {encounter.visit.tokenNumber}
-        </p>
-        <ModuleShell id="tools-conversation" title="Conversation" icon={Mic} state={conversation.state} summary={<ConversationSummary encounter={encounter} />} meta={<ConversationMeta encounter={encounter} />}>
+        <ModuleShell
+          id="tools-conversation"
+          title="Conversation"
+          icon={Mic}
+          state={conversation.state}
+          // "Play demo consultation" only where the panel offers it (simulators allowed, recording consent present).
+          summary={<ConversationSummary encounter={encounter} onPlayDemo={demoAllowed ? playDemo : undefined} />}
+          meta={<ConversationMeta encounter={encounter} />}
+        >
           {slot('conversation', 'The conversation')}
         </ModuleShell>
         <ModuleShell id="tools-history" title="History" icon={ClipboardList} state={history.state} summary={<HistorySummary encounter={encounter} />} meta={<HistoryMeta encounter={encounter} />}>
@@ -523,9 +696,9 @@ const InputsRail = memo(function InputsRail({ encounter, panels, inserter, inser
           title="Thermal imaging"
           icon={Thermometer}
           state={thermal.state}
-          // The full panel has the same two actions once the module is open: the summary shows these only while it is closed, so each is on
-          // the screen once; beside the newest image, under its two lines.
-          summary={<ThermalSummary encounter={encounter} actions={panels.thermalActions?.(encounter, inserter)} />}
+          // The summary has its own quick actions (Capture thermal or Open thermal, and Research), shown while the module is closed: the
+          // full panel has the same ones once it is open, so each is on the screen once.
+          summary={<ThermalSummary encounter={encounter} />}
           meta={<ThermalMeta encounter={encounter} />}
         >
           {slot('thermal', 'Thermal imaging')}
@@ -753,12 +926,66 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
     return stateRef.current
   }, [flush])
   const openVitals = useCallback(() => setVitalsOpen(true), [])
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const mac = useMemo(() => isMacPlatform(typeof navigator === 'undefined' ? '' : ((navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.platform)), [])
   const menu: MenuItem[] = [
+    // The banner's own "View profile" is hidden while the bar is compact (scrolled): the profile is always here as well.
+    { label: 'View profile', icon: <IdCard aria-hidden="true" className="size-4" />, onSelect: () => setProfileOpen(true) },
+    ...(hero ? [{ label: 'Keyboard shortcuts', icon: <Keyboard aria-hidden="true" className="size-4" />, onSelect: () => setShortcutsOpen(true) }] : []),
     // Not one of the five inputs: the clinical photographs and the older assistant, in a sheet beside the consultation.
     ...(panels.more ? [{ label: 'More tools…', icon: <PanelRightOpen aria-hidden="true" className="size-4" />, onSelect: () => setMoreOpen(true) }] : []),
     // Closing a draft without signing is deliberate, so it is kept away from the save and complete buttons.
     { label: 'Discard draft…', tone: 'danger', icon: <Trash2 aria-hidden="true" className="size-4" />, disabled: locked, onSelect: () => void flush().then(() => setDiscarding(true)) },
   ]
+
+  /*
+   * The doctor's keyboard shortcuts (lib/shortcuts.ts says which key does what and when a key is left to the doctor's typing): save now,
+   * Analyze with Mana, open and go to one of the five modules, the note, the prescription, and the list of them. One listener for the page, on
+   * the document; what it does is read from the latest render, so it never acts on an old note.
+   */
+  const doShortcut = useRef<(s: Shortcut) => void>(() => undefined)
+  doShortcut.current = (s) => {
+    if (s.kind === 'save') return void flush()
+    if (s.kind === 'help') return setShortcutsOpen(true)
+    if (s.kind === 'module') return void revealPart(MODULES[s.n - 1]!.part)
+    if (s.kind === 'note') {
+      // The note's first field, with the caret after what is already written there.
+      showPart('consultation-note')
+      const field = document.querySelector<HTMLTextAreaElement>('#consultation-note textarea')
+      field?.focus({ preventScroll: true })
+      return field?.setSelectionRange(field.value.length, field.value.length)
+    }
+    if (s.kind === 'prescription') {
+      // The first medicine's first field, or "Add medicine" when there is none yet.
+      showPart('rx')
+      return (document.querySelector<HTMLElement>('#rx [data-rx-row] input') ?? document.querySelector<HTMLElement>('#rx [data-rx-add]'))?.focus({ preventScroll: true })
+    }
+    // Analyze with Mana: the rail's own button, pressed where the doctor is (focus stays in the note); when it is off, why is said.
+    const analyze = document.querySelector<HTMLButtonElement>('[data-testid="analyze-mana"]')
+    if (!analyze) return
+    if (!analyze.disabled) return analyze.click()
+    if (analyze.dataset.state === 'running') return toast('warning', 'Mana is already analyzing this consultation.')
+    const why = document.querySelector('[data-testid="analyze-reason"]')?.textContent?.trim()
+    toast('warning', why ? `Analyze with Mana is not available: ${why}` : 'Analyze with Mana is not available just now.')
+  }
+  useEffect(() => {
+    if (!hero) return
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target instanceof HTMLElement ? e.target : null
+      const s = shortcutOf(
+        { key: e.key, code: e.code, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, altGraph: e.getModifierState?.('AltGraph') ?? false, isComposing: e.isComposing, defaultPrevented: e.defaultPrevented },
+        // A dialog over the page, or an open menu: nothing behind it is jumped to (Ctrl+S still saves).
+        { typing: isTypingTarget(target), mac, dialogOpen: !!document.querySelector('dialog[open], [role="menu"]') },
+      )
+      if (!s) return
+      e.preventDefault()
+      // Held down: taken (so the browser does not act on it either) but done once.
+      if (e.repeat) return
+      doShortcut.current(s)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [hero, mac])
 
   // The record: what the doctor writes, and the only part of the page that becomes the signed consultation.
   const noteFields = (
@@ -809,7 +1036,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
         <div id="rx" tabIndex={-1} className="@container/rx min-w-0 scroll-mt-20 rounded-xl focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand">
           <div className="grid grid-cols-1 gap-4 @min-[64rem]/rx:grid-cols-[minmax(0,1fr)_22rem] @min-[64rem]/rx:items-start">
             <div className="@container min-w-0">
-              <PrescriptionEditor encounter={initial} items={draft.prescription} onChange={(prescription) => update((d) => ({ ...d, prescription }))} onPrintPreview={() => void flush()} allergyCheck />
+              <PrescriptionEditor encounter={initial} items={draft.prescription} onChange={(prescription) => update((d) => ({ ...d, prescription }))} onPrintPreview={flushForAnalysis} allergyCheck />
             </div>
             {panels.prescriptionLane && <ToolSlot render={panels.prescriptionLane} encounter={initial} inserter={toolInserter} insertions={insertions} label="Before you prescribe" neutral />}
           </div>
@@ -836,7 +1063,8 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
         actions={
           <>
             <SaveIndicator state={state} savedAt={savedAt} />
-            <Button variant="secondary" onClick={() => void flush()} disabled={state === 'saved' || locked}>
+            {/* While the bar is compact (scrolled, from 1024px) the save state stays and Save gives way: Ctrl+S and the autosave still save. */}
+            <Button variant="secondary" onClick={() => void flush()} disabled={state === 'saved' || locked} aria-keyshortcuts={hero ? (mac ? 'Meta+S' : 'Control+S') : undefined} className={HIDE_WHEN_COMPACT}>
               Save
             </Button>
             <Button onClick={() => setReviewing(true)} disabled={locked}>
@@ -959,6 +1187,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
           onDiscarded={() => (dirtyRef.current = false)}
         />
       )}
+      {hero && <ShortcutsDialog open={shortcutsOpen} mac={mac} onClose={() => setShortcutsOpen(false)} />}
       {reviewing && <ReviewAndSignDialog draft={draft} encounter={initial} insertions={insertions} onClose={() => setReviewing(false)} onSign={() => sign.mutate()} signing={sign.isPending} error={sign.error} />}
       {vitalsOpen && (
         <RecordVitalsDialog

@@ -1,11 +1,12 @@
 import type { AuscultationRecording, Encounter, PatientDetail } from '@adaxai/contracts'
 import { useQuery } from '@tanstack/react-query'
+import { Mic } from 'lucide-react'
 import { api } from '../../../lib/api.ts'
 import { patientKey } from '../../../lib/clinical.ts'
 import type { InputModuleFacts } from '../../../lib/workflow.ts'
 import { auscultationsKey } from '../../clinical/AuscultationCard.tsx'
 import { SimulatedBadge } from '../../clinical/DeviceReadingsCard.tsx'
-import { CLOSED_ONLY, OPEN_ONLY } from '../ModuleShell.tsx'
+import { CLOSED_ONLY, OPEN_ONLY, QuickAction, runModuleAction } from '../ModuleShell.tsx'
 import { consentOf, NOT_UPDATED, safely, STETHOSCOPE_HONESTY, stethoscopeCore, stethoscopeState, stethoscopeView, type SummaryState } from './state.ts'
 
 /*
@@ -39,27 +40,42 @@ function useStethoscopeView(encounter: Pick<Encounter, 'id' | 'patient'>) {
     last: null,
     consentLine: null,
     meta: null,
+    canRecord: false,
   })
 }
 
+/** Record, by default: the module opens and the recordings card's own "Record" is used (it records from an audio input of this computer). */
+export const recordAuscultation = () => void runModuleAction('tools-stethoscope', { testId: 'auscultation-record' })
+
 /**
- * The summary of module 4. Closed: how many recordings this consultation has with the newest one's site and length ("1 recording · Mitral
- * area · 0:02"), SIMULATED AUDIO when a simulator made it, and "Not analysed". Open: the same in full (and who timed the length: the browser,
- * a gateway, or nobody), and always that recordings are not analysed and that no stethoscope has been connected to or tested with this system.
+ * The summary of module 4. Closed: with no recording, "No recording yet" and Record (`onRecord`; by default the recordings card's own Record),
+ * or why none can be added (the consent); else how many recordings this consultation has with the newest one's site and length ("1
+ * recording · Mitral area · 0:02"), and "Not analysed", with SIMULATED AUDIO when a simulator made it. Open: the same in full (and who timed
+ * the length: the browser, a gateway, or nobody), and always that recordings are not analysed and that no stethoscope has been connected to or
+ * tested with this system.
  */
-export function StethoscopeSummary({ encounter }: { encounter: Pick<Encounter, 'id' | 'patient'> }) {
+export function StethoscopeSummary({ encounter, onRecord = recordAuscultation }: { encounter: Pick<Encounter, 'id' | 'patient'>; onRecord?: () => void }) {
   const v = useStethoscopeView(encounter)
   return (
     <div data-testid="summary-stethoscope" data-state={v.state.kind}>
-      <div className={`space-y-0.5 ${CLOSED_ONLY}`}>
-        <p>{v.compact}</p>
+      <div className={CLOSED_ONLY}>
+        {v.canRecord ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-3">
+            <p className="text-ink-muted">{v.compact}</p>
+            <QuickAction icon={Mic} onClick={onRecord} testId="module-stethoscope-record">
+              Record
+            </QuickAction>
+          </div>
+        ) : (
+          <p className={v.last ? '' : 'text-ink-muted'}>{v.compact}</p>
+        )}
         {v.last && (
-          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-ink-muted">
+          <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-ink-muted">
             <span>Not analysed</span>
             {v.last.simulated && <SimulatedBadge what="SIMULATED AUDIO" compact />}
           </p>
         )}
-        {v.consentLine && <p className="text-pending">{v.consentLine}</p>}
+        {v.consentLine && <p className="text-xs text-pending">{v.consentLine}</p>}
       </div>
       <div className={`space-y-0.5 ${OPEN_ONLY}`}>
         <p>{v.count}</p>

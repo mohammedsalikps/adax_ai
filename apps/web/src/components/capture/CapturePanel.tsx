@@ -1,11 +1,12 @@
 import { type ClinicalFact, type Encounter, type EncounterAi, FACT_CATEGORIES, FACT_FLAGS, FACT_SECTION, FACT_STATE_LABELS, type FactFlag, factState, type Transcript } from '@adaxai/contracts'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronDown, FileAudio, ListChecks, Mic, ShieldCheck, Sparkles, X } from 'lucide-react'
-import { useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { type AiResponse, aiKey, useAiMutation } from '../../lib/ai.ts'
 import { api, errorMessage } from '../../lib/api.ts'
 import { useStillSamePerson } from '../../lib/auth.tsx'
 import { clinicianReason, fmtOffset, languageName, useAssignSpeakers, useExtractPoints } from '../../lib/capture.ts'
+import { isDemoTranscript, newLineIds, pointProvenance, revealMs, revealText, transcriptSourceLabel } from '../../lib/demoConsultation.ts'
 import { focusLines, useFocusedLines } from '../../lib/focusLines.ts'
 import { fmtDateTime, fmtTime } from '../../lib/format.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
@@ -17,6 +18,7 @@ import { Alert, Badge, Spinner } from '../ui/Feedback.tsx'
 import { TextAreaField } from '../ui/Form.tsx'
 import { Card } from '../ui/Layout.tsx'
 import { useToast } from '../ui/Toast.tsx'
+import { DemoAudioMark, DemoConsultation, useReducedMotion } from './DemoConsultation.tsx'
 import { Recorder } from './Recorder.tsx'
 import { TranscriptView } from './TranscriptView.tsx'
 
@@ -115,12 +117,18 @@ function LiveTranscriptionCard({ encounter, ai, highlight }: { encounter: Encoun
   })
   const stt = ai.status.stt
   const live = ai.transcripts.some((t) => t.status === 'live')
+  // The demo consultation holds the recording (playing, or its recording left open): the microphone recorder waits, as starting would be refused.
+  const [demoPlaying, setDemoPlaying] = useState(false)
+  const demoLive = ai.transcripts.some((t) => t.status === 'live' && isDemoTranscript(t))
   const latest = ai.transcripts.at(-1)
   const earlier = ai.transcripts.slice(0, -1)
-  const onUpdate = (r: AiResponse) => {
-    if (r.consent) qc.setQueryData(aiKey(id), r)
-    if (r.notice) toast('error', r.notice)
-  }
+  const onUpdate = useCallback(
+    (r: AiResponse) => {
+      if (r.consent) qc.setQueryData(aiKey(id), r)
+      if (r.notice) toast('error', r.notice)
+    },
+    [qc, id, toast],
+  )
   const failedJob = ai.jobs.find((j) => j.kind === 'transcription' && j.status === 'failed' && j.retryable)
 
   return (
@@ -132,7 +140,10 @@ function LiveTranscriptionCard({ encounter, ai, highlight }: { encounter: Encoun
         </span>
       }
       actions={
-        live ? (
+        demoLive ? (
+          // Synthetic demo audio is never shown as a recording (the red Recording badge is the microphone's).
+          <DemoAudioMark />
+        ) : live ? (
           <Badge tone="down" dot>
             Recording
           </Badge>
@@ -164,7 +175,9 @@ function LiveTranscriptionCard({ encounter, ai, highlight }: { encounter: Encoun
               </span>
             </Alert>
           )}
-          {open && <Recorder encounterId={id} chunkSeconds={ai.status.liveChunkSeconds} consentGranted={ai.consent.granted} consentWithdrawn={latest?.endReason === 'consent_withdrawn'} onUpdate={onUpdate} onStopped={(tid) => extract.mutate(tid, { onSuccess: () => toast('success', 'Important points updated: review them below') })} />}
+          {open && !demoPlaying && !demoLive && <Recorder encounterId={id} chunkSeconds={ai.status.liveChunkSeconds} consentGranted={ai.consent.granted} consentWithdrawn={latest?.endReason === 'consent_withdrawn'} onUpdate={onUpdate} onStopped={(tid) => extract.mutate(tid, { onSuccess: () => toast('success', 'Important points updated: review them below') })} />}
+          {open && (demoPlaying || demoLive) && <p className="text-xs text-ink-muted">The microphone recorder returns when the demo’s recording has ended.</p>}
+          {open && <DemoConsultation encounter={encounter} ai={ai} onUpdate={onUpdate} onActiveChange={setDemoPlaying} />}
           {!open && <p className="text-sm text-ink-muted">Recording is closed: this consultation is {encounter.status === 'signed' ? 'signed' : 'not open for editing'}.</p>}
         </div>
       </div>
@@ -248,6 +261,54 @@ function LiveTranscriptionCard({ encounter, ai, highlight }: { encounter: Encoun
   )
 }
 
+/**
+ * A transcript as it is drawn. A line that arrives while the transcript is live (a recording, or the demo consultation) appears word by word,
+ * in at most 600 ms (lines that arrived together, together): only the words that arrived, never others, and only on the screen (the transcript
+ * is not changed). With reduced motion, and for the lines already there when the transcript is first shown, at once.
+ */
+function useWordReveal(t: Transcript): Transcript {
+  const reduced = useReducedMotion()
+  const live = t.status === 'live'
+  const known = useRef<{ tid: string; ids: Set<string> } | null>(null)
+  const [starts, setStarts] = useState<ReadonlyMap<string, number>>(() => new Map())
+  const [now, setNow] = useState(0)
+  // Before the browser paints the new line, so that it never shows whole and then starts again.
+  useLayoutEffect(() => {
+    const ids = t.segments.map((s) => s.id)
+    const k = known.current
+    if (!k || k.tid !== t.id) {
+      known.current = { tid: t.id, ids: new Set(ids) }
+      setStarts((m) => (m.size ? new Map() : m))
+      return
+    }
+    const fresh = newLineIds(k.ids, ids)
+    for (const x of fresh) k.ids.add(x)
+    if (!fresh.length || !live || reduced) return
+    const at = performance.now()
+    setStarts((m) => new Map([...m, ...fresh.map((x) => [x, at] as const)]))
+    setNow(at)
+  }, [t.id, t.segments, live, reduced])
+  // About 25 frames a second while words are appearing; nothing otherwise.
+  useEffect(() => {
+    if (!starts.size) return
+    const timer = setInterval(() => setNow(performance.now()), 40)
+    return () => clearInterval(timer)
+  }, [starts])
+  useEffect(() => {
+    if (starts.size && [...starts].every(([x, at]) => now - at >= revealMs(t.segments.find((s) => s.id === x)?.text ?? ''))) setStarts(new Map())
+  }, [now, starts, t.segments])
+  return useMemo(() => {
+    if (!starts.size || reduced) return t
+    return {
+      ...t,
+      segments: t.segments.map((s) => {
+        const at = starts.get(s.id)
+        return at === undefined ? s : { ...s, text: revealText(s.text, now - at) }
+      }),
+    }
+  }, [t, starts, now, reduced])
+}
+
 function TranscriptSection({
   t,
   ai,
@@ -274,15 +335,16 @@ function TranscriptSection({
   defaultOpen?: boolean
 }) {
   const assign = useAssignSpeakers(encounter.id, t.id)
+  const shown = useWordReveal(t)
   const mine = open && t.status !== 'live'
-  const source = t.source === 'browser_recording' ? 'Microphone recording' : t.source === 'audio_upload' ? 'Uploaded audio' : 'Typed transcript'
+  const demo = isDemoTranscript(t)
   const unassigned = t.segments.filter((s) => !s.speaker).length
   return (
-    <details open={defaultOpen || t.status === 'live'} className="group rounded-lg" data-testid="transcript-section" data-transcript-id={t.id}>
+    <details open={defaultOpen || t.status === 'live'} className="group rounded-lg" data-testid="transcript-section" data-transcript-id={t.id} data-audio-origin={t.audioOrigin ?? undefined}>
       <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 py-1 text-sm">
         <span className="inline-flex items-center gap-1.5">
           <Badge>Raw transcript</Badge>
-          <span className="font-medium">{source}</span>
+          {demo ? <DemoAudioMark /> : <span className="font-medium">{transcriptSourceLabel(t)}</span>}
         </span>
         <span className="text-xs text-ink-muted">
           {fmtTime(t.createdAt)} · {t.segments.length} line{t.segments.length === 1 ? '' : 's'}
@@ -290,6 +352,11 @@ function TranscriptSection({
           {t.status === 'live' ? ' · live' : t.endReason === 'consent_withdrawn' ? ' · stopped: consent withdrawn' : ''}
         </span>
       </summary>
+      {demo && (
+        <p className="mb-1.5 text-xs font-medium text-ink" data-testid="demo-transcript-note">
+          Synthetic demo audio: computer voices reading a written script through this computer’s speakers, transcribed by the speech model on this computer. Not a real consultation; no patient spoke.
+        </p>
+      )}
       <p className="mb-1.5 text-xs text-ink-muted">
         What the system heard, as heard. {t.source === 'browser_recording' || t.source === 'audio_upload' ? 'The speech model does not identify who spoke: you assign it, line by line, and it is kept as your review. ' : ''}
         {unassigned > 0 && t.segments.length > 0 ? `${unassigned} line${unassigned === 1 ? ' has' : 's have'} no speaker yet.` : ''}
@@ -300,7 +367,7 @@ function TranscriptSection({
         </Alert>
       )}
       <TranscriptView
-        transcript={t}
+        transcript={shown}
         highlight={highlight}
         canAssign={mine}
         assigning={assign.isPending}
@@ -334,7 +401,10 @@ function PointCard({ f, ai, encounterId, inserter, onFocus }: { f: ClinicalFact;
   const heard = f.sourceSegmentIds.map((sid) => t?.segments.find((x) => x.id === sid)?.speaker).filter((x): x is string => !!x)
   const contradicted = f.attribution === 'patient_reported' ? heard.find((x) => x === 'Doctor' || x === 'Nurse') : f.attribution === 'clinician_stated' ? heard.find((x) => ['Patient', 'Relative', 'Attendant'].includes(x)) : undefined
   const needsConfirm = !!contradicted || flags.some((x) => ['uncertain', 'no_source', 'conflicts_with_record', 'speaker_mismatch'].includes(x))
-  const tone = state === 'confirmed' ? 'border-ok/40 bg-ok-soft/40' : state === 'rejected' ? 'border-line bg-canvas' : 'border-dashed border-ai/50 bg-ai-soft/40'
+  // Found by the fixed rules: a draft to review, in the review colour with the rules' icon. Violet and Sparkles are for a model's output only.
+  const rules = f.producedBy.provider === 'adaxai-rules'
+  const draftTone = rules ? 'border-dashed border-pending/40 bg-pending-soft/30' : 'border-dashed border-ai/50 bg-ai-soft/40'
+  const tone = state === 'confirmed' ? 'border-ok/40 bg-ok-soft/40' : state === 'rejected' ? 'border-line bg-canvas' : draftTone
   return (
     <li className={`rounded-lg border p-3 ${tone} ${flags.includes('red_flag') && state === 'extracted' ? 'border-down/50' : ''}`} data-testid="important-point" data-state={state} data-category={f.category}>
       <div className="mb-1 flex flex-wrap items-center gap-1.5">
@@ -345,11 +415,12 @@ function PointCard({ f, ai, encounterId, inserter, onFocus }: { f: ClinicalFact;
         ) : state === 'rejected' ? (
           <Badge icon={<X aria-hidden="true" className="size-3" />}>{FACT_STATE_LABELS.rejected}</Badge>
         ) : (
-          <Badge tone="ai" icon={<Sparkles aria-hidden="true" className="size-3" />}>
+          <Badge tone={rules ? 'warn' : 'ai'} icon={rules ? <ListChecks aria-hidden="true" className="size-3" /> : <Sparkles aria-hidden="true" className="size-3" />}>
             {f.status === 'deferred' ? 'Extracted draft (set aside)' : FACT_STATE_LABELS.extracted}
           </Badge>
         )}
         <span className="text-sm font-semibold">{FACT_CATEGORIES[f.category]}</span>
+        {isDemoTranscript(t) && <DemoAudioMark>From synthetic demo audio</DemoAudioMark>}
         {f.negated && <Badge>Denied / negative</Badge>}
         <Badge tone={guessed || contradicted ? 'warn' : 'neutral'}>
           {contradicted ? `${ATTRIBUTION[f.attribution]}, but the source line is now marked ${contradicted}` : guessed ? `Speaker not assigned: guessed ${f.attribution === 'patient_reported' ? 'patient' : 'doctor'}` : ATTRIBUTION[f.attribution]}
@@ -368,8 +439,8 @@ function PointCard({ f, ai, encounterId, inserter, onFocus }: { f: ClinicalFact;
           )
         })}
         <span aria-hidden="true">·</span>
-        <span title={`${f.producedBy.provider} ${f.producedBy.model}`}>
-          {f.producedBy.local ? 'Rules on this computer' : 'External model'} ({f.producedBy.version ?? f.producedBy.model}) · {fmtTime(f.createdAt)}
+        <span title={`${f.producedBy.provider} ${f.producedBy.model}`} data-testid="point-provenance">
+          {pointProvenance(f.producedBy, state === 'extracted')} · {fmtTime(f.createdAt)}
         </span>
       </p>
       {state !== 'rejected' && flags.length > 0 && (
@@ -407,15 +478,17 @@ function ImportantPointsCard({ encounter, ai, inserter, onFocus }: { encounter: 
   const order = (a: ClinicalFact, b: ClinicalFact) => Number(b.flags.includes('red_flag')) - Number(a.flags.includes('red_flag')) || (timeOf(ai, a) ?? 1e12) - (timeOf(ai, b) ?? 1e12) || a.createdAt.localeCompare(b.createdAt)
   const skipped = ai.jobs.find((j) => j.kind === 'extraction' && j.status === 'succeeded')?.summary?.skippedLines
   const hasLines = ai.transcripts.some((t) => t.segments.length > 0)
+  // The fixed rules find these points: the review colour, not the AI's violet (kept for an extractor that is a model).
+  const byModel = ex.provider !== 'adaxai-rules'
   return (
     <Card
       title={
         <span className="inline-flex flex-wrap items-center gap-2">
-          <ListChecks aria-hidden="true" className="size-4 text-ai" />
+          <ListChecks aria-hidden="true" className={`size-4 ${byModel ? 'text-ai' : 'text-pending'}`} />
           Important points
         </span>
       }
-      actions={drafts.length ? <Badge tone="ai">{drafts.length} to review</Badge> : confirmed.length ? <Badge tone="ok">{confirmed.length} confirmed</Badge> : undefined}
+      actions={drafts.length ? <Badge tone={byModel ? 'ai' : 'warn'}>{drafts.length} to review</Badge> : confirmed.length ? <Badge tone="ok">{confirmed.length} confirmed</Badge> : undefined}
       bodyClassName="space-y-3 p-4"
     >
       <div data-testid="important-points" className="space-y-3">

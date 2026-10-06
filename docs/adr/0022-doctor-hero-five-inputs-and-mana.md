@@ -1,6 +1,6 @@
 # ADR 0022: the Doctor HERO workstation: five clinical inputs, one analysis with Mana, the doctor's review, and a pediatric shock research view
 
-- **Status:** accepted; implemented in part (the owner stopped the slice "Doctor HERO premium UI UX redesign" for time after its first polish round; see STATUS.md for what was and was not verified) (after D2, `00bc67b`). It supersedes [ADR 0019](0019-d1-integrated-consultation-workspace.md) §2.2 ("all tools mounted and visible", the "Go to" bar) for the doctor's consultation editor, and builds on [ADR 0021](0021-d2-multimodal-consultation-context.md) (D2) and [ADR 0020](0020-v6-thermal-capture-in-the-consultation.md) (V6). It adds **no model, no prompt, no table and no route**: one field of an existing read model (`ConsultDraft.startedAt`), three fixes to V3's checks, and a new arrangement of what exists.
+- **Status:** accepted; implemented in part, then extended by Step 3 (§5; the owner's later "complete redesign" brief was not built) (the owner stopped the slice "Doctor HERO premium UI UX redesign" for time after its first polish round; see STATUS.md for what was and was not verified) (after D2, `00bc67b`). It supersedes [ADR 0019](0019-d1-integrated-consultation-workspace.md) §2.2 ("all tools mounted and visible", the "Go to" bar) for the doctor's consultation editor, and builds on [ADR 0021](0021-d2-multimodal-consultation-context.md) (D2) and [ADR 0020](0020-v6-thermal-capture-in-the-consultation.md) (V6). It adds **no model, no prompt, no table and no route**: one field of an existing read model (`ConsultDraft.startedAt`), three fixes to V3's checks, and a new arrangement of what exists.
 - **Date:** 6 Oct 2026
 
 ## 1. Context
@@ -53,3 +53,12 @@ Module 5 shows the camera state ("FLIR ONE not connected" in a browser), the new
 ## 4. What was not built
 
 AI prescription entries; any stethoscope analysis; any shock, perfusion or capillary-refill computation; any research model; streaming or ETA progress; a separate "finalize prescription" state; changes to the nurse, patient or admin applications.
+
+## 5. Step 3 (6 Oct 2026): progress, what Mana read, a synthetic demo consultation
+
+Added after the partial commit, by the owner's Step 3 brief (its first version; the later "complete redesign" brief was not built, see STATUS.md):
+
+- **Progress is the server's token count, not an estimate.** The local client streams only when a caller asks for progress; the request is otherwise identical and the assembled answer is byte-identical to the whole answer (checked against the real llama-server). The count lives in memory for the running draft (`ConsultDraft.progress`), the page polls every second, and the speed is computed only from two successive server counts. No percentage and no time left: the model's length is not known in advance. This supersedes "streaming … progress" in §4; an ETA is still not built.
+- **What was sent is counted, not predicted.** `ConsultDraft.inputsUsed` is counted from the draft's input manifest (each source once; `total` equals the source count); the result lists it as "Mana analyzed". A source with nothing sent says so; the stethoscope always says recordings are not analysed.
+- **Synthetic demo audio is a provenance, stored.** The demo consultation plays fixed WAV files (Windows voices, a checked manifest) through the real speech model as live chunks. The transcript stores `audio_origin` (`microphone`, `upload`, `demo_synthetic`; migration 0032, nullable, no backfill, a CHECK tying it to the transcript's source); the server accepts `demo_synthetic` only where simulators are allowed. Its evidence trust is `synthetic_audio` and is drawn like a simulator's; Mana's statements resting on it must say "synthetic". Nothing attributes speakers automatically.
+- **Missing is not none, in the checks too.** `consult-checks-v3` removes a "no known allergies" statement when the record has no allergy status; Mana's medicines answer starts with the recorded medicine list (`mana-record-v4`).

@@ -12,6 +12,7 @@ import {
   JobRequest,
   ReviewRequest,
   SpeakerAssignmentRequest,
+  StartLiveTranscriptRequest,
   type Transcript,
 } from '@adaxai/contracts'
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
@@ -41,6 +42,7 @@ import {
   users,
   visits,
 } from '../db/schema.ts'
+import { simulatorAllowed } from '../devices/gateway.ts'
 import { assertWithDoctor, getEncounterOr404 } from '../encounters/service.ts'
 import { discardStoredBytes, readStoredBytes, storeBytes } from '../files/storage.ts'
 import { readUpload } from '../files/upload.ts'
@@ -173,6 +175,7 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
       return {
         id: t.id,
         source: t.source as Transcript['source'],
+        audioOrigin: (t.audioOrigin as Transcript['audioOrigin']) ?? null,
         status: t.status as Transcript['status'],
         audioFileId: t.audioFileId,
         segments,
@@ -359,7 +362,8 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
               const toNew = kept.map((x) => ({ speaker: null, speakerSource: 'none' as const, text: x.text, chunkIndex: input.chunkIndex, startMs: offsetMs + x.startMs, endMs: offsetMs + x.endMs, confidence: x.confidence, language: out.language, avgLogprob: x.avgLogprob, noSpeechProb: x.noSpeechProb, runId }))
               let transcriptId = input.transcriptId
               if (!transcriptId) {
-                const [tr] = await tx.insert(transcripts).values({ encounterId: e.id, source: input.source, audioFileId: file.id, sttRunId: runId, status: 'final', createdBy: me.id }).returning({ id: transcripts.id })
+                // A whole file: recorded in the browser (the microphone) or uploaded.
+                const [tr] = await tx.insert(transcripts).values({ encounterId: e.id, source: input.source, audioOrigin: input.source === 'audio_upload' ? 'upload' : 'microphone', audioFileId: file.id, sttRunId: runId, status: 'final', createdBy: me.id }).returning({ id: transcripts.id })
                 transcriptId = tr!.id
               }
               await appendSegments(tx, transcriptId, toNew)
@@ -705,7 +709,7 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
       recorded = field('source') === 'browser_recording'
       return recorded ? `recording${ext}` : path.basename(original || `upload${ext}`).slice(0, 120)
     })
-    await audit(db, req, { action: 'ai.audio_upload', entityType: 'file', entityId: file.id, patientId: e.patientId, details: { sizeBytes: file.sizeBytes, mimeType: file.mimeType, source: recorded ? 'browser_recording' : 'audio_upload', encounterId: id } })
+    await audit(db, req, { action: 'ai.audio_upload', entityType: 'file', entityId: file.id, patientId: e.patientId, details: { sizeBytes: file.sizeBytes, mimeType: file.mimeType, source: recorded ? 'browser_recording' : 'audio_upload', audioOrigin: recorded ? 'microphone' : 'upload', encounterId: id } })
     if (!providers.transcriber) return reply.code(201).send({ ...(await loadAi(me, id)), notice: providers.reasons.stt })
     try {
       await startJob(req, me, { kind: 'transcription', patientId: e.patientId, encounterId: id, input: { fileId: file.id, transcriptId: null, chunkIndex: null, source: recorded ? 'browser_recording' : 'audio_upload' } })
@@ -727,11 +731,14 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
   /**
    * Starts a live (chunked) transcript. Each part is transcribed as it arrives. Needs recording consent and a ready local speech service.
    * One recording at a time per consultation: a second is refused, unless the first has been silent so long that its page is gone
-   * (then it is ended and replaced).
+   * (then it is ended and replaced). Its parts come from the microphone, or are synthetic demo audio (computer voices): that is accepted only
+   * where simulators are allowed (the gate of the device and thermal simulators), and the transcript records it for good.
    */
   app.post('/api/encounters/:id/live-transcripts', { config: { permission: 'ai:use' } }, async (req, reply) => {
     const me = currentUser(req)
     const { id } = parse(IdParams, req.params)
+    const { audioOrigin } = parse(StartLiveTranscriptRequest, req.body ?? {})
+    if (audioOrigin === 'demo_synthetic' && !simulatorAllowed(config)) throw conflict('Synthetic demo audio cannot be used in a clinical or production deployment', 'demo_audio_not_allowed')
     const e = await editableEncounter(me, id)
     await assertWithDoctor(db, e)
     await requireConsent(req, e.patientId, id)
@@ -750,7 +757,7 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
       // speech service was being asked is seen here, and one that commits after this step ends this recording itself (it waits for this step).
       const created = await db.transaction(async (tx) => {
         if (!(await currentConsent(tx, e.patientId, 'ai_recording', id, true))) return null
-        const [row] = await tx.insert(transcripts).values({ encounterId: id, source: 'browser_recording', status: 'live', createdBy: me.id }).returning({ id: transcripts.id })
+        const [row] = await tx.insert(transcripts).values({ encounterId: id, source: 'browser_recording', audioOrigin, status: 'live', createdBy: me.id }).returning({ id: transcripts.id })
         return row!
       })
       if (!created) {
@@ -763,7 +770,7 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
       if ((err as { code?: string }).code === '23505' || (err as { cause?: { code?: string } }).cause?.code === '23505') throw conflict('A recording is already running for this consultation (another tab or window). Stop it there first.', 'recording_in_progress')
       throw err
     }
-    await audit(db, req, { action: 'ai.live_start', entityType: 'transcript', entityId: t.id, patientId: e.patientId, details: { encounterId: id } })
+    await audit(db, req, { action: 'ai.live_start', entityType: 'transcript', entityId: t.id, patientId: e.patientId, details: { encounterId: id, audioOrigin } })
     return reply.code(201).send({ ...(await loadAi(me, id)), transcriptId: t.id })
   })
 
@@ -814,7 +821,7 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
           .returning({ id: files.id })
         const [part] = await tx.insert(transcriptChunks).values({ transcriptId: id, chunkIndex: fields.chunkIndex, fileId: row!.id, offsetMs: fields.offsetMs }).onConflictDoNothing().returning({ id: transcriptChunks.id })
         if (!part) throw conflict('This part of the recording was already received', 'chunk_already_received')
-        await audit(tx, req, { action: 'ai.audio_chunk', entityType: 'file', entityId: row!.id, patientId: e.patientId, details: { transcriptId: id, chunkIndex: fields.chunkIndex } })
+        await audit(tx, req, { action: 'ai.audio_chunk', entityType: 'file', entityId: row!.id, patientId: e.patientId, details: { transcriptId: id, chunkIndex: fields.chunkIndex, audioOrigin: t.audioOrigin ?? null } })
         return { fileId: row!.id, chunkId: part.id }
       })
     } catch (err) {
@@ -907,7 +914,7 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
     return {
       consent: { granted: !!consent, scope: (consent?.scope as 'ongoing' | 'encounter' | undefined) ?? null, recordedAt: consent?.recordedAt.toISOString() ?? null, current: consent?.version === CONSENT_VERSIONS.ai_recording },
       speech: status.stt,
-      live: { transcriptId: open?.id ?? null, startedAt: open?.createdAt.toISOString() ?? null, lastChunkAt: last?.at ? new Date(last.at).toISOString() : null },
+      live: { transcriptId: open?.id ?? null, startedAt: open?.createdAt.toISOString() ?? null, lastChunkAt: last?.at ? new Date(last.at).toISOString() : null, audioOrigin: (open?.audioOrigin as CaptureStatus['live']['audioOrigin']) ?? null },
       canRecord: blockedReason === null,
       blockedReason,
       closedReason,

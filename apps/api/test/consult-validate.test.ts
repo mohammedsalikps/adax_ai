@@ -201,6 +201,53 @@ describe('what the model makes up does not reach the doctor', () => {
     expect(said.items.find((i) => i.section === 'missing_information')!.needsConfirmation).toBe(true)
   })
 
+  // ML audit G6: in a raw run the local model turned "Allergies: not recorded" into "no known allergies listed". With no allergy and no "no known
+  // allergies" on the record, the allergy status is unknown: no statement may say the patient has none, in any form, wherever it is written.
+  it('with no allergy recorded and "no known allergies" not marked, every claim that the patient has none is removed; wording about the record stays', () => {
+    const unknown = [item('R1', 'Reason for visit (this visit)', 'Fever for three days', { sourceType: 'visit' }), item('A1', 'Allergy status', 'Allergy status: not recorded', { sourceType: 'patient', status: 'recorded' })]
+    const claims = [
+      'No known allergies.',
+      'The patient has no known allergies listed in her profile.',
+      'NKDA.',
+      'NKA',
+      'No known drug allergies.',
+      'Denies any drug allergies.',
+      'No allergies recorded.',
+      'Allergies: none.',
+      'Allergy-free.',
+      'Patient is free of known allergies.',
+      'She doesn’t have any allergies.',
+      'Not allergic to anything.',
+      'No history of allergies.',
+      'No allergic reactions reported.',
+    ]
+    const r = run({ allergies: claims.slice(0, 7).map((t) => f(t, ['A1'])), summary: f('Fever for three days; no known allergies.', ['R1', 'A1']), missing_information: claims.slice(7).map((t) => f(t, [], 'not_found')) }, unknown)
+    expect(r.items).toEqual([])
+    expect(r.stats.reasons).toMatchObject({ allergy_absence_not_recorded: claims.length + 1 })
+    expect(r.stats.removed).toBe(claims.length + 1)
+    // What says the RECORD has no allergy status is true, and is kept.
+    const ok = run({ missing_information: [f('Allergy status is not recorded.', [], 'not_found'), f('No allergy information is documented.', [], 'not_found')], allergies: [f('Allergy status: not recorded.', ['A1'])] }, unknown)
+    expect(ok.items.map((i) => i.text)).toEqual(['Allergy status: not recorded.', 'Allergy status is not recorded.', 'No allergy information is documented.'])
+    expect(ok.stats.reasons.allergy_absence_not_recorded).toBeUndefined()
+    // With no allergy status line at all (none shown), the same: nothing says "no known allergies".
+    expect(run({ allergies: [f('No known allergies.', ['R1'])] }, unknown.slice(0, 1)).stats.reasons).toMatchObject({ allergy_absence_not_recorded: 1 })
+  })
+
+  it('"no known allergies" stands when the record marks it, and a reason or uncertainty that claims it without the record is dropped from the statement', () => {
+    const nka = [item('R1', 'Reason for visit (this visit)', 'Fever for three days', { sourceType: 'visit' }), item('A1', 'Allergy status', 'Allergy status: no known allergies', { sourceType: 'patient', status: 'recorded' })]
+    const marked = run({ allergies: [f('No known allergies.', ['A1']), f('NKDA.', ['A1'])] }, nka)
+    expect(marked.items.map((i) => i.text)).toEqual(['No known allergies.', 'NKDA.'])
+    // In the record's own words it is not marked (an abbreviation is not the record's wording, and is kept with the usual mark for the doctor).
+    expect(marked.items[0]!.flags).not.toContain('wording_not_in_source')
+    const unknown = [nka[0]!, item('A1', 'Allergy status', 'Allergy status: not recorded', { sourceType: 'patient', status: 'recorded' })]
+    const r = run({ potential_investigations: [s('Consider a throat swab.', ['R1'], 'No known allergies, so any antibiotic could be used.', 'NKDA per the patient.')] }, unknown)
+    expect(r.items).toHaveLength(1)
+    expect(r.items[0]).toMatchObject({ text: 'Consider a throat swab.', rationale: null, uncertainty: null })
+    expect(r.stats.reasons).toMatchObject({ field_removed: 1 })
+    // The same reason against a record that marks "no known allergies" is kept.
+    expect(run({ potential_investigations: [s('Consider a throat swab.', ['R1'], 'No known allergies are recorded.')] }, nka).items[0]!.rationale).toBe('No known allergies are recorded.')
+  })
+
   it('"no known allergies" is refused when the record lists an allergy; the record wins', () => {
     const r = run({ allergies: [f('No known allergies are documented.', [], 'not_found'), f('Allergy to penicillin (rash).', ['A1'])] })
     expect(r.items.map((i) => i.text)).toEqual(['Allergy to penicillin (rash).'])

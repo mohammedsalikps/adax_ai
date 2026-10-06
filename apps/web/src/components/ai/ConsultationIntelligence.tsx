@@ -95,6 +95,9 @@ const MEDICATION: ConsultSection = 'potential_medication_considerations'
 /** Statements of a group shown before "Show n more"; the rest of a long group folds away (still there, decided the same way when shown). */
 const FOLD_AFTER = 3
 
+/** When a draft arrives on the screen, its headings settle in one after another, this far apart (five headings: under half a second in all). */
+const REVEAL_STEP_MS = 60
+
 const SUPPORT_TONE: Record<SupportState, BadgeTone> = {
   supported: 'ok',
   inferred: 'ai',
@@ -566,7 +569,24 @@ function useContextConflicts(encounterId: string): number | null {
  * recommendations. Each heading says how many statements it holds and how many wait for a decision; a heading with nothing under it says so.
  * Statements the fixed rules found are kept apart and labelled as theirs.
  */
-function DraftBody({ draft, encounterId, inserter, excludeMedication, level, onShowOverview }: { draft: ConsultDraft; encounterId: string; inserter: NoteInserter; excludeMedication: boolean; level: 2 | 3; onShowOverview?: () => void }) {
+function DraftBody({
+  draft,
+  encounterId,
+  inserter,
+  excludeMedication,
+  level,
+  onShowOverview,
+  reveal = false,
+}: {
+  draft: ConsultDraft
+  encounterId: string
+  inserter: NoteInserter
+  excludeMedication: boolean
+  level: 2 | 3
+  onShowOverview?: () => void
+  /** The draft has just arrived on this screen: its headings fade in one after another (presentation of what arrived; none with reduced motion). */
+  reveal?: boolean
+}) {
   const itemsOf = (g: GroupKey) => {
     const { sections } = GROUPS[g]
     return draft.items.filter((i) => sections.includes(i.section)).sort((a, b) => sections.indexOf(a.section) - sections.indexOf(b.section) || a.position - b.position)
@@ -587,7 +607,7 @@ function DraftBody({ draft, encounterId, inserter, excludeMedication, level, onS
         {elsewhere > 0 ? ` · ${elsewhere} of them with the prescription` : ''}
       </p>
       <div className="space-y-5">
-        {BLOCKS.map((b) => {
+        {BLOCKS.map((b, blockIndex) => {
           const groups = b.groups.filter((k) => !(excludeMedication && k === 'medication')).map((k) => ({ key: k, ...GROUPS[k], items: itemsOf(k) }))
           const items = groups.flatMap((g) => g.items)
           const waiting = items.filter((i) => i.decision === 'pending').length
@@ -654,7 +674,15 @@ function DraftBody({ draft, encounterId, inserter, excludeMedication, level, onS
           })
           const empty = sections.every((s) => s === null) && !notes.length
           return (
-            <div key={b.key} className="space-y-3 border-t border-line pt-4 first:border-t-0 first:pt-0" data-testid="consult-block" data-block={b.key}>
+            <div
+              key={b.key}
+              className={`space-y-3 border-t border-line pt-4 first:border-t-0 first:pt-0 ${reveal ? 'motion-safe:animate-rise-in' : ''}`}
+              // In order, 60 ms apart; each settles in 180 ms. The words are all there from the first frame for assistive technology.
+              style={reveal ? { animationDelay: `${blockIndex * REVEAL_STEP_MS}ms` } : undefined}
+              data-testid="consult-block"
+              data-block={b.key}
+              data-reveal={reveal || undefined}
+            >
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                 <Heading level={blockLevel} className="text-base font-semibold">
                   {b.title}
@@ -774,6 +802,8 @@ export interface ConsultationIntelligenceProps {
   onShowOverview?: () => void
   /** The fixed rules' record check before any draft is shown by the page's consultation overview, not in this card. */
   recordCheckElsewhere?: boolean
+  /** Drawn where the draft's statements will be while it is being made (the page's placeholders for the sections: layout only, no text). */
+  whileGenerating?: ReactNode
 }
 
 export function ConsultationIntelligence({
@@ -785,6 +815,7 @@ export function ConsultationIntelligence({
   title: titleText = 'Consultation intelligence',
   onShowOverview,
   recordCheckElsewhere = false,
+  whileGenerating,
 }: ConsultationIntelligenceProps) {
   const toast = useToast()
   const q = useConsultationAi(encounterId)
@@ -793,6 +824,16 @@ export function ConsultationIntelligence({
   const slotted = analyzeSlot !== undefined
   const [aboutOpen, setAboutOpen] = useState(false)
   const aboutId = useId()
+  // A draft seen being made on this screen and now finished is revealed once, section by section (decided while drawing, so it is never
+  // drawn first without the reveal). One found finished (on opening the page, after another draft) is simply shown.
+  const shownId = q.data?.draft?.id ?? null
+  const shownGenerating = q.data?.draft?.status === 'generating'
+  const [seen, setSeen] = useState<{ id: string | null; generating: boolean }>({ id: shownId, generating: shownGenerating })
+  const [revealId, setRevealId] = useState<string | null>(null)
+  if (seen.id !== shownId || seen.generating !== shownGenerating) {
+    if (seen.generating && seen.id === shownId && !shownGenerating) setRevealId(shownId)
+    setSeen({ id: shownId, generating: shownGenerating })
+  }
   const title = (
     <span className="inline-flex items-center gap-2">
       <BrainCircuit aria-hidden="true" className="size-4 text-ai" />
@@ -990,7 +1031,10 @@ export function ConsultationIntelligence({
           </Alert>
         )}
 
-        {draft && body && <DraftBody draft={draft} encounterId={encounterId} inserter={inserter} excludeMedication={excludeMedication} level={headingLevel} onShowOverview={onShowOverview} />}
+        {view === 'generating' && whileGenerating}
+        {draft && body && (
+          <DraftBody draft={draft} encounterId={encounterId} inserter={inserter} excludeMedication={excludeMedication} level={headingLevel} onShowOverview={onShowOverview} reveal={revealId === draft.id} />
+        )}
         {/* The fixed rules' record check is the consultation overview's where the page has one (`recordCheckElsewhere`). */}
         {check && !body && !recordCheckElsewhere && <RecordCheckCard check={check} level={(headingLevel + 1) as Level} />}
         {draft && draft.status !== 'generating' && <DraftFacts draft={draft} />}

@@ -186,9 +186,11 @@ test('the Doctor HERO jury journey: five inputs, the research view, Analyze with
   await expect(page).toHaveURL(/\/doctor\/encounters\/[0-9a-f-]{36}$/)
   const encounterId = /\/encounters\/([0-9a-f-]{36})/.exec(page.url())![1]!
 
-  // The workspace: the rail headed with the patient and the visit, the five numbered modules, Analyze at its foot; Mana and the record right.
+  // The workspace: the rail headed "Consultation inputs", the five numbered modules, Analyze at its foot; Mana and the record right. Whose
+  // inputs they are is said by the consultation bar above (its name stays there while the page scrolls): the rail's own patient line was
+  // removed in the Doctor HERO final pass to give its room to the modules.
   await expect(tools.getByRole('heading', { level: 2, name: 'Consultation inputs' })).toBeVisible()
-  await expect(tools).toContainText(p.name)
+  await expect(page.getByTestId('consultation-header')).toContainText(p.name)
   const modules = tools.locator('[role="group"][data-testid^="module-"]')
   expect(await modules.evaluateAll((els) => els.map((el) => el.getAttribute('data-testid')))).toEqual(['module-conversation', 'module-history', 'module-vitals', 'module-stethoscope', 'module-thermal'])
   await expect(analyzeButton(page)).toBeInViewport()
@@ -302,8 +304,10 @@ test('the Doctor HERO jury journey: five inputs, the research view, Analyze with
   const thermal = page.locator('#tools-thermal')
   await expect(thermal).toHaveAttribute('data-open', 'false')
   await expect(thermal.getByTestId('summary-thermal-camera')).toContainText('FLIR ONE not connected')
-  // Named by its visible words first ("Open viewer"; the module's title says "Thermal imaging"), then what it opens (Doctor HERO polish, round 2).
-  await thermal.getByRole('button', { name: 'Open viewer (thermal imaging)' }).click()
+  // With no image yet the closed module's quick action is "Capture thermal" (Doctor HERO final pass; it was "Open viewer"): it opens the
+  // module and the thermal imaging workspace, where the camera, a file or the simulator is chosen.
+  await expect(thermal.getByTestId('summary-thermal-images')).toHaveText('Thermal image not captured')
+  await thermal.getByTestId('module-thermal-capture').click()
   const ws = page.getByTestId('thermal-workspace')
   await expect(ws.getByTestId('thermal-no-camera')).toContainText('FLIR ONE not connected')
   await ws.getByText('Simulator (development and demonstrations)').click()

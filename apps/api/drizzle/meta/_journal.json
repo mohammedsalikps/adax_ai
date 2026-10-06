@@ -225,6 +225,13 @@
       "when": 1791182367743,
       "tag": "0031_thermal_v6",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1791271259657,
+      "tag": "0032_transcript_audio_origin",
+      "breakpoints": true
     }
   ]
 }

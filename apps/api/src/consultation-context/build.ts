@@ -1,4 +1,5 @@
 import {
+  AUDIO_ORIGINS,
   AUSCULTATION_CAPTURE,
   AUSCULTATION_SITES,
   type AuscultationCapture,
@@ -152,6 +153,8 @@ const RULES_EXTRACTOR = 'adaxai-rules'
 
 const STATE_WORD: Record<ReadingState, string> = { live: 'LIVE', stale: 'STALE', disconnected: 'DISCONNECTED', no_data: 'NO DATA', unavailable: 'UNAVAILABLE' }
 const TRANSCRIPT_SOURCES: Record<string, string> = { typed: 'Typed', pasted: 'Pasted', audio_upload: 'Uploaded audio', browser_recording: 'Recorded in the browser' }
+/** How a conversation of synthetic demo audio is named wherever it is shown (AUDIO_ORIGINS). */
+const SYNTHETIC_AUDIO = AUDIO_ORIGINS.demo_synthetic
 const THERMAL_STATUS: Record<string, string> = { draft: 'Draft', approved: 'Approved', rejected: 'Rejected' }
 const SUMMARY_STATUS: Record<string, string> = { pending: 'To review', accepted: 'Accepted', edited: 'Edited', rejected: 'Rejected' }
 const SECTION_LABEL = new Map<string, string>(NOTE_SECTIONS.map((s) => [s.key, s.label]))
@@ -535,16 +538,19 @@ export async function buildConsultationContext(deps: ContextDeps, me: SessionUse
   const add = (item: EvidenceItem) => evidence.push(item)
 
   // -- Conversation and important points (doctors) --
+  // A conversation of synthetic demo audio (computer voices playing a script) is said to be one wherever it appears, and so are the points found in it.
+  const demoAudio = new Set((transcriptRows ?? []).filter((r) => r.t.audioOrigin === 'demo_synthetic').map((r) => r.t.id))
   for (const r of transcriptRows ?? []) {
     const last = r.lastLineAt ? new Date(r.lastLineAt) : null
+    const demo = demoAudio.has(r.t.id)
     add({
       id: `transcript:${r.t.id}`,
       kind: 'transcript',
       title: `Conversation: ${plural(r.lines, 'line', 'lines')}`,
-      detail: [TRANSCRIPT_SOURCES[r.t.source] ?? r.t.source, last ? `last line at ${time(last)}` : 'no line yet'].join(' · '),
+      detail: [demo ? `${SYNTHETIC_AUDIO}: computer voices, not a real consultation; transcribed by the speech model` : (TRANSCRIPT_SOURCES[r.t.source] ?? r.t.source), last ? `last line at ${time(last)}` : 'no line yet'].join(' · '),
       at: iso(last ?? r.t.createdAt),
-      status: r.t.status === 'live' ? 'Live' : 'Ended',
-      trust: 'observed',
+      status: `${demo ? 'SYNTHETIC · ' : ''}${r.t.status === 'live' ? 'Live' : 'Ended'}`,
+      trust: demo ? 'synthetic_audio' : 'observed',
       source: r.by ?? 'Consultation',
       provenance: r.provider ? `${r.provider} · ${r.model}` : null,
       target: 'conversation',
@@ -561,7 +567,7 @@ export async function buildConsultationContext(deps: ContextDeps, me: SessionUse
       id: `point:${f.id}`,
       kind: 'point',
       title: `${FACT_CATEGORIES[f.category as FactCategory] ?? f.category}: ${quote(f.finalText ?? f.text, 60)}`,
-      detail: flags.length ? flags.join(' · ') : null,
+      detail: [f.transcriptId && demoAudio.has(f.transcriptId) ? `From ${SYNTHETIC_AUDIO.toLowerCase()}` : null, ...flags].filter(Boolean).join(' · ') || null,
       at: iso(f.createdAt),
       status: pointState(f.status),
       trust,

@@ -409,7 +409,10 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
   await expect(recording).toContainText(/\d{1,2}:\d{2}\s?(am|pm)/i)
   await expect(recording.getByTestId('auscultation-this-consultation')).toHaveText('This consultation')
   await expect(recording.locator('audio')).toHaveAttribute('src', /^\/api\/files\//)
-  await expect(recording).not.toContainText(/analys|murmur|abnormal|finding/i)
+  // The recording's waveform is captioned "Amplitude of the recording. Not an analysis." (Doctor HERO final pass): that disclaimer is the one
+  // place the word may appear; apart from it the recording claims no analysis and no finding.
+  await expect(recording.getByTestId('waveform')).toContainText('Amplitude of the recording. Not an analysis.')
+  expect(((await recording.textContent()) ?? '').replace('Amplitude of the recording. Not an analysis.', '')).not.toMatch(/analys|murmur|abnormal|finding/i)
   // The module's summary counts it, from the same records.
   await expect(stethoscope.getByTestId('summary-stethoscope')).toContainText('1 recording in this consultation')
 

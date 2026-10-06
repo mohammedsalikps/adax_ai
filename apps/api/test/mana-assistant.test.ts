@@ -143,8 +143,9 @@ describe('a question, end to end', () => {
     expect(m.answer!.findings.some((f) => f.kind === 'conflict' && /no known allergies/i.test(f.text))).toBe(true)
     expect(m.answer!.entities).toEqual([expect.objectContaining({ alias: 'P1', displayName: 'Vikram Rao' })])
     expect(m.tools).toMatchObject([{ position: 0, tool: 'get_patient_record', status: 'ok' }])
-    // (mana-tools-v2: D2 added the consultation tool; v3: it leaves out what the patient's consents keep out, and a rejected point.)
-    expect(m.model).toMatchObject({ provider: 'stub-llm', local: true, planPrompt: 'mana-assistant-plan-v2', answerPrompt: 'mana-assistant-answer-v1', tools: 'mana-tools-v3' })
+    // (mana-tools-v2: D2 added the consultation tool; v3: it leaves out what the patient's consents keep out, and a rejected point; v4 (G14): the medicines
+    // topic gives the recorded medicine list too.)
+    expect(m.model).toMatchObject({ provider: 'stub-llm', local: true, planPrompt: 'mana-assistant-plan-v2', answerPrompt: 'mana-assistant-answer-v1', tools: 'mana-tools-v4' })
     expect(stub.plans).toHaveLength(1)
     expect(stub.answers).toHaveLength(1)
     expect(leaks()).toEqual([])
@@ -997,7 +998,8 @@ describe('what is kept, and what is not shown anywhere else', () => {
     const rows = await adminQuery(`select m.role, m.status, m.text, m.plan is not null has_plan, m.answer is not null has_answer, m.provider, m.model, m.locality, m.plan_prompt_id, m.answer_prompt_id, m.checks_version, m.tools_version, m.latency_ms, m.plan_run_id is not null plan_run, m.answer_run_id is not null answer_run from mana_messages m where m.conversation_id = $1 order by m.seq`, [s0.conversation.id])
     expect(rows.rows).toEqual([
       expect.objectContaining({ role: 'doctor', status: 'ready', text: question }),
-      expect.objectContaining({ role: 'mana', status: 'ready', has_plan: true, has_answer: true, provider: 'stub-llm', locality: 'local', plan_prompt_id: 'mana-assistant-plan-v2', answer_prompt_id: 'mana-assistant-answer-v1', tools_version: 'mana-tools-v3', plan_run: true, answer_run: true }),
+      // tools v4 since G14 (the medicines topic gives the recorded medicine list).
+      expect.objectContaining({ role: 'mana', status: 'ready', has_plan: true, has_answer: true, provider: 'stub-llm', locality: 'local', plan_prompt_id: 'mana-assistant-plan-v2', answer_prompt_id: 'mana-assistant-answer-v1', tools_version: 'mana-tools-v4', plan_run: true, answer_run: true }),
     ])
     const calls = await adminQuery(`select tool, status, patient_id from mana_tool_calls where message_id = $1`, [m.id])
     expect(calls.rows).toEqual([{ tool: 'get_patient_record', status: 'ok', patient_id: world.p.vikram.id }])
@@ -1527,7 +1529,8 @@ describe('the consultation the conversation was opened in (D2)', () => {
     expect(tc.detail).toMatch(new RegExp(String.raw`^recorded: \d+ fact\(s\), \d+ finding\(s\); \d+ item\(s\), 3 SIMULATED left out; 1 conflict\(s\), \d+ missing; ${CONFLICT_RULES_VERSION}, ${SUMMARY_COMPOSER_VERSION}$`))
     const logged = JSON.stringify([...(await auditRows('%', mark)), tc])
     expect(logged).not.toMatch(/94 %|97 %|88 bpm|mitral|Knee|28\.1|murmur|Ward band/)
-    expect(m.model).toMatchObject({ tools: 'mana-tools-v3', checks: 'mana-plan-checks-v3+mana-answer-checks-v4' })
+    // tools v4 (G14 medicines); answer checks v5 (a statement resting on synthetic demo audio says "synthetic").
+    expect(m.model).toMatchObject({ tools: 'mana-tools-v4', checks: 'mana-plan-checks-v3+mana-answer-checks-v5' })
   })
 
   it('removes a statement that calls a device reading measured, drops "unverified", or adds a finding to a recording or a thermal image', async () => {

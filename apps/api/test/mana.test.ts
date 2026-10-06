@@ -103,7 +103,8 @@ describe('Mana record answers (explicit rules, no AI provider)', () => {
     expect(res.statusCode).toBe(201)
     const a = ManaAnswer.parse(res.json())
     expect(a.intent).toBe('last_prescription')
-    expect(a.record.rulesVersion).toBe('mana-record-v3')
+    // v4 (G14): the medicines answer also gives the patient's medicine list as recorded.
+    expect(a.record.rulesVersion).toBe('mana-record-v4')
 
     const metformin = statements(a).find((s) => s.kind === 'documented' && s.text.startsWith('Metformin'))!
     expect(metformin.text).toContain('500 mg')
@@ -204,6 +205,51 @@ describe('Mana record answers (explicit rules, no AI provider)', () => {
     expect(list.answers.map((x) => x.id)).toEqual([first.id])
     const { rows } = await adminQuery("SELECT action FROM audit_events WHERE action LIKE 'mana.%' ORDER BY occurred_at")
     expect(rows.map((r) => r.action)).toEqual(['mana.ask', 'mana.review', 'mana.read'])
+  })
+})
+
+// ML audit G14: "What medicines is this patient on?" left out the medicine list staff recorded (it listed only the last signed prescription and today's draft).
+describe('Mana record answers: the medicines the patient takes', () => {
+  const medicine = (ctx: TestContext, cookie: string, patientId: string, drugName: string) =>
+    call(ctx.app, 'POST', `/api/patients/${patientId}/medications`, { cookie, body: { drugName, strength: '100 mcg', form: 'inhaler', dose: '2 puffs', frequency: 'when wheezy', reason: 'wheeze' } })
+
+  it('gives the medicine list as recorded first, then the last signed prescription and today’s draft, each labelled by where it comes from', async () => {
+    const { p, e2, doctor } = await scenario(noKeys)
+    const salbutamol = await medicine(noKeys, doctor, p.id, 'Salbutamol')
+    expect(salbutamol.statusCode).toBe(201)
+    const old = await medicine(noKeys, doctor, p.id, 'Montelukast')
+    expect((await call(noKeys.app, 'POST', `/api/patients/${p.id}/medications/${old.json().id}/status`, { cookie: doctor, body: { status: 'stopped', reason: 'No longer needed' } })).statusCode).toBe(200)
+    const a = ManaAnswer.parse((await ask(noKeys, doctor, p.id, { question: 'What medicines is this patient on?', encounterId: e2.id })).json())
+    expect(a.intent).toBe('last_prescription')
+    expect(a.record.sections.map((s) => s.title)).toEqual([expect.stringMatching(/^Current medicines · medicine list in the record \(entered by staff, not a prescription\)$/), expect.stringMatching(/^Last signed prescription · /), 'Today’s consultation (draft, not signed)', 'Safety'])
+    const list = a.record.sections[0]!.statements
+    expect(list[0]).toMatchObject({ kind: 'documented', text: expect.stringMatching(/^Salbutamol, 100 mcg, inhaler, dose 2 puffs, when wheezy; entered on the medicine list /) })
+    expect(sourceOf(a, list[0]!.refs[0]!)).toMatchObject({ sourceType: 'patient_medication', field: 'Current medicine', status: 'active', provenance: 'record' })
+    expect(list).toContainEqual(expect.objectContaining({ kind: 'documented', text: 'Marked stopped on the list: Montelukast.' }))
+    // The last signed prescription and today's draft are still there, under their own titles.
+    expect(statements(a)).toContainEqual(expect.objectContaining({ kind: 'documented', text: expect.stringMatching(/^Metformin, 500 mg/) }))
+    expect(a.record.sections[2]!.statements[0]!.text).toMatch(/^Amoxicillin/)
+  })
+
+  it('says "No current medicines are recorded." when the list holds none, never "none"; the prescriptions are said apart', async () => {
+    const { p, e2, doctor } = await scenario(noKeys)
+    const a = ManaAnswer.parse((await ask(noKeys, doctor, p.id, { question: 'What medicines is this patient on?', encounterId: e2.id })).json())
+    expect(a.record.sections[0]!.statements).toEqual([expect.objectContaining({ kind: 'absent', text: 'No current medicines are recorded.', refs: [] })])
+    expect(JSON.stringify(a.record.sections)).not.toMatch(/none/i)
+    // A patient with nothing at all: the list, and no signed consultation, are each said.
+    const nurse = await login(noKeys.app, 't.nurse')
+    const bare = PatientDetail.parse((await call(noKeys.app, 'POST', '/api/patients', { cookie: nurse, body: samplePatient({ givenName: 'Meds', phone: '98400 77777' }) })).json())
+    const b = ManaAnswer.parse((await ask(noKeys, doctor, bare.id, { question: 'What medicines is she on?' })).json())
+    expect(statements(b).map((s) => s.text)).toEqual(['No current medicines are recorded.', 'There is no signed consultation in the record.'])
+  })
+
+  it('the briefing includes the medicine list, and the allergy rules now compare it with the recorded allergies', async () => {
+    const { p, e2, doctor } = await scenario(noKeys)
+    await medicine(noKeys, doctor, p.id, 'Ampicillin')
+    const brief = ManaAnswer.parse((await ask(noKeys, doctor, p.id, { question: 'Briefing', intent: 'briefing', encounterId: e2.id })).json())
+    expect(brief.record.sections.map((s) => s.title)).toContain('Current medicines · medicine list in the record (entered by staff, not a prescription)')
+    const allergies = ManaAnswer.parse((await ask(noKeys, doctor, p.id, { question: 'Allergies?', encounterId: e2.id })).json())
+    expect(statements(allergies)).toContainEqual(expect.objectContaining({ kind: 'conflict', text: expect.stringMatching(/^Ampicillin \(the medicine list in the record\) and the recorded allergy to Penicillin/) }))
   })
 })
 
@@ -401,7 +447,8 @@ describe('inserting AI output into the note', () => {
     let enc = Encounter.parse(res.json())
     expect(enc.note.pastHistory).toBe('Allergy to Penicillin (rash), per record.')
     expect(enc.version).toBe(e2.version + 1)
-    expect(enc.aiInsertions).toEqual([expect.objectContaining({ section: 'pastHistory', subjectType: 'mana_answer', subjectId: a.id, producedBy: 'record rules mana-record-v3; text chosen and edited by the doctor', insertedByName: 'Test t.doctor', retained: true })])
+    // The rules' version the answer was made with (v4 since G14).
+    expect(enc.aiInsertions).toEqual([expect.objectContaining({ section: 'pastHistory', subjectType: 'mana_answer', subjectId: a.id, producedBy: 'record rules mana-record-v4; text chosen and edited by the doctor', insertedByName: 'Test t.doctor', retained: true })])
 
     // The same text from the same answer goes into a section once.
     expect((await insert({ version: enc.version, section: 'pastHistory', text: 'Allergy to Penicillin (rash), per record.', subjectType: 'mana_answer', subjectId: a.id })).json().error).toBe('already_inserted')

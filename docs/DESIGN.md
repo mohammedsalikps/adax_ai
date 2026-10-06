@@ -318,6 +318,25 @@ a new data path or a new kind of AI output. Decisions: [ADR 0019](adr/0019-d1-in
 
 **Not built:** alerts, a "resolve" action, a summary written by a model, sorting or filtering of the evidence, the overview in the signed record.
 
+## 4j. The Doctor HERO workstation (partial commit and Step 3)
+
+The doctor's consultation editor, as built: [ADR 0022](adr/0022-doctor-hero-five-inputs-and-mana.md). It replaces §4g's *Go to* bar for the doctor; the nurse's view and the signed record are as in §4g.
+
+| Part | Behaviour |
+| --- | --- |
+| Header | Two rows when the page opens: back, name, "Draft · in progress", elapsed time and the actions; then age, sex, MRN, every allergy as a chip, "Urgent", the out-of-range vital-signs badge, the status chips and a line cut short with an ellipsis (reason, conditions, token). Once the page scrolls it is **one compact row that keeps** the name, MRN, allergies, Urgent, the vital-signs badge and the chips (hidden then: back, elapsed, the cut-short line, View profile, Save) |
+| Strip | *1 Inputs → 2 Mana analysis → 3 Your review → 4 Note & prescription → 5 Sign*, each with its real state, each a jump |
+| Inputs rail | Sticky, scrolls on its own; five numbered modules (*Conversation, History, Vitals, Stethoscope, Thermal imaging*), each a summary with its state chip and Show/Hide; the full panel is its body, kept mounted. **Empty states say what is missing and offer the act**: "Not recorded yet" [Record] (and [Play demo consultation] with a SYNTHETIC mark where simulators are allowed), "Allergy status not recorded" [Record], "No device attached" [Attach device], "No recording yet" [Record], "Thermal image not captured" [Capture thermal]. "Analyze with Mana" at its foot (Ctrl/⌘+Enter) with "Reads n of 5 inputs · What Mana reads" |
+| Mana area | While the model writes: the steps, "812 tokens · 44 tokens/s · at most 2,600 tokens" (the server's count; no percentage, no time left) and grey placeholders where the sections will be (no text). Then "Mana analyzed" (what was sent, source by source; the stethoscope always "recordings are not analysed"), the result with its AI labels (a short staggered reveal, none with reduced motion), the fixed-rule overview (§4i), and Ask Mana closed until opened |
+| Record | The note, the diagnosis and the prescription (*Repeat a current medicine*, *Preview & print*, which saves first). Side by side with the Mana area only on a 1920px screen |
+| Stethoscope | A waveform per recording, drawn in the browser from its amplitude: "Amplitude of the recording. Not an analysis."; "No clinical sound analysis: recordings are not analysed by any model." |
+| Synthetic demo | Everything the demo consultation makes is marked "SYNTHETIC AUDIO — computer voices, not a real consultation" (the transcript, its points, the overview's evidence) and is drawn like a simulator's output (dashed) |
+| Keyboard | Ctrl/⌘+S save, Ctrl/⌘+Enter analyze, Alt+1…5 a module, Alt+N the note, Alt+P the prescription, Shift+? the list (not while typing); while a dialog or menu is open, only Save |
+
+- **Checked** by `e2e/doctor-hero.spec.ts`, `hero-journey.spec.ts` and `hero-demo.spec.ts` in Chromium (seven sizes from 390 × 844 to 1920 × 1080, no horizontal overflow) and by screenshots of a run on the real local models (STATUS.md). Not checked: a tablet, a screen reader by hand.
+
+**Not built** (the owner's later "complete redesign" brief): a Today/Week/Month home without the sidebar, a patient profile with tabs, the digital pen, one band-and-stethoscope input, recording that starts with the consultation, a prescription document page, a persistent Mana button, removing the development banner.
+
 ## 5. Rules the screens follow
 
 - **No fake controls.** A control appears only if the product can do it.

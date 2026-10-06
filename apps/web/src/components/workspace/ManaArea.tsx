@@ -19,6 +19,30 @@ import { useConsultationAiObserver } from './AnalyzeButton.tsx'
 
 const OVERVIEW_ID = 'mana-overview'
 
+/** The widths of the placeholder lines under each placeholder heading: a shape of the result, never words. */
+const SKELETON_LINES = [['w-11/12', 'w-4/5'], ['w-full', 'w-3/4', 'w-5/6'], ['w-2/3'], ['w-3/4', 'w-1/2'], ['w-5/6', 'w-2/3']] as const
+
+/**
+ * Where the result's five sections will be while the local model writes: grey bars in their places (layout only, no text, never a guess at
+ * what the model will say), so the page does not jump when the draft arrives. They pulse gently (still with reduced motion). Said once in words
+ * for assistive technology.
+ */
+export function DraftSkeleton() {
+  return (
+    <div className="space-y-5" data-testid="consult-skeleton">
+      <p className="sr-only">The draft’s sections appear here when the local model has finished writing and the checks have run.</p>
+      {SKELETON_LINES.map((lines, i) => (
+        <div key={i} aria-hidden="true" className="space-y-2 border-t border-line pt-4 first:border-t-0 first:pt-0">
+          <div className="h-4 w-40 animate-pulse rounded bg-line-strong/70" />
+          {lines.map((w, j) => (
+            <div key={j} className={`h-3 ${w} animate-pulse rounded bg-line`} />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /**
  * Draft statements in the result card that wait for the doctor's decision: none while a draft is being made or has no statements to show.
  * The medication considerations are not counted: they wait in the prescription's lane.
@@ -72,7 +96,16 @@ export function ManaArea({ encounter, inserter, onJump = revealPart }: ManaAreaP
         className="min-w-0 scroll-mt-20 rounded-xl focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand lg:scroll-mt-0"
       >
         <PanelBoundary label="The Mana result" className="min-w-0">
-          <ConsultationIntelligence encounterId={encounter.id} inserter={inserter} analyzeSlot={null} excludeMedication headingLevel={3} title="Mana result" onShowOverview={() => showPart(OVERVIEW_ID)} />
+          <ConsultationIntelligence
+            encounterId={encounter.id}
+            inserter={inserter}
+            analyzeSlot={null}
+            excludeMedication
+            headingLevel={3}
+            title="Mana result"
+            onShowOverview={() => showPart(OVERVIEW_ID)}
+            whileGenerating={<DraftSkeleton />}
+          />
         </PanelBoundary>
       </div>
       <div id={OVERVIEW_ID} tabIndex={-1} className="min-w-0 scroll-mt-20 rounded-xl focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand lg:scroll-mt-0">

@@ -1,0 +1,21 @@
+{
+  "kind": "adaxai-demo-consultation-audio",
+  "version": 1,
+  "synthetic": true,
+  "label": "SYNTHETIC AUDIO — computer voices, not a real consultation",
+  "about": "Windows text-to-speech reading a scripted consultation about a fictional child (the synthetic patient of npm run demo:hero). No person was recorded. The text below is the script, for documentation and tests; the application shows only what the speech model transcribes from the audio.",
+  "generator": "scripts/demo-audio.ps1 (Windows System.Speech text-to-speech)",
+  "format": { "container": "wav", "codec": "pcm_s16le", "sampleRateHz": 16000, "channels": 1, "bitsPerSample": 16, "leadSilenceMs": 250, "tailSilenceMs": 500 },
+  "voices": { "doctor": "Microsoft Zira Desktop", "parent": "Microsoft David Desktop" },
+  "totalDurationMs": 29940,
+  "utterances": [
+    { "index": 1, "file": "01-doctor.wav", "speaker": "doctor", "voice": "Microsoft Zira Desktop", "text": "Good morning. What brings you in today?", "durationMs": 3555, "bytes": 113790, "sha256": "30910b519da0d370551410463dd1f352ef0c52f39297935c2460b18807a84c63" },
+    { "index": 2, "file": "02-parent.wav", "speaker": "parent", "voice": "Microsoft David Desktop", "text": "My daughter has had a fever for three days and a mild cough.", "durationMs": 4035, "bytes": 129162, "sha256": "00d10268ec8ce332ca515a36f70a19a270657e5aaa061e602e5429ab3dddbe67" },
+    { "index": 3, "file": "03-doctor.wav", "speaker": "doctor", "voice": "Microsoft Zira Desktop", "text": "Has she had any breathing difficulty or wheezing?", "durationMs": 3345, "bytes": 107070, "sha256": "5fc465a168c2572dd5197898ecadcd8a8cd09e81ca9bb968d0059f61e83b32fc" },
+    { "index": 4, "file": "04-parent.wav", "speaker": "parent", "voice": "Microsoft David Desktop", "text": "A little wheezing at night. She had a similar chest infection two months ago.", "durationMs": 5655, "bytes": 181004, "sha256": "5b9e36bebdb57ca6fc5fdb7db04ce655926034cd68ea3fd7c0291f8a36e65a60" },
+    { "index": 5, "file": "05-doctor.wav", "speaker": "doctor", "voice": "Microsoft Zira Desktop", "text": "Is she taking any medicines at the moment?", "durationMs": 2955, "bytes": 94596, "sha256": "5e8bd046ddf692f7814b569c7bbdf5565e389417ff3fd36bfe0ca3d765e97a35" },
+    { "index": 6, "file": "06-parent.wav", "speaker": "parent", "voice": "Microsoft David Desktop", "text": "She uses her salbutamol inhaler when she wheezes.", "durationMs": 3800, "bytes": 121644, "sha256": "f7e5e1e9625cc545cab6d6816526779937a8583445eafb722455ab5e9fb3c969" },
+    { "index": 7, "file": "07-doctor.wav", "speaker": "doctor", "voice": "Microsoft Zira Desktop", "text": "Does she have any allergies to medicines?", "durationMs": 3005, "bytes": 96196, "sha256": "6b8e7eeb921bd8347f8d86307448bdaa96bbb8b66e698b39dbb1d1809fcf6548" },
+    { "index": 8, "file": "08-parent.wav", "speaker": "parent", "voice": "Microsoft David Desktop", "text": "Yes, she gets a rash with amoxicillin.", "durationMs": 3590, "bytes": 114924, "sha256": "8522900c244afb3b1be7bf0ec151cc9060889d387e042ab6a445df552879b04e" }
+  ]
+}

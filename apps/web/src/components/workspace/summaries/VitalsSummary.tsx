@@ -1,14 +1,14 @@
 import type { Encounter, PatientDeviceReadings, VitalFlag } from '@adaxai/contracts'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowDown, ArrowUp, TriangleAlert } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { ArrowDown, ArrowUp, Link2, TriangleAlert } from 'lucide-react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { api } from '../../../lib/api.ts'
 import { ageText, deviceReadingsKey, type ReceivedDeviceReadings } from '../../../lib/devices.ts'
 import { fmtTime } from '../../../lib/format.ts'
 import type { InputModuleFacts } from '../../../lib/workflow.ts'
 import { ReadingStateBadge, SimulatedBadge, UnverifiedBadge } from '../../clinical/DeviceReadingsCard.tsx'
 import { FlagLabel } from '../../clinical/Vitals.tsx'
-import { CLOSED_ONLY, OPEN_ONLY } from '../ModuleShell.tsx'
+import { CLOSED_ONLY, OPEN_ONLY, QuickAction, runModuleAction } from '../ModuleShell.tsx'
 import { type CompactVitals, deviceCore, NOT_UPDATED, safely, type SummaryState, type VitalTile, type VitalValue, type VitalsView, vitalsAnalysis, vitalsFacts, vitalsState, vitalsView, visitVitals } from './state.ts'
 
 /*
@@ -51,6 +51,8 @@ const UNREADABLE: VitalsView = {
   compact: null,
   also: null,
   deviceLine: 'The vital signs could not be read just now.',
+  devices: 'unknown',
+  canAttach: false,
   consentLine: null,
   paediatric: false,
   now: null,
@@ -138,10 +140,10 @@ function FlagMark({ flag }: { flag: VitalFlag | null }) {
  * all came from one place; "Device UNVERIFIED HR, SpO₂, RR   Staff Temp" when from several (the groups are set apart by the gap between them,
  * so a group that wraps to the next line never starts with a separator); a simulator's SIMULATED, a device's state when it is not live.
  */
-function Sources({ c, now }: { c: CompactVitals; now: number | null }) {
+function Sources({ c, now, device }: { c: CompactVitals; now: number | null; device?: ReactNode }) {
   const several = c.sources.length > 1
   return (
-    <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-ink-muted" data-testid="summary-vitals-sources">
+    <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-3 text-xs text-ink-muted" data-testid="summary-vitals-sources">
       {c.sources.map((g) => (
         <span key={`${g.mark}-${g.state ?? ''}`} className="inline-flex items-center gap-1 whitespace-nowrap" data-mark={g.mark}>
           {g.mark === 'staff' && <span>Staff</span>}
@@ -152,6 +154,7 @@ function Sources({ c, now }: { c: CompactVitals; now: number | null }) {
           <span className="tabular-nums">{several ? g.kinds.join(', ') : g.at ? (g.mark === 'device' && now !== null ? ageText(now - Date.parse(g.at)) : fmtTime(g.at)) : ''}</span>
         </span>
       ))}
+      {device}
     </p>
   )
 }
@@ -161,10 +164,11 @@ function Sources({ c, now }: { c: CompactVitals; now: number | null }) {
  * simulator's only where nothing else has that kind, in a dashed frame); a device's value that is not live is greyed. Under it, where the
  * values came from. The open module shows every value, each with its own source, in the tiles.
  */
-function CompactLine({ c, now }: { c: CompactVitals; now: number | null }) {
+function CompactLine({ c, now, device }: { c: CompactVitals; now: number | null; device?: ReactNode }) {
   return (
     <div data-testid="summary-vitals-compact">
-      <ul className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5" aria-label="Heart rate, SpO₂, temperature and respiratory rate">
+      {/* Tight enough for the four to fit on one line beside the module's corner button in the narrowest rail (20rem). */}
+      <ul className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5" aria-label="Heart rate, SpO₂, temperature and respiratory rate">
         {c.values.map((v) => (
           <li key={v.kind} className={`inline-flex items-baseline gap-1 whitespace-nowrap ${v.mark === 'simulated' ? 'rounded border border-dashed border-ink/40 px-1' : ''}`} data-kind={v.kind} data-mark={v.mark ?? 'none'}>
             <span className="text-xs text-ink-muted">
@@ -179,33 +183,71 @@ function CompactLine({ c, now }: { c: CompactVitals; now: number | null }) {
             ) : (
               <>
                 <span className={`text-base leading-6 font-semibold ${v.current ? 'text-ink' : 'text-ink-muted'}`}>{v.value}</span>
-                {/* Heart rate and respiratory rate are per minute by definition: their unit is read out, not drawn, so the four fit one line. */}
-                <span className={v.kind === 'heart_rate' || v.kind === 'respiratory_rate' ? 'sr-only' : 'text-xs text-ink-muted'}>{v.unit}</span>
+                {/* Heart rate and respiratory rate are per minute and SpO₂ a percentage by definition: their unit is read out, not drawn, so the four
+                    fit one line; the temperature's unit is drawn. */}
+                <span className={v.kind === 'temperature' ? 'text-xs text-ink-muted' : 'sr-only'}>{v.unit}</span>
                 <FlagMark flag={v.flag} />
               </>
             )}
           </li>
         ))}
       </ul>
-      <Sources c={c} now={now} />
+      <Sources c={c} now={now} device={device} />
     </div>
   )
 }
 
+/** Attach device, by default: the module opens and the device card's own "Attach a device" is used (its dialog lists the free devices). */
+export const attachDevice = () => void runModuleAction('tools-devices', { text: 'Attach a device' })
+
 /**
- * The summary of module 3. Closed: one line of the four values, large, and where they came from. Open: heart rate, SpO₂, temperature and
- * respiratory rate in tiles, each value with where it came from (staff, a device with its state and UNVERIFIED, or a simulator, marked
- * SIMULATED and never LIVE) and when; other kinds staff measured in one line; and the module's fixed lines: blood pressure is never taken from a
- * device, and no reference range is applied to a child.
+ * The summary of module 3. Closed: one line of the four values, large, and where they came from, and the devices when that is not in the
+ * values: none attached ("No device", with Attach device: `onAttachDevice`, by default the device card's own Attach a device, offered when
+ * the consent allows) or attached and silent ("Waiting for the device’s first reading"). With no value at all, that no vital sign is recorded
+ * for this visit yet, and the same about the devices. Open: heart rate, SpO₂, temperature and respiratory rate in tiles, each value with
+ * where it came from (staff, a device with its state and UNVERIFIED, or a simulator, marked SIMULATED and never LIVE) and when; other kinds
+ * staff measured in one line; and the module's fixed lines: blood pressure is never taken from a device, and no reference range is applied to
+ * a child.
  */
-export function VitalsSummary({ encounter }: { encounter: Pick<Encounter, 'patient' | 'vitals'> }) {
+export function VitalsSummary({ encounter, onAttachDevice = attachDevice }: { encounter: Pick<Encounter, 'patient' | 'vitals'>; onAttachDevice?: () => void }) {
   const v = useVitalsView(encounter)
   useSecondTick(v.attached > 0)
+  const attach = v.devices === 'none' && v.canAttach && (
+    <QuickAction icon={Link2} onClick={onAttachDevice} testId="module-vitals-attach">
+      Attach device
+    </QuickAction>
+  )
   return (
-    <div data-testid="summary-vitals" data-state={v.state.kind}>
+    <div data-testid="summary-vitals" data-state={v.state.kind} data-devices={v.devices}>
       <div className={CLOSED_ONLY}>
-        {v.compact ? <CompactLine c={v.compact} now={v.now} /> : <p className="text-ink-muted">No vital signs for this visit yet.</p>}
-        {!v.compact && v.deviceLine && <p className="text-xs text-ink-muted">{v.deviceLine}</p>}
+        {v.compact ? (
+          <CompactLine
+            c={v.compact}
+            now={v.now}
+            device={
+              v.devices === 'none' ? (
+                <span className="inline-flex items-center gap-2">
+                  <span>No device</span>
+                  {attach}
+                </span>
+              ) : v.devices === 'waiting' ? (
+                <span>Waiting for the device’s first reading</span>
+              ) : null
+            }
+          />
+        ) : (
+          <>
+            <p className="text-ink-muted">No vital signs recorded for this visit yet</p>
+            {v.devices === 'none' ? (
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-3 text-xs text-ink-muted">
+                <span>No device attached</span>
+                {attach}
+              </p>
+            ) : (
+              v.deviceLine && <p className="text-xs text-ink-muted">{v.deviceLine}</p>
+            )}
+          </>
+        )}
       </div>
       <div className={`space-y-2 ${OPEN_ONLY}`}>
         {v.tiles.length > 0 ? (

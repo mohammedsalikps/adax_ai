@@ -211,7 +211,8 @@ export function registerManaRoutes(app: FastifyInstance, deps: ManaDeps) {
         return reply.code(200).send((await toAnswer([existing]))[0])
       }
     }
-    const record = await loadPatientRecord(db, me, id, { encounterId: body.encounterId, maxEncounters: settings.mana.maxEncounters, observationDays: settings.mana.observationDays })
+    // The medicine list staff entered is read too (G14): "what is this patient on?" is answered from it, not from prescriptions alone.
+    const record = await loadPatientRecord(db, me, id, { encounterId: body.encounterId, maxEncounters: settings.mana.maxEncounters, observationDays: settings.mana.observationDays, includeMedicineList: true })
     const intent = body.intent ?? classifyQuestion(body.question)
     const sections = answerFromRecord(intent, record, body.question, rules)
     const cited = new Set(sections.flatMap((s) => s.statements.flatMap((x) => x.refs)))

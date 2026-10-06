@@ -92,7 +92,8 @@ export const clockTime = (at: string): string | null => (Number.isFinite(Date.pa
 export type TrustTone = 'simulated' | 'unverified' | 'ai' | 'review' | 'plain'
 
 export function trustTone(trust: EvidenceTrust): TrustTone {
-  if (trust === 'simulated') return 'simulated'
+  // Synthetic demo audio is drawn like anything a simulator made: it is not a real consultation.
+  if (trust === 'simulated' || trust === 'synthetic_audio') return 'simulated'
   if (trust === 'measured_unverified') return 'unverified'
   if (trust === 'model_output') return 'ai'
   if (trust === 'extracted') return 'review'

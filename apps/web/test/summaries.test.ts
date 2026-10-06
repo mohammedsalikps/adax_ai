@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { AttachedDevice, AuscultationRecording, CaptureStatus, ClinicalFact, DeviceReading, EncounterAi, Observation, PatientDetail, PatientHistory, ThermalCapture, ThermalModelStatus, Transcript } from '@adaxai/contracts'
+import { clockOf, envelopeOf } from '../src/components/workspace/envelope.ts'
 import { fmtDate } from '../src/lib/format.ts'
 import type { ReceivedDeviceReadings } from '../src/lib/devices.ts'
 import {
@@ -15,6 +16,7 @@ import {
   count,
   deviceCore,
   historyView,
+  isDemoAudio,
   LOADING,
   NOT_UPDATED,
   recordingClock,
@@ -161,7 +163,9 @@ test('conversation, nothing recorded yet: consent needed, speech-to-text unavail
   assert.deepEqual(consent.lines, ['Nothing recorded or typed yet.', 'The patient’s consent to recording is not recorded.'])
 
   // Closed, the consent line stays (the chip says only "Consent needed").
-  assert.deepEqual(consent.compact, ['Nothing recorded or typed yet.', 'The patient’s consent to recording is not recorded.'])
+  // Closed, the first line is the empty state's own words ("Not recorded yet", beside its Record action: Doctor HERO final pass, §5).
+  assert.deepEqual(consent.compact, ['Not recorded yet', 'The patient’s consent to recording is not recorded.'])
+  assert.equal(consent.empty, true)
 
   // The recorder's status is the newer read of the speech service when it is on the page. The summary says it in the clinician's words, never
   // the service's own reason, which can be a setup instruction for whoever runs the computer (Doctor HERO polish: 'Start it with "npm run
@@ -171,8 +175,8 @@ test('conversation, nothing recorded yet: consent needed, speech-to-text unavail
   // Open, the transcription panel under the summary says it (once), so the summary does not say it again.
   assert.deepEqual(down.lines, ['Nothing recorded or typed yet.'])
   assert.equal(down.lines.some((l) => l.includes('npm') || l === SPEECH_UNAVAILABLE_LINE), false)
-  // Closed, nothing the chip already says.
-  assert.deepEqual(down.compact, ['Nothing recorded or typed yet.'])
+  // Closed, nothing the chip already says (the first line is the empty state's own words since the final pass, §5).
+  assert.deepEqual(down.compact, ['Not recorded yet'])
   assert.equal(conversationView({ ai: ai({ stt: { available: false, state: 'loading' } }), failed: ok }).state.tone, 'warn')
   assert.deepEqual(conversationView({ ai: ai({ stt: { available: false, state: 'not_configured' } }), failed: ok }).state, { kind: 'speech_not_set_up', word: 'Speech-to-text not set up', tone: 'neutral' })
 
@@ -184,8 +188,11 @@ test('conversation, nothing recorded yet: consent needed, speech-to-text unavail
   const closed = conversationView({ ai: ai(), capture: capture({ canRecord: false, blockedReason: 'This consultation is signed.' }), failed: ok })
   assert.deepEqual(closed.state, { kind: 'empty', word: 'Nothing recorded', tone: 'neutral' })
   assert.equal(closed.lines[1], 'This consultation is signed.')
-  assert.deepEqual(closed.compact, ['Nothing recorded or typed yet.', 'This consultation is signed.'])
-  assert.deepEqual(ready.compact, ['Nothing recorded or typed yet.'])
+  // The empty state's own words closed (final pass, §5); open, the fuller line above is unchanged.
+  assert.deepEqual(closed.compact, ['Not recorded yet', 'This consultation is signed.'])
+  assert.deepEqual(ready.compact, ['Not recorded yet'])
+  assert.equal(ready.empty, true)
+  assert.equal(ready.demo, false)
   assert.equal(conversationView({ ai: ai(), failed: ok }).state.kind, 'empty')
 })
 
@@ -220,10 +227,14 @@ test('history: Loading, Not updated, No history recorded (allergy status not rec
   assert.deepEqual(empty.allergies, { text: 'Allergy status not recorded', tone: 'warn' })
   assert.deepEqual(empty.facts, { entries: 0, allergyStatusRecorded: false })
 
+  // Missing is not none: the closed module offers to record the allergy status only when nothing is recorded.
+  assert.equal(empty.allergyStatusMissing, true)
   // "No known allergies" is a recorded allergy status: the history counts.
   const nka = historyView({ history: history({ noKnownAllergies: true }), failed: false })
   assert.deepEqual(nka.state, { kind: 'recorded', word: 'History recorded', tone: 'ok' })
-  assert.deepEqual(nka.allergies, { text: 'No known allergies', tone: 'neutral' })
+  // "(recorded)" says it is a recorded status, not an absence of data (missing is not none: final pass, honesty rules).
+  assert.deepEqual(nka.allergies, { text: 'No known allergies (recorded)', tone: 'neutral' })
+  assert.equal(nka.allergyStatusMissing, false)
   assert.equal(historyView({ history: history({ noKnownAllergies: true }), failed: true }).state.word, 'History recorded · not updated')
   // An answer the screen cannot read is Not updated, never "No history recorded".
   const odd = historyView({ history: { allergies: 'x' } as unknown as PatientHistory, failed: false })
@@ -255,9 +266,14 @@ test('history: allergies with their severity, open conditions (three, then +n), 
   assert.equal(v.conditions, 'Conditions: Asthma, Hypertension, Diabetes +1')
   assert.equal(v.record, `1 current medicine · 3 results · last consultation ${fmtDate('2026-09-01')}`)
   assert.equal(v.reason, 'Reason for visit: Fever')
-  // Closed: the open conditions and the current medicines, counted, in one line.
-  assert.equal(v.counts, '4 open conditions · 1 current medicine')
-  assert.equal(historyView({ history: history({}), failed: false }).counts, 'No open condition · 0 current medicines')
+  // Closed: the last consultation, the open conditions and the current medicines in one line (the last consultation added in the final pass,
+  // §5: "No previous consultation found" is the module's empty state).
+  assert.equal(v.counts, `Last consultation ${fmtDate('2026-09-01')} · 4 open conditions · 1 current medicine`)
+  // Missing is not none: nothing recorded is said as such, never "0 current medicines" (final pass, honesty rules).
+  const none = historyView({ history: history({}), failed: false })
+  assert.equal(none.counts, 'No previous consultation found · No open condition recorded · No current medicines recorded')
+  assert.equal(none.record, 'No current medicines recorded · No results recorded · No previous consultation found')
+  assert.equal(v.allergyStatusMissing, false)
   assert.deepEqual(v.facts, { entries: 10, allergyStatusRecorded: true })
   assert.match(v.meta!, /^Patient record · as of /)
   assert.equal(historyView({ history: history({ allergies: [{ substance: 'Nuts', severity: 'mild' }] as PatientHistory['allergies'] }), failed: false }).allergies?.tone, 'neutral')
@@ -602,4 +618,76 @@ test('thermal: the model and the camera as the server and the page say them', ()
   assert.deepEqual(thermalModelLine(undefined, true), { chip: null, available: null, text: 'Thermal model status could not be read.' })
   assert.equal(thermalCameraLine(false), 'FLIR ONE not connected')
   assert.equal(thermalCameraLine(true), 'Camera bridge present: a FLIR ONE can be connected in the thermal workspace.')
+})
+
+// --- Doctor HERO final pass: empty states with an action, missing is not none, the demo audio, the waveform's envelope ----------------------
+
+test('conversation: a transcript of the demo consultation says "Synthetic demo audio" (the transcript records it); others never do', () => {
+  const demo = transcript({ audioOrigin: 'demo_synthetic' } as Partial<Transcript>)
+  const v = conversationView({ ai: ai({ transcripts: [demo] }), failed: ok })
+  assert.equal(v.demo, true)
+  assert.equal(v.empty, false)
+  assert.match(v.meta!, /^Synthetic demo audio · /)
+  for (const t of [transcript(), transcript({ audioOrigin: 'microphone' } as Partial<Transcript>), transcript({ audioOrigin: null } as Partial<Transcript>)]) {
+    const other = conversationView({ ai: ai({ transcripts: [t] }), failed: ok })
+    assert.equal(other.demo, false)
+    assert.doesNotMatch(other.meta ?? '', /Synthetic/)
+  }
+  assert.equal(isDemoAudio(null), false)
+  assert.equal(isDemoAudio('demo_synthetic'), false)
+  // While recording, nothing is offered: the module is not empty.
+  const live = conversationView({ ai: ai({ transcripts: [transcript({ status: 'live' })] }), failed: ok })
+  assert.equal(live.empty, false)
+})
+
+test('vitals, closed: no device attached (Attach device only with the consent), waiting for the first reading, sending, or not known', () => {
+  const none = vitalsView({ vitals: [], dateOfBirth: adult, devices: answer([]), devicesFailed: false, nowLocal: 1_000_000 })
+  assert.equal(none.devices, 'none')
+  assert.equal(none.canAttach, true)
+  const noConsent = vitalsView({ vitals: [], dateOfBirth: adult, devices: answer([], { consent: 'missing' }), devicesFailed: false, nowLocal: 1_000_000 })
+  assert.equal(noConsent.devices, 'none')
+  assert.equal(noConsent.canAttach, false)
+  // Attached, nothing received yet: said in words, never "no data" alone and never a value.
+  const waiting = vitalsView({ vitals: [], dateOfBirth: adult, devices: answer([device({ readings: [], state: 'no_data', lastSeenAt: null })]), devicesFailed: false, nowLocal: 1_000_000 })
+  assert.equal(waiting.devices, 'waiting')
+  assert.equal(waiting.deviceLine, 'Waiting for the device’s first reading.')
+  assert.deepEqual(waiting.tiles, [])
+  const sending = vitalsView({ vitals: [], dateOfBirth: adult, devices: answer([device({ readings: [reading('heart_rate', 72, -5)] })]), devicesFailed: false, nowLocal: 1_000_000 })
+  assert.equal(sending.devices, 'sending')
+  assert.equal(sending.deviceLine, null)
+  // Not read, or not updated: nothing is said about the devices that the screen does not know.
+  assert.equal(vitalsView({ vitals: [], dateOfBirth: adult, devicesFailed: true, nowLocal: 1_000_000 }).devices, 'unknown')
+  assert.equal(vitalsView({ vitals: [], dateOfBirth: adult, devices: answer([], { receivedAt: 0 }), devicesFailed: false, nowLocal: 1_000_000 }).devices, 'unknown')
+})
+
+test('stethoscope and thermal, closed: "No recording yet" and "Thermal image not captured" offer their action only when the consent allows', () => {
+  const steth = stethoscopeView({ recordings: [], failed: false, patient: granted('device_monitoring'), encounterId: ENC })
+  assert.equal(steth.compact, 'No recording yet')
+  assert.equal(steth.canRecord, true)
+  assert.equal(stethoscopeView({ recordings: [], failed: false, patient: noConsents, encounterId: ENC }).canRecord, false)
+  assert.equal(stethoscopeView({ recordings: [recording()], failed: false, patient: granted('device_monitoring'), encounterId: ENC }).canRecord, false)
+  assert.equal(stethoscopeView({ failed: true, encounterId: ENC }).canRecord, false)
+
+  const thermal = thermalView({ captures: [], failed: false, patient: granted('thermal_imaging'), encounterId: ENC, modelFailed: false, bridge: false })
+  assert.equal(thermal.images, 'Thermal image not captured')
+  assert.equal(thermal.canCapture, true)
+  assert.equal(thermalView({ captures: [], failed: false, patient: noConsents, encounterId: ENC, modelFailed: false, bridge: false }).canCapture, false)
+  assert.equal(thermalView({ captures: [capture5()], failed: false, patient: granted('thermal_imaging'), encounterId: ENC, modelFailed: false, bridge: false }).canCapture, false)
+  assert.equal(thermalView({ failed: true, encounterId: ENC, modelFailed: false, bridge: false }).canCapture, false)
+})
+
+test('the waveform is the recording’s own amplitude: peak and RMS per slice over every channel, relative to its loudest sample; nothing else', () => {
+  // Silence, then a burst at half scale, then silence: one channel, 8 samples into 4 slices.
+  const e = envelopeOf([[0, 0, 0.5, -0.5, 0.25, -0.25, 0, 0]], 2, 4)
+  assert.deepEqual(Array.from(e.peak), [0, 0.5, 0.25, 0])
+  assert.deepEqual(Array.from(e.rms).map((v) => Math.round(v * 1000) / 1000), [0, 0.5, 0.25, 0])
+  assert.equal(e.max, 0.5)
+  assert.equal(e.duration, 2)
+  // Two channels: a slice's peak is the louder channel's.
+  assert.deepEqual(Array.from(envelopeOf([[0.1, 0.1], [0, -0.8]], 1, 2).peak).map((v) => Math.round(v * 10) / 10), [0.1, 0.8])
+  // Fewer samples than slices: one slice per sample; no samples: one empty slice, never a crash.
+  assert.equal(envelopeOf([[0.1, 0.2, 0.3]], 1).peak.length, 3)
+  assert.deepEqual(Array.from(envelopeOf([], 0).peak), [0])
+  assert.equal(clockOf(62.4), '1:02')
+  assert.equal(clockOf(Number.NaN), '0:00')
 })

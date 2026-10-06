@@ -157,6 +157,56 @@ export type DraftModel = z.infer<typeof DraftModel>
 export const DraftValidation = z.object({ produced: z.number().int(), kept: z.number().int(), removed: z.number().int(), flagged: z.number().int(), reasons: z.record(z.string(), z.number().int()) })
 export type DraftValidation = z.infer<typeof DraftValidation>
 
+/**
+ * How far the local model has got with a draft it is writing, as the server last heard it from the model server (kept in memory only, never stored).
+ * `generatedTokens` is counted as the model server streams its answer: 0 while the model reads the record, then one per piece it writes (its own count at
+ * the end). `maxTokens` is the most the draft may take (the configured cap), not a forecast: the answer usually stops well before it. There is no
+ * percentage and no time left, because neither is known.
+ */
+export const ConsultProgress = z.object({
+  generatedTokens: z.number().int().nonnegative(),
+  maxTokens: z.number().int().positive(),
+  /** When the model's turn came (the record was sent to it). */
+  startedAt: z.string(),
+  /** When the model server last said how far it had got. Two successive values give the writing speed. */
+  updatedAt: z.string(),
+})
+export type ConsultProgress = z.infer<typeof ConsultProgress>
+
+/**
+ * What reached the model for a draft, counted from the list of sources the draft stored when it was made (its manifest): what was SENT, never a prediction.
+ * Each source the model read is counted once, in one group. The stethoscope is never here: no recording is sent to any model.
+ */
+export const ConsultInputsUsed = z.object({
+  /** Points the doctor confirmed during capture. The transcript itself and the audio are never sent. */
+  conversation: z.object({ confirmedPoints: z.number().int() }),
+  /**
+   * The patient's record: allergy entries and the allergy status line, known conditions, the medicine list, investigation results, the notes, diagnoses,
+   * prescriptions and amendments of earlier signed consultations (and how many consultations those are), and reasons for earlier visits. `items` is every
+   * record item of these sent (the parts listed, and any other kind of record item).
+   */
+  history: z.object({
+    items: z.number().int(),
+    allergies: z.number().int(),
+    allergyStatus: z.number().int(),
+    conditions: z.number().int(),
+    medicines: z.number().int(),
+    results: z.number().int(),
+    previousConsultations: z.number().int(),
+    previousConsultationItems: z.number().int(),
+    earlierVisitReasons: z.number().int(),
+  }),
+  /** Today's consultation as the doctor had written it: note sections, diagnoses and prescription lines of today's draft, and the reason for this visit. */
+  note: z.object({ items: z.number().int(), sections: z.number().int(), diagnoses: z.number().int(), prescriptionItems: z.number().int(), visitReason: z.number().int() }),
+  /** Vital signs: measured by staff, and sent by a device (unverified). A simulator's values are never sent. */
+  vitals: z.object({ staff: z.number().int(), device: z.number().int() }),
+  /** Approved thermal images' measurements and the doctor-reviewed summaries of them. A simulated image is never sent. */
+  thermal: z.object({ images: z.number().int(), reviewedSummaries: z.number().int() }),
+  /** Every source sent (the sum of the groups above). */
+  total: z.number().int(),
+})
+export type ConsultInputsUsed = z.infer<typeof ConsultInputsUsed>
+
 export const ConsultDraft = z.object({
   id: z.uuid(),
   encounterId: z.uuid(),
@@ -164,6 +214,16 @@ export const ConsultDraft = z.object({
   status: DraftStatus,
   /** While generating: waiting for the local model, or running. */
   phase: z.enum(['queued', 'running']).nullable(),
+  /**
+   * While the model writes (`phase` "running"): how far it has got. Null otherwise, and also while running when the model server has not said (it does
+   * not stream, the stream could not be read, or the server restarted since).
+   */
+  progress: ConsultProgress.nullable(),
+  /**
+   * What was sent to the model for this draft, counted by kind. Null when nothing was sent (waiting for the model, too little to draft from, refused or
+   * cancelled before the model's turn) and for drafts made before these counts were kept.
+   */
+  inputsUsed: ConsultInputsUsed.nullable(),
   /** True when the record, the doctor's notes or the confirmed points changed after this draft was made. */
   stale: z.boolean(),
   staleSummary: z.string().nullable(),

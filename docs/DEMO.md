@@ -206,6 +206,18 @@ No device is connected to this build. To see the device layer, use the **simulat
 
 Say plainly when demonstrating: these are generated numbers on a labelled simulator; no band or stethoscope has been integrated or validated.
 
+### The Doctor HERO demo: a synthetic consultation through the real local models
+
+Needs the local speech model (`npm run speech:model`) and the local language model (`npm run llm:setup`); everything stays on this computer.
+
+1. `npm run demo:hero`: seeds **Anaya Demo-Synthetic** (a fictional child of 6: amoxicillin allergy, a signed consultation two months ago, salbutamol on the medicine list), a new visit ready for Dr. Meera on each run, and the simulator band SIM-BAND-HERO-1 (its token in `.data/sim/`, never printed). Optional: `npm run devices:simulate -- --token-file .data/sim/SIM-BAND-HERO-1.token --scenario fever` (generated values, SIMULATED; never read by the draft).
+2. Sign in as dr.meera, start Anaya's consultation from *Today's patients*. Five inputs on the left, Mana on the right.
+3. Conversation → **Play demo consultation**: eight short WAV files (two Windows computer voices, about 30 seconds; `node scripts/demo-audio.mjs --check` verifies them) play through the speakers and each part is sent, as it ends, to the speech model on this computer. The transcript is what the model heard, marked **SYNTHETIC AUDIO — computer voices, not a real consultation**; no speaker is assigned automatically. Fixed rules then find the important points for review. Offered only where simulators are allowed.
+4. Confirm a point, type a line in the note, **Analyze with Mana** (or Ctrl+Enter). While the model writes, the panel shows its real token count and speed ("812 tokens · 44 tokens/s · at most 2,600 tokens"); on this machine's GPU a draft takes about 30–45 seconds. "Mana analyzed" lists what was actually sent (the stethoscope: recordings are not analysed).
+5. Review the statements (Accept, Edit, Reject; then *Add to* a note section). In the prescription: **Repeat a current medicine**, add the duration, **Preview & print** (saves first; the page says "Draft — not signed · not a valid prescription"). **Complete consultation** → Review and sign.
+
+Say plainly: the audio is synthetic, the draft is a local model's draft for the doctor's review, and the measured time is far from a 10-second target.
+
 ## 4. Signed record, drafts and integrity
 
 1. On the patient record, the visit links to the signed consultation.

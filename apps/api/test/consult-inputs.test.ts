@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { type DeviceReading, deviceStream, diffManifests, manifestOf, type SourceItem, staleSummary, withinBudget, withoutDeviceStream } from '../src/consult/inputs.ts'
+import { type DeviceReading, deviceStream, diffManifests, inputsUsedOf, manifestOf, type SourceItem, staleSummary, withinBudget, withoutDeviceStream } from '../src/consult/inputs.ts'
 import { renderUserMessage, sourceLine } from '../src/consult/prompt.ts'
 
 // What fits in the model's context, and what a change to the record does to a draft made earlier: both decided from lists of items, with no database.
@@ -129,5 +129,55 @@ describe('a device that keeps sending readings', () => {
     expect(d.changed.map((m) => m.ref)).toEqual(['H4'])
     expect(d.removed.map((m) => m.ref)).toEqual(['H5'])
     expect(d.added.map((m) => m.ref)).toEqual(['S1', 'H8', 'H0', 'M1'])
+  })
+})
+
+// HERO §1: "Mana analyzed …" lists what reached the model, counted from the manifest the draft stored: every source once, in one group, never predicted.
+describe('what a draft sent, counted by kind', () => {
+  const signedAt = '2026-08-01T09:00:00.000Z'
+  const sent = [
+    item('A1', 1, { sourceType: 'allergy', field: 'Allergy', status: 'active' }),
+    item('A2', 1, { sourceType: 'patient', field: 'Allergy status' }),
+    item('H1', 1, { sourceType: 'patient_condition', field: 'Known condition' }),
+    item('U1', 1, { sourceType: 'patient_medication', field: 'Current medicine' }),
+    item('U2', 1, { sourceType: 'patient_medication', field: 'Stopped medicine' }),
+    item('L1', 2, { sourceType: 'investigation_result', field: 'Investigation result' }),
+    // Two earlier consultations: three items of one (signed at the same moment), one of the other, and an amendment.
+    item('N1', 2, { sourceType: 'encounter_note', field: 'Assessment', status: 'signed', date: signedAt }),
+    item('D1', 2, { sourceType: 'diagnosis', field: 'Diagnosis', status: 'signed', date: signedAt }),
+    item('M1', 2, { sourceType: 'prescription_item', field: 'Prescription', status: 'signed', date: signedAt }),
+    item('N2', 3, { sourceType: 'encounter_note', field: 'Plan', status: 'signed', date: '2026-03-01T09:00:00.000Z' }),
+    item('X1', 3, { sourceType: 'amendment', field: 'Amendment', date: '2026-08-02T09:00:00.000Z' }),
+    item('R1', 0, { sourceType: 'visit', field: 'Reason for visit (this visit)' }),
+    item('R2', 3, { sourceType: 'visit', field: 'Reason for visit' }),
+    item('C1', 0, { sourceType: 'encounter_note', field: 'Chief complaint (today’s draft)', status: 'draft' }),
+    item('C2', 0, { sourceType: 'diagnosis', field: 'Diagnosis (today’s draft)', status: 'draft' }),
+    item('P1', 0, { sourceType: 'prescription_item', field: 'Prescription (today’s draft)', status: 'draft' }),
+    item('V1', 0, { sourceType: 'observation', field: 'Temperature', provenance: 'staff_measured' }),
+    item('V2', 0, { sourceType: 'observation', field: 'Heart rate', provenance: 'device_measured' }),
+    item('V3', 0, { sourceType: 'observation', field: 'SpO₂', provenance: 'device_measured' }),
+    item('T1', 3, { sourceType: 'thermal_capture', field: 'Thermal measurement' }),
+    item('T2', 3, { sourceType: 'thermal_capture', field: 'Thermal summary (doctor-reviewed)', provenance: 'clinician_stated' }),
+    item('F1', 0, { sourceType: 'clinical_fact', field: 'Symptom (confirmed point, the patient said)', provenance: 'doctor_confirmed' }),
+    item('F2', 0, { sourceType: 'clinical_fact', field: 'Allergy (confirmed point, the patient said)', provenance: 'doctor_confirmed' }),
+  ]
+
+  it('puts every source in one group: the conversation, the record, today’s note, staff and device vitals, thermal', () => {
+    const u = inputsUsedOf(manifestOf(sent))!
+    expect(u).toEqual({
+      conversation: { confirmedPoints: 2 },
+      history: { items: 12, allergies: 1, allergyStatus: 1, conditions: 1, medicines: 2, results: 1, previousConsultations: 2, previousConsultationItems: 5, earlierVisitReasons: 1 },
+      note: { items: 4, sections: 1, diagnoses: 1, prescriptionItems: 1, visitReason: 1 },
+      vitals: { staff: 1, device: 2 },
+      thermal: { images: 1, reviewedSummaries: 1 },
+      total: sent.length,
+    })
+    expect(u.conversation.confirmedPoints + u.history.items + u.note.items + u.vitals.staff + u.vitals.device + u.thermal.images + u.thermal.reviewedSummaries).toBe(u.total)
+  })
+
+  it('nothing sent is nothing counted; a manifest stored before provenance was kept gives no count rather than a wrong one', () => {
+    expect(inputsUsedOf([])).toMatchObject({ total: 0, vitals: { staff: 0, device: 0 } })
+    const old = manifestOf(sent).map(({ provenance: _p, ...m }) => m)
+    expect(inputsUsedOf(old)).toBeNull()
   })
 })

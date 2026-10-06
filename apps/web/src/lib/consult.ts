@@ -5,10 +5,16 @@ import { api } from './api.ts'
 
 export const consultKey = (encounterId: string) => ['encounter', encounterId, 'consultation-ai'] as const
 
+/** One draft as polled while it is being made (GET /consultation-ai/drafts/:id): its phase and the model's progress, read about every second. */
+export const draftPollKey = (draftId: string | null) => ['consultation-draft', draftId] as const
+
+/** How often a draft being made is read again: the model's progress is reported at most every 500 ms; the read is cheap and not audited. */
+export const DRAFT_POLL_MS = 1000
+
 /**
  * The consultation's AI draft state: the local model's status, the consent, the newest draft with its statements and sources, and whether the
- * record moved since. While a draft is being made the screen asks the draft itself again every few seconds (a cheap read that does not touch
- * the record), and when it ends the whole state is read again.
+ * record moved since. While a draft is being made the screen asks the draft itself again every second (a cheap read that does not touch the
+ * record, and carries how far the model has got), and when its phase or status changes the whole state is read again.
  */
 export function useConsultationAi(encounterId: string) {
   const qc = useQueryClient()
@@ -21,9 +27,9 @@ export function useConsultationAi(encounterId: string) {
   })
   const generating = state.data?.draft?.status === 'generating' ? state.data.draft.id : null
   useQuery({
-    queryKey: ['consultation-draft', generating],
+    queryKey: draftPollKey(generating),
     enabled: !!generating,
-    refetchInterval: 3000,
+    refetchInterval: DRAFT_POLL_MS,
     queryFn: async () => {
       const d = await api<ConsultDraft>(`/consultation-ai/drafts/${generating}`)
       if (d.status !== 'generating' || d.phase !== state.data?.draft?.phase) await qc.invalidateQueries({ queryKey: consultKey(encounterId) })

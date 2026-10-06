@@ -1,7 +1,6 @@
 import type { PatientDetail, Role } from '@adaxai/contracts'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { flushSync } from 'react-dom'
 import { createBrowserRouter, Outlet, RouterProvider } from 'react-router'
 import { PortalLayout } from './components/PortalLayout.tsx'
 import { CapturePanel } from './components/capture/CapturePanel.tsx'
@@ -10,11 +9,9 @@ import { ConsultAction, ConsultationLink } from './components/clinical/ConsultAc
 import { Timeline } from './components/clinical/Timeline.tsx'
 import { RequireAuth, RoleRedirect } from './components/RequireAuth.tsx'
 import type { RouteHandle } from './components/shell/AppShell.tsx'
-import { Button } from './components/ui/Button.tsx'
 import { PanelBoundary } from './components/ui/PanelBoundary.tsx'
 import { ToastProvider } from './components/ui/Toast.tsx'
 import { watchSessionOnFocus } from './lib/focus.ts'
-import { expandPart, showPart } from './lib/workspace.ts'
 import { createQueryClient } from './lib/queryClient.ts'
 import { AdminAuditPage } from './pages/admin/AdminAuditPage.tsx'
 import { AppointmentsPage } from './pages/clinical/AppointmentsPage.tsx'
@@ -49,36 +46,6 @@ import { ManaAssistant } from './components/mana/ManaAssistant.tsx'
 import { ThermalPanel } from './components/thermal/ThermalPanel.tsx'
 import { ManaArea } from './components/workspace/ManaArea.tsx'
 import { PrescriptionAiLane } from './components/workspace/PrescriptionAiLane.tsx'
-
-/**
- * Module 5's two actions while the module is closed: the thermal imaging workspace and the research view. The page shows them only while it
- * is closed, because the full panel (ThermalPanel) has the same two once it is open. Each opens the module and then uses the panel's own
- * action, so there is one workspace and one research view on the page, drawn where a dialog can be seen (not inside the module's hidden
- * body), and focus comes back to the panel's button when it closes. One dense row of two (36px, words only), beside the newest image. The visible words start each button's name, which says the rest ("Open viewer (thermal imaging)",
- * "Pediatric shock research"): the module's title already says "Thermal imaging".
- */
-function ThermalModuleActions({ canEdit }: { canEdit: boolean }) {
-  const use = (action: 'thermal-open' | 'thermal-research-open') => {
-    // Open now, not at the next render: the panel's button must be on the screen to take focus and the click.
-    flushSync(() => expandPart('tools-thermal'))
-    showPart('tools-thermal')
-    const button = document.getElementById('tools-thermal')?.querySelector<HTMLButtonElement>(`[data-testid="${action}"]`)
-    if (!button || button.disabled) return
-    button.focus({ preventScroll: true })
-    button.click()
-  }
-  return (
-    <>
-      <Button size="sm" variant="secondary" className="px-2.5!" onClick={() => use('thermal-open')} disabled={!canEdit} data-testid="module-thermal-open">
-        Open viewer<span className="sr-only"> (thermal imaging)</span>
-      </Button>
-      <Button size="sm" variant="secondary" className="px-2.5!" onClick={() => use('thermal-research-open')} data-testid="module-thermal-research">
-        <span className="sr-only">Pediatric </span>
-        <span className="first-letter:uppercase">shock research</span>
-      </Button>
-    </>
-  )
-}
 
 const portal = (role: Role) => (
   <RequireAuth roles={[role]}>
@@ -156,8 +123,8 @@ const router = createBrowserRouter([
               conversation: (e, inserter) => <CapturePanel encounter={e} inserter={inserter} />,
               devices: (e) => <DeviceReadingsCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />,
               stethoscope: (e) => <AuscultationCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />,
+              // Its closed module's quick actions (Capture or Open thermal, Research) are the module summary's own: they use this panel's buttons.
               thermal: (e, inserter) => <ThermalPanel encounter={e} inserter={inserter} canEdit={e.canEdit} />,
-              thermalActions: (e) => <ThermalModuleActions canEdit={e.canEdit} />,
               // The analysis' progress, the Mana result (model output), the consultation overview with the safety rules (fixed rules), and
               // Ask Mana, which is given no way into the note: it is read-only.
               mana: (e, inserter) => <ManaArea encounter={e} inserter={inserter} />,

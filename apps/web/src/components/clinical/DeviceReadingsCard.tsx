@@ -111,7 +111,10 @@ function ReadingTile({ kind, reading, simulated, now }: { kind: VitalKind; readi
   )
 }
 
-/** The card's opt-in variants. `consultation`: an UNVERIFIED mark beside each device that is not a simulator, and a disconnected device says so first. */
+/**
+ * The card's opt-in variants. `consultation`: an UNVERIFIED mark beside each device that is not a simulator, a disconnected device says so
+ * first, and each device says that its signal quality is not reported (no device sends one: nothing here can tell a good contact from a bad one).
+ */
 export type DeviceCardVariant = 'consultation'
 
 function DeviceBlock({ d, now, onEnd, ending, variant }: { d: AttachedDevice; now: number; onEnd: () => void; ending: boolean; variant?: DeviceCardVariant | undefined }) {
@@ -139,6 +142,11 @@ function DeviceBlock({ d, now, onEnd, ending, variant }: { d: AttachedDevice; no
       <p className="mt-1 text-xs text-ink-muted" data-testid="device-contact">
         {d.lastSeenAt ? `Last contact from its gateway ${fmtWhen(d.lastSeenAt, now)} · ${ageText(now - Date.parse(d.lastSeenAt))}` : 'No contact from its gateway yet'}
       </p>
+      {consultation && (
+        <p className="mt-1 text-xs text-ink-muted" data-testid="device-signal-quality">
+          Signal quality: not reported by the {d.simulated ? 'simulator' : 'device'}
+        </p>
+      )}
       {d.reason && (
         <p className="mt-1 text-xs" data-testid="device-reason">
           {consultation && d.state === 'disconnected' ? `Device not connected. ${d.reason}` : d.reason}
@@ -171,7 +179,7 @@ const toLocalInput = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() *
 function AttachDialog({ patientId, encounterId, onClose }: { patientId: string; encounterId?: string | undefined; onClose: () => void }) {
   const qc = useQueryClient()
   const toast = useToast()
-  const list = useDevices()
+  const list = useDevices({ fresh: true })
   const [deviceId, setDeviceId] = useState('')
   const [until, setUntil] = useState('')
   const free = (list.data?.devices ?? []).filter((d) => d.status === 'active' && !d.assignment)

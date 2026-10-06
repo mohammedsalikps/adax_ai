@@ -1,7 +1,7 @@
-import type { ConsultationAi, ConsultDraft, Encounter } from '@adaxai/contracts'
+import type { ConsultationAi, ConsultDraft, ConsultProgress, Encounter } from '@adaxai/contracts'
 import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronUp, LoaderCircle, Minus, Sparkles } from 'lucide-react'
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { type AiResponse, aiKey, newIdempotencyKey } from '../../lib/ai.ts'
 import {
   ANALYSIS_COVERAGE,
@@ -10,19 +10,25 @@ import {
   type AnalysisInputFacts,
   analysisInputs,
   analyzeControl,
+  fmtCount,
   fmtDuration,
   type ModelAsk,
   modelStep,
+  NO_WRITING,
   NOT_SAVED,
+  nextWriting,
   type NoteSaveState,
   type RulesRun,
   rulesRunOf,
   type SaveRun,
   savedForAnalysis,
   startRefusal,
+  withPolledProgress,
+  type Writing,
 } from '../../lib/analysis.ts'
 import { ApiError, api, errorMessage } from '../../lib/api.ts'
-import { consultKey, useGenerateDraft } from '../../lib/consult.ts'
+import { consultKey, draftPollKey, useGenerateDraft } from '../../lib/consult.ts'
+import { isMacPlatform } from '../../lib/shortcuts.ts'
 import { contextKey } from '../../lib/consultationContext.ts'
 import { Button } from '../ui/Button.tsx'
 import { Alert } from '../ui/Feedback.tsx'
@@ -173,8 +179,33 @@ export function useAnalysisInputFacts(encounter: Pick<Encounter, 'id' | 'patient
   return { confirmedPoints: conversation.confirmedPoints, history: history.status, ...vitals.analysis, ...thermal.analysis, reviewedThermalSummaries: 0 }
 }
 
+/**
+ * The draft being made, as the result card polls it about every second (GET /consultation-ai/drafts/:id, lib/consult.ts): observed, never
+ * enabled here, so it adds no request. It carries the model's progress, which the consultation's AI state does not re-read.
+ */
+function usePolledDraft(draftId: string | null) {
+  return useQuery({ queryKey: draftPollKey(draftId), queryFn: () => api<ConsultDraft>(`/consultation-ai/drafts/${draftId}`), enabled: false }).data ?? null
+}
+
+/**
+ * The writing speed of a consultation's draft, from the successive progress values the page polled (lib/analysis.ts nextWriting), kept per
+ * consultation outside React so that the rail's line and the Mana area's progress, drawn apart, give the same speed from the same values.
+ */
+const writings = new Map<string, Writing>()
+
+function useWriting(encounterId: string, draftId: string | null, progress: ConsultProgress | null): Writing {
+  // The polled answer keeps its identity while it is unchanged (the query's structural sharing), and the same report read again changes nothing.
+  return useMemo(() => {
+    if (!draftId) return NO_WRITING
+    const next = nextWriting(writings.get(encounterId) ?? NO_WRITING, draftId, progress)
+    writings.set(encounterId, next)
+    return next
+  }, [encounterId, draftId, progress])
+}
+
 export interface AnalysisState {
   run: AnalysisRun | null
+  /** The consultation's AI state, with the polled progress on the draft being made (lib/analysis.ts withPolledProgress). */
   ai: AiFacts | undefined
   aiError: boolean
   /**
@@ -182,15 +213,27 @@ export interface AnalysisState {
    * button and the Mana area's progress both read this, so they never disagree.
    */
   active: boolean
+  /** While the model writes: how far it has got as the server last said (null when it has not said), and the speed from the last two values. */
+  progress: ConsultProgress | null
+  writing: Writing
 }
 
 export function useAnalysis(encounterId: string): AnalysisState {
   const run = useAnalysisRun(encounterId)
   const q = useConsultationAiObserver(encounterId)
-  const ai = q.data
+  const shown = q.data?.draft
+  const generatingId = shown?.status === 'generating' ? shown.id : null
+  const polled = usePolledDraft(generatingId)
+  const ai = withPolledProgress(q.data, polled) ?? undefined
+  const d = ai?.draft
+  const progress = d && d.status === 'generating' && d.phase === 'running' ? (d.progress ?? null) : null
+  const writing = useWriting(encounterId, generatingId, progress)
   const active = !!run?.pending || modelStep(run?.ask ?? null, ai).state === 'running'
-  return { run, ai, aiError: q.isError, active }
+  return { run, ai, aiError: q.isError, active, progress, writing }
 }
+
+/** The rail's short form of the progress while the model writes ("812 tokens"); null otherwise. */
+const tokensSoFar = (p: ConsultProgress | null) => (p && p.generatedTokens > 0 ? `${fmtCount(p.generatedTokens)} ${p.generatedTokens === 1 ? 'token' : 'tokens'}` : null)
 
 // --- the inclusion list ------------------------------------------------------------------------------------------------------------------------
 
@@ -238,6 +281,9 @@ export interface AnalyzeButtonProps {
   save: NoteSaveState
 }
 
+/** A Mac names the page's shortcut with Command, everything else with Ctrl. */
+const MAC = typeof navigator !== 'undefined' && isMacPlatform(navigator.platform)
+
 /** performance.now(), read again every second while `ticking`; still otherwise. */
 function useTicking(ticking: boolean): number {
   const [now, setNow] = useState(() => performance.now())
@@ -252,14 +298,15 @@ function useTicking(ticking: boolean): number {
 
 /**
  * One line under the button: "Reads 4 of 5 inputs · What Mana reads". Before a run, how many of the five inputs a run reads as the page holds
- * them now; while a run is under way, what the local model is doing and the time since the click instead ("Writing the draft · 0:12"), so the
- * click is answered where it was made even when the Mana area's progress is out of sight (that panel is the one that announces the steps).
- * "What Mana reads" opens, above the line, the list of the five inputs (`analysis-inputs`: each read or not and why, marks, never progress;
- * during a run what that run read at the click) and the fixed line on what a run never reads: a panel of its own (at most 18rem, its own
- * scroll), so the inputs above it keep their room. Escape or a click elsewhere closes it, and focus returns to its button. Not remembered.
+ * them now; while a run is under way, what the local model is doing, the tokens it has written (as the server reports them) and the time since
+ * the click instead ("Writing the draft · 812 tokens · 0:21"), so the click is answered where it was made even when the Mana area's progress
+ * is out of sight (that panel is the one that announces the steps). "What Mana reads" opens a popover above the Analyze area (never over the
+ * button, and the rail's foot does not grow): the list of the five inputs (`analysis-inputs`: each read or not and why, marks, never progress;
+ * during a run what that run read at the click) and the fixed line on what a run never reads, at most 18rem with its own scroll. Escape or a
+ * click elsewhere closes it, and focus returns to its button. Not remembered.
  */
 export function AnalysisReads({ encounter }: { encounter: Pick<Encounter, 'id' | 'patient' | 'vitals'> }) {
-  const { run, ai, active } = useAnalysis(encounter.id)
+  const { run, ai, active, progress } = useAnalysis(encounter.id)
   const facts = useAnalysisInputFacts(encounter)
   const inputs = active && run ? run.inputs : analysisInputs(facts)
   const read = inputs.filter((i) => i.included).length
@@ -287,12 +334,15 @@ export function AnalysisReads({ encounter }: { encounter: Pick<Encounter, 'id' |
   }, [open])
   const elapsed = active && run ? fmtDuration(Math.max(0, now - run.clickedAt)) : null
   const doing = active ? modelStep(run?.ask ?? null, ai).detail : null
+  const tokens = active ? tokensSoFar(progress) : null
   return (
-    <div ref={wrap} className="relative min-w-0" data-testid="analysis-reads">
+    // Not positioned itself: the list opens above the whole Analyze area (AnalyzeButton's wrapper), so it never covers the button.
+    <div ref={wrap} className="min-w-0" data-testid="analysis-reads">
       <div className="flex min-h-control-sm min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-ink-muted">
         {doing ? (
           <span className="font-medium text-ai tabular-nums" data-testid="analyze-progress">
             {doing}
+            {tokens ? ` · ${tokens}` : ''}
             {elapsed ? ` · ${elapsed}` : ''}
           </span>
         ) : (
@@ -360,7 +410,7 @@ export function AnalyzeButton({ encounter, flush, save }: AnalyzeButtonProps) {
   const notSaved = !active && run?.save.state === 'failed'
 
   return (
-    <div className="min-w-0 space-y-0.5" data-testid="analyze-area">
+    <div className="relative min-w-0 space-y-0.5" data-testid="analyze-area">
       <Button
         variant="ai"
         size="lg"
@@ -369,6 +419,8 @@ export function AnalyzeButton({ encounter, flush, save }: AnalyzeButtonProps) {
         disabled={control.disabled}
         aria-busy={control.busy || undefined}
         aria-describedby={control.reason ? reasonId : undefined}
+        // The page's shortcut (lib/shortcuts.ts): Ctrl+Enter, or Command+Enter on a Mac.
+        aria-keyshortcuts={MAC ? 'Meta+Enter' : 'Control+Enter'}
         data-testid="analyze-mana"
         data-state={control.state}
         onClick={start}

@@ -26,7 +26,10 @@ import { type ManaCtx, outcome, type ToolDef, type ToolFact, type ToolFinding, t
 // v2 (D2): `consultation_context`, the consultation the conversation was opened in, read through the consultation context (consultation-context/build.ts).
 // v3: it leaves out what the patient's consents to thermal imaging and to recording keep out, and a rejected point; it says nothing waits for review only of
 // what it could count.
-export const TOOLS_VERSION = 'mana-tools-v3'
+// v4 (ML audit G14): `get_patient_record` with the topic "medicines" gives the patient's medicine list as recorded (current medicines, those marked stopped,
+// or "No current medicines are recorded.") before the last signed prescription and today's draft, each labelled by where it comes from (mana-record-v4).
+// The consultation context names a transcript of synthetic demo audio as such (consultation-context/build.ts).
+export const TOOLS_VERSION = 'mana-tools-v4'
 
 const MAX_ROWS = 20
 const MAX_FACTS_PER_TOOL = 24

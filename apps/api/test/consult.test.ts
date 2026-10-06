@@ -43,6 +43,7 @@ beforeEach(async () => {
   model.answer = null
   model.hook = null
   model.aborted = 0
+  model.progress = []
 })
 
 let seq = 0
@@ -928,5 +929,84 @@ describe('the doctor decides', () => {
     const later = Encounter.parse((await call(ctx.app, 'GET', `/api/encounters/${e.id}`, { cookie: doctor })).json())
     expect((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body: { version: later.version, note: { ...later.note, examination: 'Throat red, no exudate.' }, diagnoses: [], prescription: [] } })).statusCode).toBe(200)
     expect((await state(e.id, doctor)).draft!.stale).toBe(true)
+  })
+})
+
+// HERO §1: while the model writes, the screen is told how far it has got (as the model server streams it: never a percentage or a time left); once the
+// record has been sent, the draft says what reached the model, counted from the sources it stored. A stand-in that streams gives the progress here; the
+// real streaming client is tested in llm-local.test.ts.
+describe('how far the model has got, and what reached it', () => {
+  const draftById = async (id: string, cookie: string) => ConsultDraft.parse((await call(ctx.app, 'GET', `/api/consultation-ai/drafts/${id}`, { cookie })).json())
+  const cap = loadAppSettings().ai.reasoning.maxOutputTokens
+
+  it('while the model writes, the draft carries the model server’s own count and the cap; before and after, none', async () => {
+    const { e, doctor } = await open()
+    model.progress = [{ generatedTokens: 0 }, { generatedTokens: 120 }]
+    model.delayMs = 1500
+    const first = ConsultDraft.parse((await start(e.id, doctor)).json())
+    // Accepted, not yet the model's turn: nothing to say, and nothing was sent.
+    expect(first).toMatchObject({ progress: null, inputsUsed: null })
+    const running = await until(e.id, doctor, (s) => s.draft?.phase === 'running' && !!s.draft.progress)
+    const polled = await draftById(running.draft!.id, doctor)
+    expect(polled.progress).toEqual({ generatedTokens: 120, maxTokens: cap, startedAt: polled.startedAt, updatedAt: expect.any(String) })
+    expect(Date.parse(polled.progress!.updatedAt)).toBeGreaterThanOrEqual(Date.parse(polled.startedAt!))
+    // The record was sent when the model's turn came: what reached it is known from then on.
+    expect(polled.inputsUsed).not.toBeNull()
+    const done = (await ready(e.id, doctor)).draft!
+    expect(done).toMatchObject({ status: 'ready', progress: null })
+  })
+
+  it('a stream the model server could not keep up takes the progress away again (the answer comes whole), and a model that does not stream has none', async () => {
+    const { e, doctor } = await open()
+    model.progress = [{ generatedTokens: 40 }, null]
+    model.delayMs = 800
+    await start(e.id, doctor)
+    const running = await until(e.id, doctor, (s) => s.draft?.phase === 'running')
+    expect(running.draft!.progress).toBeNull()
+    expect((await ready(e.id, doctor)).draft!.status).toBe('ready')
+    const other = await open()
+    model.progress = []
+    const res = await start(other.e.id, other.doctor)
+    expect(res.statusCode).toBe(202)
+    const r = await until(other.e.id, other.doctor, (s) => s.draft?.phase === 'running' || finished(s))
+    expect(r.draft!.progress).toBeNull()
+  })
+
+  it('counts what was sent by kind, from the stored manifest: confirmed points, the record, today’s note, staff and device vitals; each source once', async () => {
+    const o = await open()
+    const { e, doctor, p, v } = o
+    // A confirmed point (the transcript itself is never sent), a staff measurement and a device reading at this visit.
+    const t = await call(ctx.app, 'POST', `/api/encounters/${e.id}/transcripts`, { cookie: doctor, body: { text: 'Patient: I have had a fever and a cough for three days.', source: 'typed' } })
+    const tid = t.json().transcripts[0].id as string
+    const facts = (await call(ctx.app, 'POST', `/api/transcripts/${tid}/extract`, { cookie: doctor, body: { idempotencyKey: crypto.randomUUID() } })).json().facts as { id: string; text: string }[]
+    expect((await call(ctx.app, 'POST', `/api/ai-review/fact/${facts.find((f) => /fever/i.test(f.text))!.id}`, { cookie: doctor, body: { action: 'accepted', confirmFlags: true } })).statusCode).toBe(200)
+    const now = new Date()
+    await ctx.db.insert(observations).values({ patientId: p.id, visitId: v.id, kind: 'temperature', value: 38.4, unit: VITALS.temperature.unit, measuredAt: now, source: 'manual', validationStatus: 'manual_entry', recordedBy: fx.users.nurse })
+    const [d] = await ctx.db.insert(devices).values({ facilityId: fx.facilityId, kind: 'wearable_band', label: 'Band', serialNumber: `SN-${crypto.randomUUID().slice(0, 8)}`, integration: 'gateway_api', createdBy: fx.users.admin }).returning({ id: devices.id })
+    await ctx.db.insert(observations).values({ patientId: p.id, visitId: v.id, kind: 'heart_rate', value: 96, unit: VITALS.heart_rate.unit, measuredAt: now, source: 'device', validationStatus: 'device_unverified', deviceId: d!.id })
+    await start(e.id, doctor)
+    const draft = (await ready(e.id, doctor)).draft!
+    const u = draft.inputsUsed!
+    expect(u.conversation.confirmedPoints).toBe(1)
+    expect(u.vitals).toEqual({ staff: 1, device: 1 })
+    expect(u.history).toMatchObject({ allergies: 1, allergyStatus: 0, conditions: 0, medicines: 0, previousConsultations: 0 })
+    expect(u.note.visitReason).toBe(1)
+    expect(u.thermal).toEqual({ images: 0, reviewedSummaries: 0 })
+    // Every source sent is counted, once.
+    expect(u.total).toBe(draft.sourceCount)
+    expect(u.conversation.confirmedPoints + u.history.items + u.note.items + u.vitals.staff + u.vitals.device + u.thermal.images + u.thermal.reviewedSummaries).toBe(u.total)
+    // The same numbers on the draft read by id.
+    expect((await draftById(draft.id, doctor)).inputsUsed).toEqual(u)
+  })
+
+  it('says nothing of what was sent when nothing was, or when the draft predates the counts', async () => {
+    // Too little to draft from: the model was not asked.
+    const bare = await open(ctx, { allergy: false, reason: 'x' })
+    await adminQuery('UPDATE visits SET chief_complaint = NULL WHERE id = $1', [bare.v.id])
+    await adminQuery("UPDATE encounters SET chief_complaint = '' WHERE id = $1", [bare.e.id])
+    await start(bare.e.id, bare.doctor)
+    expect((await ready(bare.e.id, bare.doctor)).draft).toMatchObject({ insufficient: true, inputsUsed: null })
+    // (A draft stored before the provenance of its sources was kept has no count either: inputsUsedOf, consult-inputs.test.ts. A finished draft cannot
+    // be changed in the database, so that one is not made here.)
   })
 })

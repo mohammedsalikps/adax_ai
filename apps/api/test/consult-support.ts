@@ -86,6 +86,11 @@ export class StubReasoner implements ReasoningModel {
   hook: (() => Promise<void>) | null = null
   /** Set when a call was aborted by its signal. */
   aborted = 0
+  /**
+   * What a streaming model server would say of its progress, passed to the caller before the answer (each value in turn; null for a stream that could not
+   * be read). Empty: the stand-in does not stream, as a hosted model does not.
+   */
+  progress: ({ generatedTokens: number } | null)[] = []
 
   async health(): Promise<ReasoningHealth> {
     return this.ready ? { state: 'ready', reason: null, model: { id: this.model, runtime: 'stub-runtime 1', weightsSha256: 'b'.repeat(64), local: true } } : { state: 'unavailable', reason: this.reason ?? 'Local AI unavailable.', model: null }
@@ -93,6 +98,7 @@ export class StubReasoner implements ReasoningModel {
 
   async generate<T extends import('zod').ZodType>(req: StructuredRequest<T>): Promise<StructuredResult<import('zod').infer<T>>> {
     this.calls.push({ system: req.prompt.text, user: req.user })
+    if (req.onProgress) for (const p of this.progress) req.onProgress(p)
     await this.hook?.()
     if (this.delayMs) {
       await new Promise<void>((resolve, reject) => {

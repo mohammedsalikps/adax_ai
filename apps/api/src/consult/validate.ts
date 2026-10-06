@@ -15,8 +15,10 @@ import type { ConsultationInputs, SourceItem } from './inputs.ts'
 /**
  * v2: the age of a cited item is read on the facility's calendar (an item measured just after local midnight is today's, not yesterday's), and the digit of a
  * symbol such as SpO₂ is not a figure, however it is written.
+ * v3 (ML audit G6): a statement that the patient has no allergies, in any of its forms, is removed unless the record shown to the model says "no known
+ * allergies" (and lists no allergy): a missing allergy status is not "no allergies". The reason and the uncertainty of a statement are held to the same.
  */
-export const VALIDATION_VERSION = 'consult-checks-v2'
+export const VALIDATION_VERSION = 'consult-checks-v3'
 
 export interface ValidatedItem {
   section: ConsultSection
@@ -185,6 +187,27 @@ export function figuresIn(text: string, patientLine: string, knownRefs?: Readonl
 export const NO_ALLERGIES = /\b(?:(?:no|none|nil|denies|denied)\s+(?:known\s+)?(?:history\s+of\s+)?(?:drug\s+|food\s+|medicine\s+)?(?:or\s+(?:drug|food|medicine)\s+)?allerg(?:y|ies)|nkda|nka|allerg(?:y|ies)\s*(?:status)?\s*[:-]?\s*(?:nil|none|negative))\b/i
 /** "Not allergic to X": a claim about one substance. */
 export const NOT_ALLERGIC_TO = /\b(?:not|never)\s+allergic\s+to\s+([a-z-]{4,})/i
+
+/** Words that may stand between "no" and "allergies" in a claim that there are none ("no known drug allergies", "no history of allergies"). */
+const ALLERGY_QUALIFIER = '(?:known|new|further|additional|other|reported|documented|recorded|listed|significant|current|active|previous|prior|true|drug|drugs|food|medicine|medicines|medication|medications|medicinal|any|or|of|history)'
+/**
+ * A claim that the patient has no allergies, in any of the ways a model puts it (G6): "no known allergies", "NKDA", "NKA", "no drug allergies", "denies
+ * allergies", "no allergic reactions", "allergy-free", "free of allergies", "does not have any allergies", "not allergic to anything", "Allergies: none".
+ * Wording about the record rather than the patient is not one: "allergy status is not recorded", "no allergy information", "no allergy history documented".
+ * Read on text whose "doesn't" has been spelled out (spellNegations).
+ */
+export const ALLERGY_ABSENCE = new RegExp(
+  [
+    `\\b(?:no|nil|none|without|denies|denied|never\\s+had)\\s+(?:an?\\s+)?(?:${ALLERGY_QUALIFIER}\\s+){0,4}allerg(?:y|ies|ic\\s+reactions?)\\b(?!\\s+(?:status|information|info|details|data|history))`,
+    '\\bnkda\\b|\\bnka\\b',
+    '\\ballerg(?:y|ies)\\s*(?:status)?\\s*[:-]?\\s*(?:nil|none|negative|nkda|nka)\\b',
+    '\\ballerg(?:y|ic)[\\s-]*free\\b',
+    '\\bfree\\s+(?:of|from)\\s+(?:any\\s+|known\\s+)*allerg',
+    '\\bnot\\s+(?:known\\s+to\\s+be\\s+)?allergic\\s+to\\s+(?:any|anything)\\b',
+    '\\b(?:does|do|did|has|have|is|was)\\s+not\\s+(?:have\\s+|had\\s+)?(?:any\\s+)?(?:known\\s+)?(?:drug\\s+|food\\s+|medicine\\s+)?allerg(?:y|ies|ic)\\b(?!\\s+to\\b)',
+  ].join('|'),
+  'i',
+)
 
 /** Doses, strengths and regimens: never in a suggestion unless the cited record has the same words. */
 export const DOSE = /\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|ml|mL|l|iu|units?|tablets?|tabs?|caps?|capsules?|drops?|puffs?|sachets?|%|mmol|meq|grams?|milligrams?|micrograms?|millilit(?:re|er)s?|lit(?:re|er)s?|teaspoons?|tablespoons?|ampoules?|patch(?:es)?|sprays?|lozenges?)\b/i
@@ -394,6 +417,11 @@ export function validateDraft(out: ConsultOutput, inputs: ConsultationInputs, op
   const allNumbers = new Set(recordFigures(allText))
   const allWords = new Set(allText.toLowerCase().match(/[a-z][a-z-]+/g) ?? [])
   const activeAllergy = inputs.items.some((i) => i.sourceType === 'allergy' && i.status === 'active')
+  // The record shown to the model says "no known allergies" (the allergy status line, there only when no allergy is active). Without it, the allergy status
+  // is not recorded, and nothing may say the patient has none (G6).
+  const noneRecorded = !activeAllergy && inputs.items.some((i) => i.field === 'Allergy status' && ALLERGY_ABSENCE.test(spellNegations(i.text)))
+  /** Says the patient has no allergies, where the record does not: the record lists one, or does not say "no known allergies". */
+  const unsupportedAllergyAbsence = (spelled: string) => (activeAllergy && NO_ALLERGIES.test(spelled)) || (!noneRecorded && ALLERGY_ABSENCE.test(spelled))
   const conflictFindings = inputs.recordCheck.conflicts
   const conflictKeys = new Set(conflictFindings.flatMap((c) => c.keys))
   const cands = candidatesOf(out)
@@ -417,6 +445,7 @@ export function validateDraft(out: ConsultOutput, inputs: ConsultationInputs, op
   const vetField = (field: string): boolean => {
     if (!field || URLS.test(field) || hasUnreadableDigits(field)) return false
     if (hasDoseOrRegimen(field, true) || ASSERTIVE.test(field)) return false
+    if (unsupportedAllergyAbsence(spellNegations(field))) return false
     if (drugLikeWords(field).some((d) => !allWords.has(d))) return false
     return claimedFigures(field).every((n) => allNumbers.has(n))
   }
@@ -467,12 +496,18 @@ export function validateDraft(out: ConsultOutput, inputs: ConsultationInputs, op
     // "No (known) allergies" is a claim nobody should be left to read into a gap: against a recorded allergy the record wins, and with no cited item
     // that says it in those words, it is marked.
     const spelled = spellNegations(text)
-    if (NO_ALLERGIES.test(spelled)) {
+    if (NO_ALLERGIES.test(spelled) || ALLERGY_ABSENCE.test(spelled)) {
       if (activeAllergy) {
         bump(reasons, 'contradicted_by_record')
         continue
       }
-      if (!cited.some((i) => NO_ALLERGIES.test(spellNegations(i.text)))) flags.add('wording_not_in_source')
+      // G6: no allergy is recorded and "no known allergies" is not marked: the allergy status is unknown, and "no allergies" in any form would read the gap
+      // as an answer. (Wording about the record, "allergy status is not recorded", is not such a claim and stays.)
+      if (!noneRecorded && ALLERGY_ABSENCE.test(spelled)) {
+        bump(reasons, 'allergy_absence_not_recorded')
+        continue
+      }
+      if (!cited.some((i) => NO_ALLERGIES.test(spellNegations(i.text)) || ALLERGY_ABSENCE.test(spellNegations(i.text)))) flags.add('wording_not_in_source')
     }
     const notAllergicTo = NOT_ALLERGIC_TO.exec(spelled)?.[1]?.toLowerCase()
     if (notAllergicTo) {

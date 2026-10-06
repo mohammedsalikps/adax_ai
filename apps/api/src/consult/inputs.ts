@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import type { RecordCheck } from '@adaxai/contracts'
+import type { ConsultInputsUsed, RecordCheck } from '@adaxai/contracts'
 import type { SessionUser } from '../auth/sessions.ts'
 import type { DbOrTx } from '../db/client.ts'
 import { type ConfirmedPoint, listConfirmedPoints } from '../ai/confirmed.ts'
@@ -44,6 +44,8 @@ export interface ManifestEntry {
   date: string | null
   status: string
   hash: string
+  /** Where the item came from (record, staff_measured, device_measured, doctor_confirmed ...). Absent in manifests stored before it was kept. */
+  provenance?: string
 }
 
 export interface ConsultationInputs {
@@ -185,7 +187,52 @@ export function withinBudget(all: SourceItem[], maxChars: number): { items: Sour
   return { items: kept, omitted: all.length - kept.length }
 }
 
-export const manifestOf = (items: SourceItem[]): ManifestEntry[] => items.map((i) => ({ key: i.key, ref: i.ref, sourceType: i.sourceType, field: i.field, date: i.date, status: i.status, hash: i.hash }))
+export const manifestOf = (items: SourceItem[]): ManifestEntry[] => items.map((i) => ({ key: i.key, ref: i.ref, sourceType: i.sourceType, field: i.field, date: i.date, status: i.status, hash: i.hash, provenance: i.provenance }))
+
+/**
+ * What a draft sent to the model, counted by kind from the manifest it stored (ConsultInputsUsed): each entry once, in one group, by the kind of record
+ * item its id names and the field it was shown under. Null for a manifest stored before the provenance of its items was kept: a device reading could
+ * not be told from a staff measurement, so no count is given rather than a wrong one.
+ */
+export function inputsUsedOf(manifest: ManifestEntry[]): ConsultInputsUsed | null {
+  if (manifest.some((m) => m.provenance === undefined)) return null
+  const u: ConsultInputsUsed = {
+    conversation: { confirmedPoints: 0 },
+    history: { items: 0, allergies: 0, allergyStatus: 0, conditions: 0, medicines: 0, results: 0, previousConsultations: 0, previousConsultationItems: 0, earlierVisitReasons: 0 },
+    note: { items: 0, sections: 0, diagnoses: 0, prescriptionItems: 0, visitReason: 0 },
+    vitals: { staff: 0, device: 0 },
+    thermal: { images: 0, reviewedSummaries: 0 },
+    total: manifest.length,
+  }
+  // An earlier consultation's items carry the moment it was signed as their date: one date, one consultation.
+  const consultations = new Set<string>()
+  for (const m of manifest) {
+    const prefix = /^[A-Z]+/.exec(m.ref)?.[0] ?? ''
+    if (prefix === 'F') u.conversation.confirmedPoints++
+    else if (prefix === 'V') u.vitals[m.provenance === 'device_measured' ? 'device' : 'staff']++
+    else if (prefix === 'T') u.thermal[m.field === 'Thermal measurement' ? 'images' : 'reviewedSummaries']++
+    else if (prefix === 'C' || prefix === 'P' || (prefix === 'R' && m.field.includes('this visit'))) {
+      u.note.items++
+      if (prefix === 'P') u.note.prescriptionItems++
+      else if (prefix === 'R') u.note.visitReason++
+      else if (m.sourceType === 'diagnosis') u.note.diagnoses++
+      else u.note.sections++
+    } else {
+      u.history.items++
+      if (prefix === 'A') u.history[m.sourceType === 'allergy' ? 'allergies' : 'allergyStatus']++
+      else if (prefix === 'H') u.history.conditions++
+      else if (prefix === 'U') u.history.medicines++
+      else if (prefix === 'L') u.history.results++
+      else if (prefix === 'R') u.history.earlierVisitReasons++
+      else if (prefix === 'N' || prefix === 'D' || prefix === 'M' || prefix === 'X') {
+        u.history.previousConsultationItems++
+        if (prefix !== 'X' && m.date) consultations.add(m.date)
+      }
+    }
+  }
+  u.history.previousConsultations = consultations.size
+  return u
+}
 
 export const contextHash = (items: SourceItem[]): string =>
   sha(

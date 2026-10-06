@@ -47,6 +47,13 @@
 
 Accepting a *note-draft* item does not insert it: as with the important points and the consultation-draft statements, the doctor accepts or edits it and then adds it with a separate "Add to <section>", which the server records with a reference to the suggestion. The doctor still signs.
 
+## What Doctor HERO (Step 3) changed here
+
+- **No new model, no new prompt.** The consultation draft (D) now reports the local model's **real token count while it writes** (the client streams only to count; the assembled answer was checked byte for byte against the whole answer from the real server) and records **what was sent** (`inputsUsed`). Measured on this machine's GPU (llama.cpp b11379 CUDA, Qwen3.5-4B Q4_K_M) on the synthetic demo child: **36.0 s on the server, 37.7 s from the click**, about 44 tokens/s; earlier runs 29–43 s. The 10-second target is **not met**.
+- **Voice transcription (A):** a **synthetic demo consultation** (eight WAV files of two Windows computer voices) can be played through the real local speech model (`faster-whisper` `small`) as live parts; the transcript stores `audio_origin = demo_synthetic` and is shown, to the overview and to Mana, as **synthetic demo audio, not a real consultation**. Measured on the development stack: the 8 parts heard word for word (9 lines), the last line about 40 s after Play (30 s of audio). No model assigns speakers.
+- **Checks:** `consult-checks-v3` removes "no known allergies" when the record has no allergy status; Mana's medicines answer starts with the recorded medicine list (`mana-record-v4`, `mana-tools-v4`); Mana's statements resting on synthetic demo audio must say so (`mana-answer-checks-v5`).
+- **Stethoscope:** a waveform of each recording is drawn in the browser from its amplitude, captioned "Amplitude of the recording. Not an analysis."; recordings are still not analysed by any model.
+
 ## What D2 changed here
 
 - **No new AI.** D2 adds no model, no prompt and no new kind of AI output. The consultation's context (`GET /api/encounters/:id/context`) and its **summary (`multimodal-summary-v2`) are composed by fixed rules**, and its disagreements are found by fixed rules (`context-conflicts-v2`); both are advisory and never written to the note or the record. [ADR 0021](adr/0021-d2-multimodal-consultation-context.md).

@@ -460,10 +460,10 @@ export function ManaAssistant({ encounterId, patientId, defaultOpen = false, tit
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
         {/* In the consultation (`title`), a heading like the Mana area's others, under its h2, and a quiet Open beside "Complete consultation". */}
         {title ? (
-          <h3 className="inline-flex min-w-0 items-center gap-2 text-base font-semibold">
+          // Named by aria-label: a visually hidden suffix is a block of its own, so the name was read "Ask Mana : Mana AI" (a space before it).
+          <h3 aria-label={`${title}: Mana AI, Doctor’s Clinical Assistant`} className="inline-flex min-w-0 items-center gap-2 text-base font-semibold">
             <Sparkles aria-hidden="true" className="size-4 shrink-0 text-ai" />
             {title}
-            <span className="sr-only">: Mana AI, Doctor’s Clinical Assistant</span>
             <span aria-hidden="true" className="text-sm font-normal text-ink-muted">
               Doctor’s clinical assistant
             </span>

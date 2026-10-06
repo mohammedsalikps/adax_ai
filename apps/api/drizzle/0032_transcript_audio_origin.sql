@@ -1,0 +1,2 @@
+ALTER TABLE "transcripts" ADD COLUMN "audio_origin" text;--> statement-breakpoint
+ALTER TABLE "transcripts" ADD CONSTRAINT "transcripts_audio_origin_check" CHECK ("transcripts"."audio_origin" is null or ("transcripts"."audio_origin" = 'upload' and "transcripts"."source" = 'audio_upload') or ("transcripts"."audio_origin" in ('microphone', 'demo_synthetic') and "transcripts"."source" = 'browser_recording'));

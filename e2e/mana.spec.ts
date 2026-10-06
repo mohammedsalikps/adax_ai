@@ -135,7 +135,9 @@ test('suggested questions and follow-ups: a button asks at once, a follow-up kee
   const second = message(page).last()
   // Nothing is recorded: the answer says so, from the rules, and the model's words (the notice and any statement) do not say "no medicines".
   await expect(second.getByTestId('mana-not-established')).toContainText('not established in the available records')
-  await expect(second.getByTestId('mana-finding-absent').first()).toContainText('There is no signed consultation in the record.')
+  // The record's medicine list is answered first (Step 3, G14: mana-record-v4), then the signed consultations: each says what is not recorded.
+  await expect(second.getByTestId('mana-finding-absent').first()).toContainText('No current medicines are recorded.')
+  await expect(second.getByTestId('mana-finding-absent').filter({ hasText: 'There is no signed consultation in the record.' })).toHaveCount(1)
   await expect(second.getByTestId('mana-not-established')).not.toContainText(/no medicines/i)
   await expect(second.getByTestId('mana-block')).toHaveCount(0)
   // The one place "no medicines" may appear is the rules' own, labelled finding about TODAY'S DRAFT prescription (the consultation is open and the draft is empty).

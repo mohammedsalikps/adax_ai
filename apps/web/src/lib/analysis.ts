@@ -1,4 +1,4 @@
-import type { ConsultAttempt, ConsultDraft, EncounterAi } from '@adaxai/contracts'
+import type { ConsultAttempt, ConsultDraft, ConsultInputsUsed, ConsultProgress, EncounterAi } from '@adaxai/contracts'
 import { fmtClock } from './devices.ts'
 
 /*
@@ -32,11 +32,14 @@ export type Tone = 'neutral' | 'ok' | 'warn' | 'down' | 'notice' | 'ai'
 
 /**
  * What this file reads of a draft. `startedAt` (when the model began, after any wait for it) is optional: a server that does not send it yet
- * leaves the split of the time out, never guessed.
+ * leaves the split of the time out, never guessed. So are `progress` (how far the model has got while it writes, as the server last heard it)
+ * and `inputsUsed` (what was sent to the model, counted from the draft's own list of sources): absent or null, nothing is said of them.
  */
 export type DraftFacts = Pick<ConsultDraft, 'id' | 'version' | 'status' | 'phase' | 'stale' | 'insufficient' | 'createdAt' | 'completedAt' | 'latencyMs' | 'errorMessage'> & {
   model?: ConsultDraft['model']
   startedAt?: string | null
+  progress?: ConsultProgress | null
+  inputsUsed?: ConsultInputsUsed | null
 }
 
 /** What this file reads of the consultation's AI state (GET /encounters/:id/consultation-ai). */
@@ -206,7 +209,7 @@ export function attemptDraft(ask: ModelAsk | null, ai: AiFacts | null | undefine
 function modelOutcome(d: DraftFacts): Pick<AnalysisStep, 'state' | 'detail' | 'tone' | 'message'> {
   // The attempt's own outcome: whether the model is there now is for the control and the result, not for what this attempt did.
   const view = draftView(d, true)
-  if (view === 'generating') return { state: 'running', detail: d.phase === 'running' ? 'Writing the draft' : 'Waiting for the local model', tone: 'notice', message: null }
+  if (view === 'generating') return { state: 'running', detail: d.phase === 'running' ? (d.progress?.generatedTokens === 0 ? READING_SENT : 'Writing the draft') : 'Waiting for the local model', tone: 'notice', message: null }
   if (view === 'ready') return { state: 'done', detail: DRAFT_VIEW_LABEL.ready, tone: 'ai', message: null }
   if (view === 'partial') return { state: 'done', detail: DRAFT_VIEW_LABEL.partial, tone: 'warn', message: null }
   if (view === 'stale') return { state: 'done', detail: DRAFT_VIEW_LABEL.stale, tone: 'warn', message: null }
@@ -377,4 +380,175 @@ export function analysisTiming({ clickedAt, now, ask, ai }: { clickedAt: number 
   }
   if (draft && Number.isFinite(Date.parse(draft.createdAt))) return `started ${fmtClock(draft.createdAt)} (server time)`
   return null
+}
+
+// --- the model writing: what the server reports ------------------------------------------------------------------------------------------
+
+/**
+ * The model's step while the record is with it and it has not written a piece yet (the server's progress says 0: the stream is open and the
+ * model reads what was sent).
+ */
+export const READING_SENT = 'Reading what was sent'
+
+/** A whole number with thousands separated by commas ("2,600"); fixed, so that it reads the same on every computer. */
+export const fmtCount = (n: number): string => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+
+/** What this file reads of a draft's progress (ConsultDraft.progress). */
+export type ProgressFacts = Pick<ConsultProgress, 'generatedTokens' | 'maxTokens' | 'updatedAt'>
+
+/** One progress value as this page read it: the draft, the server's count and the server's time of that count. */
+export interface WritingSample {
+  draftId: string
+  tokens: number
+  at: number
+}
+
+/** The last progress value this page read of a draft, and the writing speed from it and the one before (null when there is none to give). */
+export interface Writing {
+  sample: WritingSample | null
+  rate: number | null
+}
+
+export const NO_WRITING: Writing = { sample: null, rate: null }
+
+/**
+ * Two progress values closer than this (by the server's clock) give no speed: too little time to say anything. The server reports at most
+ * every 500 ms, and the page reads about every second.
+ */
+const MIN_RATE_GAP_MS = 250
+
+/**
+ * The writing speed, from two successive progress values of the same draft as the page read them: the tokens written between them over the
+ * server's time between them. Nothing is estimated. There is no speed from the first value, from one taken while the model was still reading
+ * (0: that time was reading, not writing), from values out of order, or when the count did not grow; the same value read again keeps the speed
+ * found last. Progress gone (null: the stream could not be read and the server fell back to a whole answer) clears it.
+ */
+export function nextWriting(prev: Writing, draftId: string, p: ProgressFacts | null | undefined): Writing {
+  if (!p) return NO_WRITING
+  const at = Date.parse(p.updatedAt)
+  if (!Number.isFinite(at) || !Number.isFinite(p.generatedTokens) || p.generatedTokens < 0) return NO_WRITING
+  const sample: WritingSample = { draftId, tokens: p.generatedTokens, at }
+  const last = prev.sample
+  if (!last || last.draftId !== draftId) return { sample, rate: null }
+  if (at === last.at && p.generatedTokens === last.tokens) return prev
+  if (at < last.at) return prev
+  const gap = at - last.at
+  const rate = last.tokens > 0 && p.generatedTokens > last.tokens && gap >= MIN_RATE_GAP_MS ? ((p.generatedTokens - last.tokens) * 1000) / gap : null
+  return { sample, rate }
+}
+
+/**
+ * The progress line while the model writes: "812 tokens · 44 tokens/s", the speed only when there is one (nextWriting); "Reading what was
+ * sent" while the count is 0. Never a percentage or a time left: neither is known (`maxTokens` is a cap, see writingCap). Null without progress.
+ */
+export function writingText(p: Pick<ProgressFacts, 'generatedTokens'> | null | undefined, rate: number | null): string | null {
+  if (!p) return null
+  const n = p.generatedTokens
+  if (n === 0) return READING_SENT
+  const speed = rate !== null && Number.isFinite(rate) && rate >= 0.5 ? ` · ${fmtCount(rate)} tokens/s` : ''
+  return `${fmtCount(n)} ${n === 1 ? 'token' : 'tokens'}${speed}`
+}
+
+/** The most a draft may take ("at most 2,600 tokens"), said as the cap it is: the answer usually stops well before it. */
+export const writingCap = (p: Pick<ProgressFacts, 'maxTokens'>): string => `at most ${fmtCount(p.maxTokens)} tokens`
+
+/**
+ * The draft as polled while it is being made (GET /consultation-ai/drafts/:id, read about every second) carries the newest progress; the
+ * consultation's AI state is read again only when the draft's phase or status changes. This puts the polled phase and progress on the draft
+ * the state shows, when it is the same draft and both say it is still being made; otherwise the state is returned as it is.
+ */
+export function withPolledProgress<A extends { draft: DraftFacts | null }>(ai: A | null | undefined, polled: Pick<DraftFacts, 'id' | 'status' | 'phase' | 'progress'> | null | undefined): A | null | undefined {
+  const d = ai?.draft
+  if (!ai || !d || !polled || polled.id !== d.id || d.status !== 'generating' || polled.status !== 'generating') return ai
+  return { ...ai, draft: { ...d, phase: polled.phase ?? d.phase, progress: polled.progress ?? null } }
+}
+
+// --- what reached the model: "Mana analyzed …" ---------------------------------------------------------------------------------------------
+
+export type AnalyzedKey = 'conversation' | 'history' | 'note' | 'vitals' | 'thermal' | 'stethoscope'
+
+/** One line of what reached the model: ✓ with what was sent of it, or ○ with why nothing was. */
+export interface AnalyzedInput {
+  key: AnalyzedKey
+  label: string
+  /** Something of it was sent to the model. The stethoscope never is. */
+  sent: boolean
+  /** In brackets after the label when sent ("3 confirmed points"); after a dash when not ("no confirmed point was sent"). */
+  text: string
+  /** The parts that were sent, in a few words (the history's allergies, conditions, medicines…), or null. */
+  detail: string | null
+}
+
+const counts = (n: number, one: string, many: string) => `${fmtCount(n)} ${n === 1 ? one : many}`
+
+/**
+ * What reached the local model for a draft, from ConsultDraft.inputsUsed (counted on the server from the draft's own list of sources, never
+ * predicted): the conversation's confirmed points, the record, today's note, the vital signs (staff, and devices, unverified), the approved
+ * thermal images, and always the stethoscope as not analysed (no recording is sent to any model). A part with nothing sent says that nothing
+ * was sent, never that there is none: what was not sent may still be in the record.
+ */
+export function analyzedInputs(u: ConsultInputsUsed): AnalyzedInput[] {
+  const c = u.conversation.confirmedPoints
+  const conversation: AnalyzedInput =
+    c > 0
+      ? { key: 'conversation', label: 'Conversation', sent: true, text: counts(c, 'confirmed point', 'confirmed points'), detail: null }
+      : { key: 'conversation', label: 'Conversation', sent: false, text: 'no confirmed point was sent (the transcript and the audio never are)', detail: null }
+
+  const h = u.history
+  const historyParts = [
+    h.allergies > 0 ? counts(h.allergies, 'allergy', 'allergies') : null,
+    h.allergyStatus > 0 ? 'the allergy status' : null,
+    h.allergies === 0 && h.allergyStatus === 0 ? 'nothing on allergies' : null,
+    h.conditions > 0 ? counts(h.conditions, 'condition', 'conditions') : null,
+    h.medicines > 0 ? counts(h.medicines, 'medicine on the list', 'medicines on the list') : null,
+    h.results > 0 ? counts(h.results, 'result', 'results') : null,
+    h.previousConsultations > 0 ? counts(h.previousConsultations, 'earlier consultation', 'earlier consultations') : null,
+    h.earlierVisitReasons > 0 ? counts(h.earlierVisitReasons, 'earlier visit reason', 'earlier visit reasons') : null,
+  ].filter((s): s is string => s !== null)
+  const history: AnalyzedInput =
+    h.items > 0
+      ? { key: 'history', label: 'History', sent: true, text: counts(h.items, 'record item', 'record items'), detail: historyParts.join(', ') }
+      : { key: 'history', label: 'History', sent: false, text: 'nothing from the record was sent', detail: null }
+
+  const n = u.note
+  const noteParts = [
+    n.sections > 0 ? counts(n.sections, 'section', 'sections') : null,
+    n.diagnoses > 0 ? counts(n.diagnoses, 'diagnosis', 'diagnoses') : null,
+    n.prescriptionItems > 0 ? counts(n.prescriptionItems, 'prescription line', 'prescription lines') : null,
+    n.visitReason > 0 ? 'the reason for the visit' : null,
+  ].filter((s): s is string => s !== null)
+  const note: AnalyzedInput =
+    n.items > 0
+      ? { key: 'note', label: 'Your note', sent: true, text: noteParts.join(', ') || counts(n.items, 'item', 'items'), detail: null }
+      : { key: 'note', label: 'Your note', sent: false, text: 'nothing from today’s note was sent', detail: null }
+
+  const { staff, device } = u.vitals
+  const vitalParts = [staff > 0 ? `${fmtCount(staff)} staff` : null, device > 0 ? `${fmtCount(device)} device, unverified` : null].filter((s): s is string => s !== null)
+  const vitals: AnalyzedInput =
+    vitalParts.length > 0
+      ? { key: 'vitals', label: 'Vitals', sent: true, text: vitalParts.join(', '), detail: null }
+      : { key: 'vitals', label: 'Vitals', sent: false, text: 'no vital sign was sent (a simulator’s values never are)', detail: null }
+
+  const t = u.thermal
+  const thermal: AnalyzedInput =
+    t.images > 0
+      ? { key: 'thermal', label: 'Thermal', sent: true, text: `${counts(t.images, 'approved image', 'approved images')}${t.reviewedSummaries > 0 ? `, ${counts(t.reviewedSummaries, 'reviewed summary', 'reviewed summaries')}` : ''}`, detail: null }
+      : { key: 'thermal', label: 'Thermal', sent: false, text: 'no approved image was sent', detail: null }
+
+  const stethoscope: AnalyzedInput = { key: 'stethoscope', label: 'Stethoscope', sent: false, text: 'recordings are not analysed', detail: null }
+
+  return [conversation, history, note, vitals, thermal, stethoscope]
+}
+
+/** How many sources reached the model in all ("27 sources sent to the local model"). */
+export const analyzedTotal = (u: Pick<ConsultInputsUsed, 'total'>): string => `${counts(u.total, 'source', 'sources')} sent to the local model`
+
+/**
+ * The heading of that list, by what became of the draft: "Mana analyzed" once it has statements to review; "Sent to the local model" while it
+ * writes; "Sent to the local model before it stopped" when it failed, was cancelled or could not use the model after the record reached it.
+ */
+export function analyzedTitle(d: Pick<DraftFacts, 'status'>): string {
+  if (d.status === 'ready' || d.status === 'partial') return 'Mana analyzed'
+  if (d.status === 'generating') return 'Sent to the local model'
+  return 'Sent to the local model before it stopped'
 }

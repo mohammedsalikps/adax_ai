@@ -23,6 +23,69 @@ What the Doctor App actually does today, and the plan for its first complete con
 | V6. Thermal imaging in the consultation: a camera boundary for a FLIR ONE on a tablet (native bridge written, not compiled), captures with their provenance, a simulator, measurements, a summary the doctor reviews | the commit titled "V6 real FLIR thermal capture and analysis" (see `git log`) |
 | D2. The multimodal consultation: one context read from the records, an overview with what waits, disagreements found by fixed rules and the evidence with how far it can be trusted, a summary composed by fixed rules, Mana's consultation questions | the commit titled "D2 multimodal doctor consultation" (see `git log`) |
 | Doctor HERO redesign, **partial (stopped by the owner)**: five input modules, Analyze with Mana, the result and the prescription lane, the pediatric shock research view; three V3 check fixes | the commit titled "Doctor HERO redesign (partial, stopped early) and V3 check fixes" (see `git log`) |
+| Doctor HERO Step 3: the first Step 3 brief's polish (real progress while the model writes, what Mana read, a synthetic demo consultation through the real speech model, a demo patient, missing ≠ none); **the "complete redesign" brief NOT built** | the commit titled "Doctor HERO final clinical workflow UI" (see `git log`) |
+
+## Doctor HERO final clinical workflow UI (Step 3): the first brief's polish built; the full redesign brief NOT built
+
+**Basis:** two owner briefs for Step 3, received in turn. (1) "STEP 3 — DOCTOR HERO UI/UX + THERMAL / PEDIATRIC SHOCK RESEARCH" with its UI/UX addendum: polish of the five-input workstation (progress while the model writes, what Mana read, a demo consultation, a demo patient, missing ≠ none, safety fixes). (2) "STEP 3 — COMPLETE DOCTOR HERO UI/UX REDESIGN — REPLACE THE CURRENT DOCTOR UI": a new doctor application (no sidebar, a Today/Week/Month home, a patient profile with tabs, a digital pen, one band-and-stethoscope input, recording that starts with the consultation, a separate prescription document page, a persistent Mana button, no development banner). **Work on (1) was finished by five implementation units; (2) arrived while (1) was running, the running work was stopped, and (2) was never started.** This commit is the owner's "STEP 3 RECOVERY": the finished work of (1), checked and repaired where the stop left it unfinished, with no new implementation round. Decisions: [ADR 0022](adr/0022-doctor-hero-five-inputs-and-mana.md) §5. The machine-learning reality audit (Step 2) is [ML_REALITY_AUDIT.md](ML_REALITY_AUDIT.md). No hardware was used.
+
+### What was built (brief 1)
+
+- **Progress while the local model writes.** The local language-model client streams when it is asked for progress (the request is otherwise identical; the answer was checked byte for byte against the real llama-server: the whole answer, the assembled stream and the raw pieces have the same SHA-256). A draft being made carries `ConsultDraft.progress` (tokens written, the cap, from the server's own count; in memory only) and is polled every second. The page shows "812 tokens · 44 tokens/s · at most 2,600 tokens" (a speed only from two successive server counts; no percentage, no time left).
+- **What Mana read.** Each draft records `ConsultDraft.inputsUsed`, counted from what was actually sent (confirmed points, history items, the note, staff and device vital signs, approved thermal measurements). The result shows "Mana analyzed" with each source; a source with nothing sent says so; the stethoscope is always "recordings are not analysed".
+- **Play demo consultation (synthetic).** Eight WAV files (about 30 s; two Windows voices, 16 kHz; `scripts/demo-audio.ps1` and `.mjs`, byte-reproducible, checked against a manifest with SHA-256) are played through the speakers and each part, as it ends, is posted to the **real local speech model** as a live chunk. The transcript shows only what the model heard. Everything is marked "SYNTHETIC AUDIO — computer voices, not a real consultation"; the transcript stores `audio_origin = demo_synthetic` (migration `0032_transcript_audio_origin`, additive, nullable, no backfill); the overview's evidence trust is "Synthetic demo audio, not a real consultation"; Mana's answers resting on it must say "synthetic". It is offered, and accepted by the server, only where simulators are allowed. Important points are then found by the existing fixed rules (`extract-rules-v1`). No speaker is identified by any model: the voices are not attributed automatically.
+- **A demo patient.** `npm run demo:hero` seeds "Anaya Demo-Synthetic" (a child; amoxicillin allergy; a signed consultation 60 days ago; salbutamol on the medicine list), a new ready visit on each run, and a simulator band. Synthetic only.
+- **The rail.** A compact header once the page scrolls that keeps the name, age, MRN, every allergy, the urgent mark, the out-of-range vital-signs badge and the status chips; module empty states with their action ("Not recorded yet" [Record], "Allergy status not recorded" [Record], "No device attached" [Attach device], "No recording yet" [Record], "Thermal image not captured" [Capture thermal]); a waveform for each stethoscope recording ("Amplitude of the recording. Not an analysis."); "No clinical sound analysis: recordings are not analysed by any model."; a thermal thumbnail with its temperature scale; "Signal quality: not reported by the device".
+- **The right side.** Grey placeholders where the result's sections will be while the model writes (no text); a short staggered reveal (none with reduced motion); keyboard shortcuts (Ctrl/⌘+S, Ctrl/⌘+Enter, Alt+1…5, Alt+N, Alt+P, Shift+? for the list); "Repeat a current medicine" in the prescription (fills a row from the medicine list; the doctor checks each field and adds the duration); "Preview & print" saves first, then opens the print page; the header menu has View profile, Keyboard shortcuts, More tools and Discard draft.
+- **Check fixes.** `consult-checks-v3` (G6): when the record has no allergy status, a draft statement saying "no known allergies" (or NKDA, "denies allergies"…) is removed (`allergy_absence_not_recorded`): missing is not none. `mana-record-v4` / `mana-tools-v4` (G14): Mana's medicines answer starts with the recorded current medicines.
+
+### What was NOT built (brief 2, "COMPLETE DOCTOR HERO UI/UX REDESIGN")
+
+None of the following exists. They are reported as not done, not as partly done:
+
+- a doctor home without the application sidebar, and the **Today / Week / Month** views (the home and *Today's patients* are D1's; the sidebar still has Appointments, Patients, Thermal and AI review, and the home still offers "Register patient");
+- the **patient profile page with tabs** (timeline, thermal and lab in the profile); the profile is still D1's sheet;
+- the **digital pen** (a card still says handwritten notes are planned);
+- **one combined band-and-stethoscope input** (they are still modules 3 and 4);
+- **recording that starts with "Start consultation"** (the doctor still presses Record);
+- a **separate prescription document page** (the prescription is still a card in the consultation, with D1's print page);
+- a **persistent Mana button** on every page (Mana is in the consultation's right column);
+- **removal of the development banner** (still shown: "Development build. Synthetic data only. Not for clinical use. Not a medical device.");
+- the brief's visual redesign and its acceptance flow.
+
+### Real AI verification (this machine, development stack, synthetic data)
+
+One browser run (Playwright, Chromium, 1366×768, recorded) of the whole journey on the development stack with the **real** services: `npm run demo:hero` → sign in as dr.meera → *Today's patients* → Start consultation for Anaya Demo-Synthetic (the simulator band sending SIMULATED values) → Play demo consultation → confirm the allergy point → a line in the note → Analyze with Mana → accept a statement and add it to the note → a diagnosis, Repeat a current medicine, a duration → Preview & print → Complete consultation → Review and sign. **Every step passed; the consultation was signed.**
+
+| What | Measured |
+| --- | --- |
+| Speech model | `local-speech faster-whisper-small` (from the transcript's runs), CPU int8 |
+| Demo audio | 8 parts (30 s of synthetic audio) → 9 lines, **72 of 72 words identical to the script**; first line 10.4 s after Play, last 40.0 s; transcript `audio_origin = demo_synthetic`; every line's speaker source `none` (no speaker identified by a model) |
+| Language model | `qwen3.5-4b-q4_k_m`, llama.cpp b11379 (CUDA, RTX 3050), weights SHA-256 `00fe7986…69ef11a4`, `local: true` |
+| Analyze with Mana | **37.7 s click to result; 36.0 s server**; 1,396 tokens counted at 35.6 s; speed shown 38–44 tokens/s; 18 statements produced, 18 kept, 3 flagged, 0 removed |
+| Mana analyzed | 40 sources: 1 confirmed point, 16 history items, the note (2 sections and the visit reason), 20 staff vital signs; thermal "no approved image was sent"; stethoscope "recordings are not analysed"; **device 0** (the band's values were SIMULATED and, as designed, never given to the model) |
+| Print | "Draft — not signed · not a valid prescription" with the diagnosis and the repeated medicine |
+
+The 10-second target is **not met** (as before: the writing is the time).
+
+### Verification
+
+- **Recovery.** The stopped round's five units had finished; its sixth (browser tests) had stopped part-way, with edits never run. Found and repaired: the development database was not migrated (0032 applied after a verified backup); the web's trust colour had no case for the new `synthetic_audio` (added, with its test row); the demo consultation's check whether simulators are allowed read the device list when a consultation opened, so "Attach a device" showed that cached list and missed a device registered moments before (the dialog now reads the list again when it opens).
+- Typecheck (every workspace and the e2e config), lint (oxlint, thermal and speech linters): **clean**. **Web unit tests 179 passed.** Web production build: **passes**.
+- **API: 987 passed, 1 failed, 1 skipped of 989 tests**, and one file's clean-up hook failed, in the full suite (21 min, run beside other work); both were time-outs in files Step 3 did not change (`devices-v5`: a database client time-out; `migrator`: the 60-second hook that drops its scratch databases, after its 4 tests passed); **both files passed alone (57 of 57)**: this machine's load.
+- **Browser (Chromium, desktop project, the suite's stand-ins for the models), 15 consultation specs, 75 tests:** doctor-hero, hero-demo (new: the demo journey, recorded as video, and missing ≠ none), hero-journey, mana-analyze, mana, thermal-research, thermal-v6, multimodal-consultation, workspace, consult, capture, history, devices-live, doctor-workflow, doctor-home. First run **66 passed, 8 failed, 1 skipped** (a phone-only test). Classified: **(A) from Step 3, fixed:** hero-journey (the cached device list above); mana "suggested questions" (the medicines answer now starts with the medicine list, by design (G14): the assertion now checks that order and still requires "There is no signed consultation in the record."). **(C) a defect already in the partial commit, fixed:** the closed Mana card's heading was named "Ask Mana : Mana AI…" (a visually hidden suffix is a block of its own); it is now named by `aria-label`, and the test is unchanged. **(B) this machine:** two history sizes and three Mana tests (a conversation that never opened during a burst of load), **passed on the rerun with one worker**. In the reruns doctor-hero timed out at sign-in three times **when it was the first test of a fresh development server** (the app still compiling), and passed after a short first test; hero-journey failed once measuring the panes while the page was still loading and passed in its two other reruns. **Every one of the 75 tests passed in its latest run; no test was weakened.**
+- **Visual check** (the real-model run's screenshots at 1366×768, 1440×900, 1920×1080, 1180×820 and 768×1024, looked at; the browser tests' own checks at seven sizes): no horizontal overflow at any size; no blocking problem found.
+- Final checks: no secret, key or password in the diff (the demo password is read from `.env` and never printed); no debug code; no developer text in what clinicians see; no claim of a trained thermal model, shock prediction, stethoscope analysis or hardware.
+
+### Known issues and limitations
+
+- **The second brief ("complete redesign") is not built** (the list above). Against that brief, Step 3 is **not accepted**.
+- **Time:** Analyze with Mana takes about 30–45 s on this machine; the 10-second target is not met.
+- At 1366×768 four of the five modules are fully visible when the consultation opens (the fifth, Thermal, below the fold); the development banner takes a row.
+- The "Stale" notice is written by the server and says "Generate a new draft to include them" while the button in the consultation reads "Analyze again" (the standalone draft panel's button does say "Generate a new draft"; a test asserts the server's text).
+- The live recorder shows a real microphone level bar, not a waveform; waveforms are drawn for stethoscope recordings only.
+- Important points from the demo's audio carry "Speaker not assigned: guessed patient": the fixed rules guess the speaker and say so, and such a point needs the explicit tick (V2's rule); no model identifies speakers.
+- The development database holds synthetic patients and consultations left by the units' and the recovery's browser runs (and a scratch database, `adaxai_heroplayer`, from the demo unit); the home page counts them.
 
 ## Doctor HERO redesign (partial: stopped by the owner) and three V3 check fixes
 
@@ -1825,7 +1888,8 @@ The Doctor App is the hero product; work is organised as vertical slices through
 6. ~~**D1: the consultation as one workspace.**~~ Done (D1 above, [ADR 0019](adr/0019-d1-integrated-consultation-workspace.md)): V1 to V5 on one screen for one patient and one encounter; no new engine. **Carried forward:** the end-to-end suite on this machine (see V5 and D1, Tests).
 7. ~~**V6: thermal imaging in the consultation.**~~ Done (V6 above, [ADR 0020](adr/0020-v6-thermal-capture-in-the-consultation.md)); **not verified on a camera or a tablet**. **Carried forward:** compiling and running the native bridge with the FLIR SDK on a tablet and a FLIR ONE (the 15 steps in [THERMAL_CAMERA.md](THERMAL_CAMERA.md)); a thermal model only with a dataset, an evaluation and a model card.
 8. ~~**D2: the multimodal consultation.**~~ Done (D2 above, [ADR 0021](adr/0021-d2-multimodal-consultation-context.md)): one context of the consultation read from the records, the overview, disagreements and a summary by fixed rules, Mana's consultation questions. **Carried forward:** the V3 time-zone defect (00:00 to 05:30 IST), thresholds chosen by a clinical owner, a usability test with doctors.
-9. Then: prescription and documents, the consultation audit trail, handwriting.
+9. **Doctor HERO "complete redesign" (Step 3, second brief): NOT built** (see the Doctor HERO Step 3 section): the Today/Week/Month home without the sidebar, the patient profile with tabs, the digital pen, one band-and-stethoscope input, recording on Start, a prescription document page, a persistent Mana button, no development banner.
+10. Then: prescription and documents, the consultation audit trail, handwriting.
 
 ## External needs (not blocking the MVP build)
 

@@ -78,6 +78,8 @@ export interface PatientRecord {
   byRef: Map<string, RecordItem>
   scrub: (text: string) => string
   window: { maxEncounters: number; observationDays: number }
+  /** Whether the medicine list staff typed in (patient_medications) was read: an empty list is "no current medicines recorded" only then. */
+  medicineListRead: boolean
 }
 
 export interface RecordOptions {
@@ -86,6 +88,11 @@ export interface RecordOptions {
   observationDays: number
   /** Also the history typed in by staff (slice V1): conditions, medicines and investigation results. Off for Mana's own answers; on for the consultation draft. */
   includeHistory?: boolean | undefined
+  /**
+   * Also the medicine list typed in by staff, without the rest of that history (G14): Mana's record answers read it, so that "what medicines is this patient
+   * on?" includes what the patient takes, not only what was prescribed here. Implied by `includeHistory`.
+   */
+  includeMedicineList?: boolean | undefined
 }
 
 /** Readings kept per vital-sign kind, visit and source (the newest): what a device sent never pushes what staff measured out of the window. */
@@ -310,12 +317,15 @@ export async function loadPatientRecord(db: DbOrTx, me: SessionUser, patientId: 
     }
   }
 
-  // The history typed in by staff (conditions, the medicines list, results), when asked for. Entries marked as made in error are left out.
-  if (opts.includeHistory) {
+  // The history typed in by staff (conditions, the medicines list, results), when asked for; or the medicines list alone. Entries marked as made in error
+  // are left out.
+  const medicineListRead = !!(opts.includeHistory || opts.includeMedicineList)
+  if (medicineListRead) {
+    const history = !!opts.includeHistory
     const [conditions, medicines, results] = await Promise.all([
-      db.select().from(patientConditions).where(and(eq(patientConditions.patientId, patient.id), ne(patientConditions.status, 'entered_in_error'))).orderBy(desc(patientConditions.enteredAt)),
+      history ? db.select().from(patientConditions).where(and(eq(patientConditions.patientId, patient.id), ne(patientConditions.status, 'entered_in_error'))).orderBy(desc(patientConditions.enteredAt)) : [],
       db.select().from(patientMedications).where(and(eq(patientMedications.patientId, patient.id), ne(patientMedications.status, 'entered_in_error'))).orderBy(desc(patientMedications.enteredAt)),
-      db.select().from(investigationResults).where(and(eq(investigationResults.patientId, patient.id), ne(investigationResults.status, 'entered_in_error'))).orderBy(desc(investigationResults.collectedOn)).limit(30),
+      history ? db.select().from(investigationResults).where(and(eq(investigationResults.patientId, patient.id), ne(investigationResults.status, 'entered_in_error'))).orderBy(desc(investigationResults.collectedOn)).limit(30) : [],
     ])
     for (const c of conditions) {
       add('H', {
@@ -374,6 +384,7 @@ export async function loadPatientRecord(db: DbOrTx, me: SessionUser, patientId: 
     byRef: new Map(items.map((i) => [i.ref, i])),
     scrub,
     window: { maxEncounters: opts.maxEncounters, observationDays: opts.observationDays },
+    medicineListRead,
   }
 }
 

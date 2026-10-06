@@ -1,9 +1,10 @@
 import type { Encounter, PatientHistory } from '@adaxai/contracts'
 import { useQuery } from '@tanstack/react-query'
+import { ShieldAlert } from 'lucide-react'
 import { api } from '../../../lib/api.ts'
 import { historyKey } from '../../../lib/history.ts'
 import type { InputModuleFacts } from '../../../lib/workflow.ts'
-import { CLOSED_ONLY, OPEN_ONLY } from '../ModuleShell.tsx'
+import { CLOSED_ONLY, OPEN_ONLY, QuickAction, runModuleAction } from '../ModuleShell.tsx'
 import { historyCore, historyState, historyView, NOT_UPDATED, safely, type SummaryState } from './state.ts'
 
 /*
@@ -32,6 +33,7 @@ function useHistoryView(encounter: Pick<Encounter, 'patient' | 'visit'>) {
     status: 'error' as const,
     message: 'The patient’s history could not be read just now.',
     allergies: null,
+    allergyStatusMissing: false,
     conditions: null,
     record: null,
     counts: null,
@@ -42,22 +44,42 @@ function useHistoryView(encounter: Pick<Encounter, 'patient' | 'visit'>) {
 
 const ALLERGY_TONE = { down: 'font-medium text-down', warn: 'font-medium text-pending', neutral: 'font-medium' } as const
 
+/** Record allergy status, by default: the module opens on its Allergies tab and its own "Add allergy" is used ("Record an allergy"). */
+export const recordAllergyStatus = () => void runModuleAction('tools-history', { role: 'tab', text: /^Allergies/ }, { text: 'Add allergy' })
+
 /**
- * The summary of module 2: the allergies with their severity (or that none are known, or that the status is not recorded), always. Closed, one
- * more line counts the open conditions and the current medicines; open, the conditions are named (three, then "+n"), with the current
- * medicines, results and the last consultation, and the reason for this visit.
+ * The summary of module 2. The allergies with their severity, "No known allergies (recorded)", or "Allergy status not recorded" (missing is not
+ * none), always: closed on one line (cut short with an ellipsis; every allergy is in the bar above, and the whole line is the tooltip and is
+ * read out), and when the status is not recorded with "Record" (`onRecordAllergy`; by default the panel's own Add allergy). Closed, one more
+ * short line: the last consultation (or "No previous consultation found"), the open conditions and the current medicines (or that none are
+ * recorded). Open, the conditions are named (three, then "+n"), with the current medicines, results and the last consultation, and the reason
+ * for this visit.
  */
-export function HistorySummary({ encounter }: { encounter: Pick<Encounter, 'patient' | 'visit'> }) {
+export function HistorySummary({ encounter, onRecordAllergy = recordAllergyStatus }: { encounter: Pick<Encounter, 'patient' | 'visit'>; onRecordAllergy?: () => void }) {
   const v = useHistoryView(encounter)
   return (
-    <div className="flex flex-col gap-0.5" data-testid="summary-history" data-state={v.state.kind}>
+    <div data-testid="summary-history" data-state={v.state.kind}>
       {v.message && <p className="text-ink-muted">{v.message}</p>}
-      {v.allergies && (
-        <p className={ALLERGY_TONE[v.allergies.tone]} data-testid="summary-history-allergies">
-          {v.allergies.text}
+      {v.allergies &&
+        (v.allergyStatusMissing ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-3">
+            <p className={`text-xs ${ALLERGY_TONE[v.allergies.tone]}`} data-testid="summary-history-allergies">
+              {v.allergies.text}
+            </p>
+            <QuickAction icon={ShieldAlert} onClick={onRecordAllergy} testId="module-history-record-allergy" className={CLOSED_ONLY}>
+              Record<span className="sr-only"> allergy status</span>
+            </QuickAction>
+          </div>
+        ) : (
+          <p className={`truncate group-data-[open=true]/module:whitespace-normal ${ALLERGY_TONE[v.allergies.tone]}`} title={v.allergies.text} data-testid="summary-history-allergies">
+            {v.allergies.text}
+          </p>
+        ))}
+      {v.counts && (
+        <p className={`truncate text-xs text-ink-muted ${CLOSED_ONLY}`} title={v.counts}>
+          {v.counts}
         </p>
       )}
-      {v.counts && <p className={`text-ink-muted ${CLOSED_ONLY}`}>{v.counts}</p>}
       <div className={`space-y-0.5 ${OPEN_ONLY}`}>
         {v.conditions && <p>{v.conditions}</p>}
         {v.record && <p className="text-ink-muted">{v.record}</p>}

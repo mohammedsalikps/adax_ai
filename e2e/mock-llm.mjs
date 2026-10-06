@@ -4,18 +4,38 @@
 // Loopback only, and like the real server it wants a bearer secret (except for /health). It is NOT a model: nothing here is "AI output" in
 // any sense but shape, and no screen shows it as anything other than a test stand-in.
 //
-// Control (test only): POST /__mode {"mode": "ok" | "slow" | "down" | "invalid" | "inject" | "empty", "delayMs"?: number}, GET /__calls (what was
-// asked, as counts and whether given words were in the prompt), POST /__reset.
+// Control (test only): POST /__mode {"mode": "ok" | "slow" | "down" | "invalid" | "inject" | "empty", "delayMs"?: number, "readMs"?: number,
+// "streamMs"?: number}, GET /__calls (what was asked, as counts and whether given words were in the prompt, and whether it asked for a stream),
+// POST /__reset.
+//
+// A request with `stream: true` is answered as llama-server answers it: the headers at once, then server-sent events, one `data:` piece per few
+// characters of the same text a whole answer would carry (`choices[0].delta.content`), a last piece with `finish_reason` and the server's own
+// counts (`timings`), then `data: [DONE]`. Before the first piece the stand-in "reads" for `readMs` (by default 400 ms, or `delayMs` if
+// shorter); the pieces are then spread over `streamMs` (by default the rest of `delayMs`, and at least 1.2 s, so that the application's
+// progress, passed on at most every 500 ms, can be seen to advance). So "slow" stays as slow as a whole answer, and is slow while writing. One
+// piece is one "token" here: a count of pieces, not of any model's tokens.
 
 import http from 'node:http'
 
 const PORT = Number.parseInt(process.env.MOCK_LLM_PORT ?? '8181', 10)
 const KEY = process.env.MOCK_LLM_KEY ?? 'e2e-llm-secret-not-a-key'
 const MODEL = 'mock-llm-e2e'
+/** How long a streamed answer takes at least to send: just over a second, so that at least one progress report falls inside it. */
+const STREAM_MS = 1200
+/** How long the stand-in "reads" before its first piece, unless a test sets it. */
+const READ_MS = 400
+/** Characters per streamed piece (about what one token of English is). */
+const PIECE_CHARS = 4
+/** How often pieces are written while streaming. */
+const TICK_MS = 50
 
 let mode = 'ok'
 let delayMs = 400
-/** @type {{ at: number, promptChars: number, prompt: string, refs: string[] }[]} */
+/** @type {number | null} */
+let readMs = null
+/** @type {number | null} */
+let streamMs = null
+/** @type {{ at: number, promptChars: number, prompt: string, refs: string[], stream: boolean }[]} */
 let calls = []
 
 const send = (res, status, body) => {
@@ -29,6 +49,40 @@ const readBody = (req) =>
     req.on('data', (c) => chunks.push(c))
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
   })
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Streams `content` as server-sent events: the headers at once, the "reading" time, the text in pieces of PIECE_CHARS spread over the writing
+ * time, a last piece with the finish reason and the counts (`timings`, as llama-server gives them), and [DONE]. Stops writing as soon as the
+ * client goes away (a cancelled draft).
+ */
+async function stream(res, { id, content, promptTokens }) {
+  let gone = false
+  res.on('close', () => {
+    if (!res.writableFinished) gone = true
+  })
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' })
+  res.flushHeaders()
+  const event = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`)
+  const piece = (delta, finish = null) => ({ id, object: 'chat.completion.chunk', model: MODEL, choices: [{ index: 0, finish_reason: finish, delta }] })
+  const read = readMs ?? Math.min(delayMs, READ_MS)
+  const writing = streamMs ?? Math.max(STREAM_MS, delayMs - read)
+  await sleep(read)
+  if (gone) return
+  const pieces = content.match(new RegExp(`[\\s\\S]{1,${PIECE_CHARS}}`, 'g')) ?? []
+  const ticks = Math.max(1, Math.round(writing / TICK_MS))
+  const perTick = Math.max(1, Math.ceil(pieces.length / ticks))
+  event(piece({ role: 'assistant', content: null }))
+  for (let i = 0; i < pieces.length; i += perTick) {
+    if (gone) return
+    for (const p of pieces.slice(i, i + perTick)) event(piece({ content: p }))
+    if (i + perTick < pieces.length) await sleep(TICK_MS)
+  }
+  if (gone) return
+  event({ ...piece({}, 'stop'), timings: { cache_n: 0, prompt_n: promptTokens, predicted_n: pieces.length } })
+  res.write('data: [DONE]\n\n')
+  res.end()
+}
 
 /** The sources of the user message: "[A1] 2026-10-04 | field | status | provenance: text". */
 function sourcesOf(user) {
@@ -137,13 +191,17 @@ const server = http.createServer(async (req, res) => {
       const b = JSON.parse((await readBody(req)) || '{}')
       mode = b.mode ?? 'ok'
       delayMs = typeof b.delayMs === 'number' ? b.delayMs : mode === 'slow' ? 6000 : 400
-      return send(res, 200, { mode, delayMs })
+      readMs = typeof b.readMs === 'number' ? b.readMs : null
+      streamMs = typeof b.streamMs === 'number' ? b.streamMs : null
+      return send(res, 200, { mode, delayMs, readMs, streamMs })
     }
-    if (url.pathname === '/__calls') return send(res, 200, { count: calls.length, calls: calls.map((c) => ({ at: c.at, promptChars: c.promptChars, refs: c.refs, kind: c.kind, prompt: url.searchParams.get('prompts') === '1' ? c.prompt : undefined })) })
+    if (url.pathname === '/__calls') return send(res, 200, { count: calls.length, calls: calls.map((c) => ({ at: c.at, promptChars: c.promptChars, refs: c.refs, kind: c.kind, stream: c.stream, prompt: url.searchParams.get('prompts') === '1' ? c.prompt : undefined })) })
     if (url.pathname === '/__reset') {
       calls = []
       mode = 'ok'
       delayMs = 400
+      readMs = null
+      streamMs = null
       return send(res, 200, { ok: true })
     }
     return send(res, 404, { error: 'unknown' })
@@ -156,15 +214,16 @@ const server = http.createServer(async (req, res) => {
     const system = String((body.messages ?? []).find((m) => m.role === 'system')?.content ?? '')
     const mana = system.startsWith('You decide what to look up') ? 'plan' : system.startsWith('You write a short answer for a doctor') ? 'answer' : null
     const sources = sourcesOf(user)
-    calls.push({ at: Date.now(), promptChars: user.length, prompt: user, refs: mana ? [...user.matchAll(/^\[(S\d+)\]/gm)].map((m) => m[1]) : sources.map((s) => s.ref), ...(mana && { kind: mana }) })
+    calls.push({ at: Date.now(), promptChars: user.length, prompt: user, refs: mana ? [...user.matchAll(/^\[(S\d+)\]/gm)].map((m) => m[1]) : sources.map((s) => s.ref), stream: body.stream === true, ...(mana && { kind: mana }) })
     if (mode === 'down') return send(res, 503, { error: { code: 503, message: 'Loading model' } })
+    const content = mode === 'invalid' ? 'This is not JSON at all.' : JSON.stringify(mana === 'plan' ? manaPlanFrom(user) : mana === 'answer' ? manaAnswerFrom(user) : mode === 'inject' ? injected(sources) : mode === 'empty' ? empty() : draftFrom(sources))
+    if (body.stream === true) return stream(res, { id: `mock-${calls.length}`, content, promptTokens: Math.ceil(user.length / 4) })
     let aborted = false
     req.on('close', () => {
       aborted = true
     })
-    await new Promise((r) => setTimeout(r, delayMs))
+    await sleep(delayMs)
     if (aborted) return
-    const content = mode === 'invalid' ? 'This is not JSON at all.' : JSON.stringify(mana === 'plan' ? manaPlanFrom(user) : mana === 'answer' ? manaAnswerFrom(user) : mode === 'inject' ? injected(sources) : mode === 'empty' ? empty() : draftFrom(sources))
     return send(res, 200, { id: `mock-${calls.length}`, object: 'chat.completion', model: MODEL, choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }], usage: { prompt_tokens: Math.ceil(user.length / 4), completion_tokens: Math.ceil(content.length / 4) } })
   }
   return send(res, 404, { error: 'not found' })

@@ -3,7 +3,7 @@
 // so the end-to-end tests exercise the real browser -> API -> speech-boundary path without loading a model.
 // It is never started by `npm run dev`, setup or any demo configuration, and it is not speech recognition:
 // it ignores what was said and returns a fixed, clearly synthetic script of five lines, spread over the
-// length of the audio it was sent (read from the WebM container, so timestamps follow the real recording).
+// length of the audio it was sent (read from the WebM container or the WAV header, so timestamps follow the real recording).
 // It keeps no audio and no text: only how many parts it was sent (GET /__calls).
 import http from 'node:http'
 // The synthetic consultation this stand-in "hears" (shared with the hosted-provider stand-in, which watches for its words).
@@ -64,7 +64,23 @@ function walk(buf, start, end, state) {
   }
 }
 
+/** A WAV file's length in ms (its data chunk over its byte rate), or null when it is not a WAV file (the demo consultation's parts are). */
+function wavDuration(audio) {
+  if (audio.length < 12 || audio.toString('latin1', 0, 4) !== 'RIFF' || audio.toString('latin1', 8, 12) !== 'WAVE') return null
+  let byteRate = 0
+  for (let pos = 12; pos + 8 <= audio.length; ) {
+    const id = audio.toString('latin1', pos, pos + 4)
+    const size = audio.readUInt32LE(pos + 4)
+    if (id === 'fmt ' && pos + 16 <= audio.length) byteRate = audio.readUInt32LE(pos + 16)
+    if (id === 'data') return byteRate > 0 ? Math.round((Math.min(size, audio.length - pos - 8) * 1000) / byteRate) : null
+    pos += 8 + size + (size % 2)
+  }
+  return null
+}
+
 function durationOf(audio) {
+  const wav = wavDuration(audio)
+  if (wav !== null && wav > 0) return wav
   const state = { cluster: 0, last: -1 }
   try {
     walk(audio, 0, audio.length, state)

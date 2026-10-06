@@ -8,7 +8,12 @@ export const deviceReadingsKey = (patientId: string) => ['patient', patientId, '
 /** How often an open screen asks the server again. There is no push channel: a value is at most this old plus what its state says. */
 export const DEVICE_POLL_MS = 5000
 
-export const useDevices = ({ enabled = true }: { enabled?: boolean } = {}) => useQuery({ queryKey: devicesKey, queryFn: () => api<DeviceList>('/devices'), enabled })
+/**
+ * The registered devices. `fresh` reads the list again whenever the caller mounts, even if another screen read it moments ago (the demo
+ * consultation reads it when a consultation opens): a list to choose a free device from must show one registered since.
+ */
+export const useDevices = ({ enabled = true, fresh = false }: { enabled?: boolean; fresh?: boolean } = {}) =>
+  useQuery({ queryKey: devicesKey, queryFn: () => api<DeviceList>('/devices'), enabled, ...(fresh && { refetchOnMount: 'always' as const }) })
 
 const clock = new Intl.DateTimeFormat('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 const day = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short' })
