@@ -1,5 +1,5 @@
 import { type APIRequestContext, expect, type Page, request as pwRequest, test } from '@playwright/test'
-import { DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, signIn, uniq } from './support.ts'
+import { DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, openModule, signIn, uniq } from './support.ts'
 
 // Slice V5 in a real browser, against the real API and database. NO DEVICE IS USED: the "gateway" is this test posting to the gateway API with a
 // device record's token, and the values are fixed numbers written here. A record registered as a SIMULATOR is shown as SIMULATED everywhere;
@@ -45,6 +45,9 @@ async function openConsultation(page: Page, patientName: string) {
   await signIn(page, 'dr.meera')
   await page.getByRole('listitem').filter({ hasText: patientName }).getByRole('button', { name: 'Start consultation' }).click()
   await expect(page).toHaveURL(/\/doctor\/encounters\/[0-9a-f-]{36}/)
+  // The devices are in module 3 of the inputs rail ("Health band & vitals"; Doctor HERO), which starts closed: opened, as the doctor would,
+  // and remembered, so it stays open after the reloads below.
+  await openModule(page, 'Vitals')
   await expect(card(page)).toBeVisible()
 }
 
@@ -200,6 +203,9 @@ test('a stethoscope recording is made in the browser from an audio input, and a 
   const p = await nurseHandsOverPatient(baseURL!, { consents: ['device_monitoring'] })
   const steth = await register(baseURL!, { kind: 'smart_stethoscope', integration: 'simulator', label: `Simulator stethoscope ${uniq()}` })
   await openConsultation(page, p.name)
+  // Module 4 of the inputs rail (Doctor HERO; it shared the devices' part before), which starts closed. Its summary says what the card says.
+  const stethoscopeModule = await openModule(page, 'Stethoscope')
+  await expect(stethoscopeModule.getByTestId('summary-stethoscope-honesty')).toContainText('No stethoscope has been connected to or tested with this system')
   const recordings = page.getByRole('region', { name: 'Stethoscope recordings' })
   await expect(recordings).toContainText('No stethoscope has been connected to or tested with this system')
 

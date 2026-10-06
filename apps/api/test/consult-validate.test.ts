@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ConsultationInputs, SourceItem } from '../src/consult/inputs.ts'
 import type { ConsultOutput } from '../src/consult/prompt.ts'
 import { sourceLine } from '../src/consult/prompt.ts'
-import { cleanText, drugLikeWords, figureTokens, figuresIn, fitText, hasDoseOrRegimen, negatedTerms, numbersIn, validateDraft, wordsNotIn } from '../src/consult/validate.ts'
+import { cleanText, drugLikeWords, figureTokens, figuresIn, fitText, hasDoseOrRegimen, negatedTerms, numbersIn, validateDraft, withoutSymbolDigits, wordsNotIn } from '../src/consult/validate.ts'
 
 // The checks that decide what a doctor is shown after the model has answered. These tests hand the validator the kind of output a model that
 // invents things, follows an instruction hidden in the record, or reverses a "no" would write, and look at what survives. No model is involved.
@@ -596,6 +596,87 @@ describe('after the independent review', () => {
     expect(by('Father has diabetes.').flags).toEqual([])
     expect(by('Temperature 38.2 °C today.')).toMatchObject({ support: 'outdated', needsConfirmation: true })
     expect(by('Temperature 38.2 °C today.').flags).toContain('record_outdated')
+  })
+})
+
+// Found while building the doctor's consultation screen: a reading taken just after midnight in India read as yesterday's, and a statement that quoted the
+// record's SpO₂ line word for word was removed for a "2" the record does not hold.
+describe('the day of an item is the facility’s day', () => {
+  // The facility is in India (UTC+05:30) and its today is 2026-10-04 (see `inputs`). Until 05:30 there, a time stored in UTC still reads as the day before.
+  const hr = (ref: string, value: number, date: string) => item(ref, 'Heart rate', `Heart rate ${value} bpm, measured by staff`, { sourceType: 'observation', date })
+
+  it('a reading taken just after local midnight is today’s; one from the evening before is not', () => {
+    const items = [
+      item('R1', 'Reason for visit (this visit)', 'Palpitations', { sourceType: 'visit' }),
+      // 18:45 and 23:45 UTC on 2026-10-03 are 00:15 and 05:15 on 2026-10-04 in India; 18:15 UTC is 23:45 on 2026-10-03.
+      hr('V1', 88, '2026-10-03T18:45:00.000Z'),
+      hr('V2', 86, '2026-10-03T23:45:00.000Z'),
+      hr('V3', 92, '2026-10-03T18:15:00.000Z'),
+    ]
+    const r = run({ observations: [f('Heart rate 88 bpm today.', ['V1']), f('Heart rate 86 bpm today.', ['V2']), f('Heart rate 92 bpm today.', ['V3'])] }, items)
+    const by = (n: string) => r.items.find((i) => i.text.includes(n))!
+    expect(r.stats.removed).toBe(0)
+    expect(by('88')).toMatchObject({ support: 'supported', flags: [], needsConfirmation: false })
+    expect(by('86')).toMatchObject({ support: 'supported', flags: [], needsConfirmation: false })
+    expect(by('92')).toMatchObject({ support: 'outdated', flags: ['record_outdated'], needsConfirmation: true })
+  })
+
+  it('the age that makes an item "outdated" is counted in days of the facility’s calendar, as the record rules count it', () => {
+    // 2026-04-07 is 180 days before 2026-10-04: at 00:15 that day in India (18:45 UTC the day before) a reading is 180 days old, which is not older than
+    // the 180 allowed; at 23:45 on 2026-04-06 (18:15 UTC) it is 181.
+    const items = [
+      item('V1', 'Blood pressure', 'Blood pressure 118/76 mmHg, measured by staff', { sourceType: 'observation', date: '2026-04-06T18:45:00.000Z' }),
+      item('V2', 'Blood pressure', 'Blood pressure 124/82 mmHg, measured by staff', { sourceType: 'observation', date: '2026-04-06T18:15:00.000Z' }),
+    ]
+    const r = run({ observations: [f('Blood pressure 118/76 mmHg.', ['V1']), f('Blood pressure 124/82 mmHg.', ['V2'])] }, items)
+    const by = (n: string) => r.items.find((i) => i.text.includes(n))!
+    expect(by('118/76')).toMatchObject({ support: 'supported', flags: [] })
+    expect(by('124/82')).toMatchObject({ support: 'outdated', flags: ['record_outdated'] })
+  })
+})
+
+describe('the digit of a symbol such as SpO₂ is not a figure', () => {
+  const items = [
+    item('R1', 'Reason for visit (this visit)', 'Breathless since this morning', { sourceType: 'visit' }),
+    // As the record writes a device's reading (mana/record.ts): the label SpO₂, with its subscript.
+    item('V1', 'SpO₂', 'SpO₂ 94 %, device reading (device unverified), this visit', { sourceType: 'observation', provenance: 'device_measured' }),
+  ]
+
+  it('a statement that quotes the record’s SpO₂ reading is kept, with a subscript 2 or a plain one; a different reading is still removed', () => {
+    const r = run({ observations: [f('SpO₂ 94 % (device, unverified).', ['V1']), f('SpO2 94 % on the device, unverified.', ['V1']), f('SpO₂ 90 %.', ['V1']), f('SpO2 90 %.', ['V1'])] }, items)
+    expect(r.items.map((i) => i.text)).toEqual(['SpO₂ 94 % (device, unverified).', 'SpO2 94 % on the device, unverified.'])
+    expect(r.items.map((i) => [i.support, i.flags])).toEqual([
+      ['supported', []],
+      ['supported', []],
+    ])
+    // 90 is nowhere in the record, whichever way SpO₂ is written: the statement does not stay.
+    expect(r.stats.reasons).toEqual({ figure_not_in_record: 2 })
+  })
+
+  it('the digit is kept as it is written, and is not taken for a figure on either side; a figure made of such digits still is', () => {
+    expect(cleanText('SpO₂ 94 %, CO₂ normal, area 2 m²')).toBe('SpO₂ 94 %, CO₂ normal, area 2 m²')
+    expect(figuresIn(cleanText('SpO₂ 94 %'), '30-39 years, female')).toEqual(['94'])
+    expect(figureTokens(withoutSymbolDigits('SpO2 96%, SaO2, PaO2, PaCO2, EtCO2, CO2, FiO2 0.4, O2 2 L/min'))).toEqual(['96', '0.4', '2'])
+    // A figure glued to the symbol is not a symbol: it is read, and has to be in the record.
+    expect(figureTokens(withoutSymbolDigits('SpO294'))).toEqual(['294'])
+    // Superscript digits on their own, or more than one after a letter, are a figure written in another form: made plain and checked.
+    expect(cleanText('Temperature ³⁹ °C, rate x⁹⁰')).toBe('Temperature 39 °C, rate x90')
+    expect(run({ observations: [f('SpO₂ ⁹⁰ %.', ['V1'])] }, items).stats.reasons).toEqual({ figure_not_in_record: 1 })
+  })
+
+  it('a record that writes SpO2 with a plain 2 does not lend that 2 to a figure the model made up', () => {
+    const typed = [item('N1', 'Examination', 'SpO2 96% on room air, chest clear', { status: 'signed', date: '2026-10-01' })]
+    const r = run({ relevant_history: [f('SpO2 96% on room air, chest clear.', ['N1']), f('Chest clear on room air on day 2.', ['N1'])] }, typed)
+    expect(r.items.map((i) => i.text)).toEqual(['SpO2 96% on room air, chest clear.'])
+    expect(r.stats.reasons).toEqual({ figure_not_in_record: 1 })
+  })
+
+  it('"SpO₂ is not recorded", written either way, is contradicted by the record’s SpO₂ reading', () => {
+    const r = run({ missing_information: [f('SpO₂ is not recorded.', [], 'not_found'), f('SpO2 is not documented.', [], 'not_found')] }, items)
+    expect(r.items.map((i) => [i.flags, i.sourceRefs])).toEqual([
+      [['absence_contradicted'], ['V1']],
+      [['absence_contradicted'], ['V1']],
+    ])
   })
 })
 

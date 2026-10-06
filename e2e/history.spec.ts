@@ -1,6 +1,6 @@
 import { type APIRequestContext, type Browser, expect, test } from '@playwright/test'
 import { newPatient, staff } from './appointments-support.ts'
-import { expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, signIn, uniq } from './support.ts'
+import { analyzeButton, expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, openModule, signIn, uniq } from './support.ts'
 
 /**
  * The first slice of the Doctor App as one workflow: the doctor's day (dashboard, today's patients), starting a consultation, and having the
@@ -128,13 +128,16 @@ test('the doctor starts a consultation from today’s patients and has the patie
   await expect(banner).toContainText('Hypertension')
   await expect(banner).toContainText('Synthetic')
 
-  // Vital signs say when they were recorded and by whom; a value outside the adult range says so in words.
+  // Vital signs say when they were recorded and by whom; a value outside the adult range says so in words. They are in module 3 (Doctor
+  // HERO), which starts closed: opened as the doctor would.
+  await openModule(page, 'Vitals')
   const tiles = page.getByTestId('vitals-tiles')
   await expect(tiles).toContainText('128/82')
   await expect(tiles).toContainText('entered by staff')
   await expect(tiles.getByText('High')).toBeVisible()
 
-  // Past history, Summary.
+  // Past history, Summary: in module 2 (Doctor HERO), opened first.
+  await openModule(page, 'History')
   const history = page.getByTestId('past-history')
   await expect(history.getByRole('tab', { name: /^Summary/ })).toHaveAttribute('aria-selected', 'true')
   const conditions = history.getByRole('region', { name: 'Known conditions' })
@@ -178,6 +181,9 @@ test('the doctor starts a consultation from today’s patients and has the patie
   // What is not built says so, and nothing pretends.
   // The writing pad is not built, so the workspace does not offer it (D1: no card for a feature that does not exist).
   await expect(page.getByTestId('writing-pad')).toHaveCount(0)
+  // The stethoscope's module says it in its summary, shown while the module is closed (Doctor HERO), and its full card says it too.
+  await expect(page.getByTestId('module-stethoscope').getByTestId('summary-stethoscope-honesty')).toContainText('No stethoscope has been connected to or tested with this system')
+  await openModule(page, 'Stethoscope')
   await expect(page.getByRole('region', { name: 'Stethoscope recordings' })).toContainText('No stethoscope has been connected to or tested with this system')
 
   await expectNoAxeViolations(page)
@@ -228,6 +234,8 @@ test('a doctor adds, stops and corrects history entries; each says who entered i
   const p = await patientWithHistory(baseURL!)
   await signIn(page, 'dr.meera')
   await startFromQueue(page, p.name)
+  // The past history is in module 2 (Doctor HERO), which starts closed.
+  await openModule(page, 'History')
   const history = page.getByTestId('past-history')
 
   // A condition: added, changed, marked as an error with a reason (and then gone from the list).
@@ -373,8 +381,11 @@ test('today’s patients: tabs with counts filter the list, the day can be chang
   await expectNoHorizontalOverflow(page)
 })
 
+// Doctor HERO (it was the tools beside the note before): from 1024px the five input modules are a rail on the left, and on the right Mana
+// above the record; where the right-hand side is itself wide (72rem: here only 1920px), Mana and the record stand side by side, so there are
+// three columns. Below 1024px one column, in the same order.
 for (const [width, height, panes] of [
-  [1920, 1080, 2],
+  [1920, 1080, 3],
   [1536, 900, 2],
   [1440, 900, 2],
   [1366, 1024, 2],
@@ -384,7 +395,7 @@ for (const [width, height, panes] of [
   [768, 1024, 1],
   [390, 844, 1],
 ] as const) {
-  test(`the workspace at ${width}x${height} is ${panes === 2 ? 'the tools beside the note' : 'one column'}, nothing overflows and the editors stay usable`, async ({ page, baseURL, isMobile }) => {
+  test(`the workspace at ${width}x${height} is ${panes === 3 ? 'the inputs beside Mana beside the record' : panes === 2 ? 'the inputs beside Mana and the record' : 'one column'}, nothing overflows and the editors stay usable`, async ({ page, baseURL, isMobile }) => {
     test.skip(isMobile, 'sets its own screen sizes')
     const p = await patientWithHistory(baseURL!)
     await page.setViewportSize({ width, height })
@@ -393,30 +404,56 @@ for (const [width, height, panes] of [
     await page.getByRole('button', { name: 'Add diagnosis' }).click()
     await page.getByRole('button', { name: 'Add medicine' }).click()
     await page.getByLabel('Diagnosis 1', { exact: true }).fill('Type 2 diabetes mellitus without complications')
+    // The history and the visit's vital signs are in modules 2 and 3, which start closed: opened, as the doctor would.
+    await openModule(page, 'History')
+    await openModule(page, 'Vitals')
     await expect(page.getByTestId('past-history')).toBeVisible()
     await expectNoHorizontalOverflow(page)
+    const modules = await Promise.all(['conversation', 'history', 'vitals', 'stethoscope', 'thermal'].map((key) => page.getByTestId(`module-${key}`).boundingBox()))
     const visit = await page.getByRole('region', { name: 'This visit' }).boundingBox()
     const past = await page.getByRole('region', { name: 'Past history' }).first().boundingBox()
     const mana = await page.getByRole('region', { name: 'Mana AI' }).boundingBox()
     const note = await page.getByRole('region', { name: 'Consultation note' }).boundingBox()
-    expect(visit && past && mana && note, `${width}`).toBeTruthy()
-    // The tools (the visit, the history, Mana) are one column; the note is beside them from 1024px, under them below.
-    expect(new Set([visit!.x, past!.x, mana!.x].map((x) => Math.round(x))).size, `${width}px wide: the tools are one column`).toBe(1)
-    if (panes === 2) expect(note!.x, `${width}px wide: the note is beside the tools`).toBeGreaterThan(visit!.x + visit!.width)
-    else expect(Math.round(note!.x), `${width}px wide: one column`).toBe(Math.round(visit!.x))
-    // From 1024px the consultation bar (name, allergies, Complete consultation) and the note are both on the screen when the page opens.
-    if (panes === 2) {
+    expect(modules.every(Boolean) && visit && past && mana && note, `${width}`).toBeTruthy()
+    const rail = { x: modules[0]!.x, right: modules[0]!.x + modules[0]!.width }
+    // The five inputs are one column, in their order, with the visit's vital signs and the history inside their modules (before Doctor HERO
+    // the visit, the history and Mana were the tools column).
+    expect(new Set(modules.map((m) => Math.round(m!.x))).size, `${width}px wide: the inputs are one column`).toBe(1)
+    for (let i = 1; i < modules.length; i++) expect(modules[i]!.y, `${width}px wide: module ${i + 1} is under module ${i}`).toBeGreaterThan(modules[i - 1]!.y)
+    for (const [name, box] of [['This visit', visit!], ['Past history', past!]] as const) {
+      expect(box.x, `${width}px wide: ${name} is inside the inputs`).toBeGreaterThanOrEqual(rail.x - 0.5)
+      expect(box.x + box.width, `${width}px wide: ${name} is inside the inputs`).toBeLessThanOrEqual(rail.right + 0.5)
+    }
+    if (panes === 1) {
+      // One column: the inputs, then Mana, then the note, one under the other.
+      expect(Math.round(mana!.x), `${width}px wide: one column`).toBe(Math.round(rail.x))
+      expect(Math.round(note!.x), `${width}px wide: one column`).toBe(Math.round(rail.x))
+      expect(mana!.y, `${width}px wide: Mana is under the inputs`).toBeGreaterThan(modules[4]!.y)
+      expect(note!.y, `${width}px wide: the note is under Mana`).toBeGreaterThan(mana!.y)
+    } else {
+      // Mana (Ask Mana is its last block) and the note are on the right of the inputs.
+      expect(mana!.x, `${width}px wide: Mana is beside the inputs`).toBeGreaterThan(rail.right)
+      expect(note!.x, `${width}px wide: the note is beside the inputs`).toBeGreaterThan(rail.right)
+      if (panes === 3) expect(note!.x, `${width}px wide: the note is beside Mana`).toBeGreaterThan(mana!.x + mana!.width)
+      else expect(note!.y, `${width}px wide: the note is under Mana`).toBeGreaterThanOrEqual(mana!.y + mana!.height)
+    }
+    // From 1024px the consultation bar (name, allergies, Complete consultation) and "Analyze with Mana", at the foot of the inputs, are on the
+    // screen when the page opens, with Mana's heading. The note is too where it stands beside Mana; where Mana is above it, it is not, by design
+    // (Doctor HERO: inputs, intelligence, then action), and the strip's "Note & prescription" leads to it.
+    if (panes > 1) {
       await page.evaluate(() => window.scrollTo(0, 0))
       await expect(page.getByTestId('patient-banner')).toBeInViewport()
       await expect(page.getByRole('button', { name: 'Complete consultation' })).toBeInViewport()
-      await expect(page.getByLabel('Chief complaint')).toBeInViewport()
+      await expect(analyzeButton(page)).toBeInViewport()
+      await expect(page.locator('#mana-result [data-part-focus="mana-result"]')).toBeInViewport()
+      if (panes === 3) await expect(page.getByLabel('Chief complaint')).toBeInViewport()
+      else await expect(page.getByRole('navigation', { name: 'Consultation steps' }).getByRole('button', { name: /^Note & prescription: / })).toBeInViewport()
     }
-    // The consultation is a workspace: below 1280px the navigation is a drawer behind the menu button, so the whole width is the consultation's.
+    // The consultation is a workspace in focus mode: at every width the navigation is a drawer behind the menu button, so the whole width is
+    // the consultation's (Doctor HERO; before it, a drawer only below 1280px).
     const nav = page.getByRole('navigation', { name: 'Doctor navigation' })
-    if (width < 1280) {
-      await expect(nav).toBeHidden()
-      await expect(page.getByRole('button', { name: 'Open menu' })).toBeVisible()
-    } else await expect(nav).toBeVisible()
+    await expect(nav).toBeHidden()
+    await expect(page.getByRole('button', { name: 'Open menu' })).toBeVisible()
     // The fields of the diagnosis and the medicine are readable (not squeezed to a sliver) and stay inside their cards.
     for (const card of ['Diagnosis', 'Prescription']) {
       const region = page.getByRole('region', { name: card, exact: true })
@@ -443,6 +480,8 @@ test('when the history cannot be loaded the panel says so and retries, and the a
   await signIn(page, 'dr.meera')
   await page.route(/\/api\/patients\/[^/]+\/history$/, (r) => r.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'internal_error', message: 'Something went wrong' }) }))
   await startFromQueue(page, p.name)
+  // The past history is in module 2 (Doctor HERO), which starts closed: opened, so its "Try again" can be pressed.
+  await openModule(page, 'History')
   const history = page.getByTestId('past-history')
   // The error state arrives after the data layer's own retries (1 s and 2 s), which is longer than the default wait.
   await expect(history).toContainText('The patient’s history could not be loaded', { timeout: 20_000 })
@@ -567,6 +606,8 @@ test('an allergy added during the consultation reaches the banner; if the list c
   await signIn(page, 'dr.meera')
   await startFromQueue(page, p.name)
   const banner = page.getByTestId('patient-banner')
+  // The past history is in module 2 (Doctor HERO), which starts closed.
+  await openModule(page, 'History')
   const history = page.getByTestId('past-history')
   await history.getByRole('tab', { name: /^Allergies/ }).click()
   await history.getByRole('button', { name: 'Add allergy' }).click()
@@ -595,6 +636,8 @@ test('a failed change leaves no stale error behind, and Enter pressed twice save
   const { ctx, page } = await plainContext(browser, baseURL!, isMobile)
   await signIn(page, 'dr.meera')
   await startFromQueue(page, p.name)
+  // The past history is in module 2 (Doctor HERO), which starts closed.
+  await openModule(page, 'History')
   const history = page.getByTestId('past-history')
 
   // A change that fails (shown as a message), then a correction dialog: it opens clean.
@@ -644,6 +687,8 @@ test('a result the system could not compare with a range says so, in the list an
   expect((await r.json()).flag).toBe('unknown')
   await signIn(page, 'dr.meera')
   await startFromQueue(page, p.name)
+  // The past history is in module 2 (Doctor HERO), which starts closed.
+  await openModule(page, 'History')
   const history = page.getByTestId('past-history')
   await history.getByRole('tab', { name: /^Investigations/ }).click()
   const row = history.getByRole('tabpanel', { name: /^Investigations/ }).getByTestId('history-result').filter({ hasText: 'Ferritin' })
@@ -652,7 +697,8 @@ test('a result the system could not compare with a range says so, in the list an
   // A result that was compared and is normal-or-high keeps its own chip.
   await expect(history.getByRole('tabpanel', { name: /^Investigations/ }).getByTestId('history-result').filter({ hasText: 'HbA1c' })).toContainText('High')
   // The record summary (in the profile, beside the consultation) says the same, and lists the high one only once, as the latest of its test.
-  await page.getByRole('button', { name: 'View profile' }).click()
+  // The banner's "View profile" (the open History module has one too, since Doctor HERO: the same drawer).
+  await page.getByTestId('patient-banner').getByRole('button', { name: 'View profile' }).click()
   const summary = page.getByTestId('patient-profile-drawer').getByTestId('record-summary')
   await expect(summary).toContainText('Results not compared with a range: Ferritin 8 ng/mL')
   await expect(summary).toContainText('Results outside range: HbA1c')

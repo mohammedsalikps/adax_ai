@@ -1,5 +1,5 @@
 import { BODY_SITES, type Encounter } from '@adaxai/contracts'
-import { Thermometer } from 'lucide-react'
+import { FlaskConical, Thermometer } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { usePatient } from '../../lib/clinical.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
@@ -9,6 +9,7 @@ import { fmtTime } from '../../lib/format.ts'
 import { Button } from '../ui/Button.tsx'
 import { Alert } from '../ui/Feedback.tsx'
 import { Card } from '../ui/Layout.tsx'
+import { ResearchModeSheet } from './ResearchMode.tsx'
 import { ThermalSourceBadge } from './ThermalSourceBadge.tsx'
 import { ThermalWorkspace } from './ThermalWorkspace.tsx'
 
@@ -16,6 +17,10 @@ import { ThermalWorkspace } from './ThermalWorkspace.tsx'
  * Thermal imaging in the consultation's tools column (V6): whether a camera can be reached from this device, the thermal images of THIS
  * consultation (each with where it came from), and the way into the thermal imaging workspace for this patient and this encounter. Images of
  * the patient's other visits stay in the profile's Documents. Nothing here measures or concludes anything by itself.
+ *
+ * "Pediatric shock research" opens the research view of this consultation's images in a side sheet (ResearchMode): research only, read only,
+ * with no request of its own for the images. Both actions are secondary, as a module's actions are (44px). The card's heading is an h3, under
+ * the thermal module's own h2.
  */
 export function ThermalPanel({ encounter, inserter, canEdit }: { encounter: Encounter; inserter: NoteInserter; canEdit: boolean }) {
   const p = encounter.patient
@@ -23,15 +28,22 @@ export function ThermalPanel({ encounter, inserter, canEdit }: { encounter: Enco
   const studies = usePatientThermal(p.id)
   const mine = (studies.data ?? []).filter((c) => c.encounterId === encounter.id)
   const [open, setOpen] = useState<{ captureId: string | null } | null>(null)
+  const [research, setResearch] = useState(false)
   const bridge = useMemo(() => findNativeBridge() !== null, [])
   const consented = !!patient.data?.consents.some((c) => c.type === 'thermal_imaging' && c.status === 'granted')
   return (
     <Card
       title="Thermal imaging"
+      level={3}
       actions={
-        <Button size="sm" icon={<Thermometer aria-hidden="true" className="size-4" />} onClick={() => setOpen({ captureId: null })} disabled={!canEdit} data-testid="thermal-open">
-          Open thermal imaging
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" icon={<Thermometer aria-hidden="true" className="size-4" />} onClick={() => setOpen({ captureId: null })} disabled={!canEdit} data-testid="thermal-open">
+            Open thermal imaging
+          </Button>
+          <Button variant="secondary" icon={<FlaskConical aria-hidden="true" className="size-4" />} onClick={() => setResearch(true)} data-testid="thermal-research-open">
+            Pediatric shock research
+          </Button>
+        </div>
       }
     >
       <div className="space-y-3 text-sm" data-testid="thermal-panel">
@@ -64,6 +76,7 @@ export function ThermalPanel({ encounter, inserter, canEdit }: { encounter: Enco
         <p className="text-xs text-ink-muted">Thermal imaging measures skin-surface temperature. It does not measure pain and is not a diagnosis.</p>
       </div>
       {open && <ThermalWorkspace encounter={encounter} inserter={inserter} canEdit={canEdit} initialCaptureId={open.captureId} onClose={() => setOpen(null)} />}
+      <ResearchModeSheet encounter={encounter} open={research} onClose={() => setResearch(false)} />
     </Card>
   )
 }

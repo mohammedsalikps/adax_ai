@@ -103,6 +103,56 @@ export function llmExclusive(test: { beforeAll: (fn: () => Promise<void>) => voi
   })
 }
 
+/*
+ * The doctor's consultation (Doctor HERO): the five numbered input modules of the rail, the workflow strip under the header, the "More tools"
+ * sheet and the one Analyze control. A module's full panel is always mounted but hidden while the module is closed (the default for a new
+ * browser), so a test opens the module before it uses the panel, as the doctor does.
+ */
+
+/** The five input modules by the names the tests use, as the element id of each (apps/web/src/lib/workspace.ts MODULES). */
+const MODULE_PARTS = { Conversation: 'tools-conversation', History: 'tools-history', Vitals: 'tools-devices', Stethoscope: 'tools-stethoscope', Thermal: 'tools-thermal' } as const
+export type ModuleName = keyof typeof MODULE_PARTS
+
+/** The module itself: a group named by its heading, with its compact summary always shown. */
+export const inputModule = (page: Page, name: ModuleName) => page.locator(`#${MODULE_PARTS[name]}`)
+
+/**
+ * Opens a module with its own "Show" button (named "Show <title>", aria-controls its body) unless it is open already, and waits until its
+ * full panel is shown. Opened by that button, it is remembered for the doctor on this browser and stays open after a reload; a module that a
+ * jump opened (a chip, the overview) is left as it is, and is not remembered.
+ */
+export async function openModule(page: Page, name: ModuleName) {
+  const part = MODULE_PARTS[name]
+  const group = page.locator(`#${part}`)
+  const toggle = group.locator(`button[aria-controls="${part}-body"]`)
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await expect(toggle).toHaveAccessibleName(/^Hide /)
+  await expect(group).toHaveAttribute('data-open', 'true')
+  await expect(page.locator(`#${part}-body`)).toBeVisible()
+  return group
+}
+
+export type WorkflowStepLabel = 'Inputs' | 'Mana analysis' | 'Your review' | 'Note & prescription' | 'Sign'
+
+/** Uses a step of the workflow strip under the header (a button named "<label>: <its state>"), which leads to that step's part of the page. */
+export async function stepTo(page: Page, label: WorkflowStepLabel) {
+  const name = new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: `)
+  await page.getByRole('navigation', { name: 'Consultation steps' }).getByRole('button', { name }).click()
+}
+
+/** Opens the "More tools" sheet (the clinical photographs and the older AI assistant) from the header's menu, and returns it. */
+export async function openMoreTools(page: Page) {
+  await page.getByRole('button', { name: 'More consultation actions' }).click()
+  await page.getByRole('menuitem', { name: 'More tools…' }).click()
+  const sheet = page.getByRole('dialog', { name: 'More tools' })
+  await expect(sheet).toBeVisible()
+  return sheet
+}
+
+/** The one control that asks for an analysis, at the foot of the inputs rail: "Analyze with Mana" before any draft, "Analyze again" after one. */
+export const analyzeButton = (page: Page, name: 'Analyze with Mana' | 'Analyze again' = 'Analyze with Mana') => page.getByRole('button', { name, exact: true })
+
 /** A unique suffix so tests can run repeatedly against the same dev database. */
 export const uniq = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`
 

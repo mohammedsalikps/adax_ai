@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffManifests, manifestOf, type SourceItem, staleSummary, withinBudget } from '../src/consult/inputs.ts'
+import { type DeviceReading, deviceStream, diffManifests, manifestOf, type SourceItem, staleSummary, withinBudget, withoutDeviceStream } from '../src/consult/inputs.ts'
 import { renderUserMessage, sourceLine } from '../src/consult/prompt.ts'
 
 // What fits in the model's context, and what a change to the record does to a draft made earlier: both decided from lists of items, with no database.
@@ -84,5 +84,50 @@ describe('what changed since a draft was made', () => {
     expect(s).toContain('Field 0;')
     expect(s).not.toContain('today’s draft')
     expect(s).toContain('…')
+  })
+})
+
+describe('a device that keeps sending readings', () => {
+  // The record keeps the newest five readings of each kind, visit and source. `readings` says which items are a device's readings (unverified, not
+  // simulated, not entered in error, still this patient's), of which kind and visit, and when each was measured.
+  const obs = (ref: string, field: string) => item(ref, 0, { sourceType: 'observation', field, hash: `h-${ref}` })
+  const at = (minute: number) => Date.UTC(2026, 9, 4, 10, minute)
+  const band = (kind: string, refs: string[], visit = 'v1', start = 0): [string, DeviceReading][] => refs.map((ref, n) => [`k:${ref}`, { stream: deviceStream(kind, visit), measuredAt: at(start + n) }])
+  const heart = ['H1', 'H2', 'H3', 'H4', 'H5'].map((r) => obs(r, 'Heart rate'))
+
+  it('newer readings of a kind the draft had, taking the place of its older ones, are no change: the draft is not stale', () => {
+    // The draft had the band's five newest heart rates (minutes 0 to 4); two more came (5 and 6), and the two oldest left the newest five.
+    const then = manifestOf(heart)
+    const now = manifestOf([...heart.slice(2), obs('H6', 'Heart rate'), obs('H7', 'Heart rate')])
+    const readings = new Map(band('heart_rate', ['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7']))
+    const raw = diffManifests(then, now)
+    expect(raw.added).toHaveLength(2)
+    expect(raw.removed).toHaveLength(2)
+    const d = withoutDeviceStream(raw, then, readings)
+    expect(d).toEqual({ changed: [], removed: [], added: [] })
+    expect(staleSummary(d)).toBeNull()
+    // However many came: five newer ones push out all five the draft had.
+    const later = ['H6', 'H7', 'H8', 'H9', 'H10']
+    const all = new Map(band('heart_rate', ['H1', 'H2', 'H3', 'H4', 'H5', ...later]))
+    expect(withoutDeviceStream(diffManifests(then, manifestOf(later.map((r) => obs(r, 'Heart rate')))), then, all)).toEqual({ changed: [], removed: [], added: [] })
+  })
+
+  it('everything else still counts: a first reading of a kind or at a visit the draft had none of, a reading that is no device reading of the patient any more, an older one coming back, a changed one, what staff measured', () => {
+    const then = manifestOf(heart)
+    const readings = new Map([
+      ...band('heart_rate', ['H1', 'H2', 'H3', 'H4', 'H5'], 'v1', 10),
+      // A kind the draft had no device reading of, and the same kind at another visit: new information, not a newer value of what it had.
+      ...band('spo2', ['S1'], 'v1', 20),
+      ...band('heart_rate', ['H8'], 'v2', 20),
+      // Measured before the newest reading the draft had: it is not newer, it came back (another reading was taken off the record).
+      ...band('heart_rate', ['H0'], 'v1', 0),
+    ])
+    const now = manifestOf([...heart.slice(0, 4).map((h) => (h.ref === 'H4' ? { ...h, hash: 'h-H4-changed' } : h)), obs('S1', 'SpO₂'), obs('H8', 'Heart rate'), obs('H0', 'Heart rate'), obs('M1', 'Temperature')])
+    // H5 is gone and is not a device reading of the patient any more (it is not in `readings`: entered in error, say); M1 is what staff measured.
+    readings.delete('k:H5')
+    const d = withoutDeviceStream(diffManifests(then, now), then, readings)
+    expect(d.changed.map((m) => m.ref)).toEqual(['H4'])
+    expect(d.removed.map((m) => m.ref)).toEqual(['H5'])
+    expect(d.added.map((m) => m.ref)).toEqual(['S1', 'H8', 'H0', 'M1'])
   })
 })

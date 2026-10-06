@@ -1,10 +1,10 @@
-import { ConsultationAi, Encounter, PatientDetail, Visit } from '@adaxai/contracts'
+import { ConsultationAi, ConsultDraft, Encounter, PatientDetail, Visit, type VitalKind, VITALS } from '@adaxai/contracts'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { RuleFactExtractor } from '../src/ai/extract/rules.ts'
 import type { AiProviders } from '../src/ai/providers.ts'
 import { AiProviderError } from '../src/ai/providers.ts'
 import { hashPassword } from '../src/auth/password.ts'
-import { auscultationRecordings, departments, devices, facilities, files, users } from '../src/db/schema.ts'
+import { auscultationRecordings, departments, devices, facilities, files, observations, users } from '../src/db/schema.ts'
 import { loadAppSettings } from '../src/settings/load.ts'
 import type { AppSettings } from '../src/settings/schema.ts'
 import { adminQuery, call, createFixture, createTestApp, type Fixture, login, resetDatabase, samplePatient, TEST_PASSWORD, type TestContext } from './helpers.ts'
@@ -88,6 +88,38 @@ describe('making a draft', () => {
     expect(s.draft!.items.find((i) => i.section === 'allergies')!.support).toBe('supported')
     // The newest draft carries the explicit rules' own check, whether or not the model was used.
     expect(s.draft!.recordCheck.rulesVersion).toBe('record-check-v2')
+  })
+
+  it('says when the model began on it: not while the draft waits for its turn, and once done the request, the start and the end are in order and fit in the time it took', async () => {
+    const a = await open()
+    const b = await open()
+    model.delayMs = 1200
+    const first = await start(a.e.id, a.doctor)
+    expect(first.statusCode).toBe(202)
+    expect(ConsultDraft.parse(first.json())).toMatchObject({ status: 'generating', startedAt: null, completedAt: null, latencyMs: null })
+    const running = await until(a.e.id, a.doctor, (s) => s.draft?.phase === 'running')
+    expect(running.draft!.startedAt).not.toBeNull()
+    // The second draft waits behind the first, which holds the one slot: the model has not begun on it.
+    expect((await start(b.e.id, b.doctor)).statusCode).toBe(202)
+    expect((await state(b.e.id, b.doctor)).draft).toMatchObject({ status: 'generating', phase: 'queued', startedAt: null })
+    const one = (await ready(a.e.id, a.doctor)).draft!
+    const two = (await ready(b.e.id, b.doctor)).draft!
+    for (const d of [one, two]) {
+      expect(d.status).toBe('ready')
+      // createdAt is the database's clock and the other two the server's; they are one clock on one machine.
+      const created = Date.parse(d.createdAt)
+      const started = Date.parse(d.startedAt!)
+      const completed = Date.parse(d.completedAt!)
+      expect(created).toBeLessThanOrEqual(started)
+      expect(started).toBeLessThanOrEqual(completed)
+      // The wait (request to start) and the writing with its checks (start to end) never add up to more than the time the draft is said to have taken.
+      expect(completed - created).toBeLessThanOrEqual(d.latencyMs!)
+    }
+    // The second began only once the first had finished: its wait is counted as waiting, not as writing.
+    expect(Date.parse(two.startedAt!)).toBeGreaterThanOrEqual(Date.parse(one.completedAt!))
+    // The draft read by id (what the screen polls) says the same.
+    const byId = ConsultDraft.parse((await call(ctx.app, 'GET', `/api/consultation-ai/drafts/${two.id}`, { cookie: b.doctor })).json())
+    expect(byId).toMatchObject({ createdAt: two.createdAt, startedAt: two.startedAt, completedAt: two.completedAt, latencyMs: two.latencyMs })
   })
 
   it('records that the draft reached the doctor once, with ids and counts and never a word of it, however often the screen asks again', async () => {
@@ -225,7 +257,8 @@ describe('after the independent review', () => {
     expect((await start(b.e.id, b.doctor)).statusCode).toBe(202)
     await withdraw(ctx, b.p, b.nurse)
     const second = await ready(b.e.id, b.doctor)
-    expect(second.draft).toMatchObject({ status: 'cancelled', errorCode: 'consent_withdrawn', retryable: false, items: [] })
+    // startedAt added with the draft's start time (U1): a draft that never reached the model never started.
+    expect(second.draft).toMatchObject({ status: 'cancelled', errorCode: 'consent_withdrawn', retryable: false, items: [], startedAt: null })
     expect(second.draft!.errorMessage).toMatch(/nothing was sent/)
     expect(model.calls).toHaveLength(1)
     expect((await adminQuery("SELECT count(*)::int AS n FROM audit_events WHERE action = 'ai.consultation_draft' AND details->>'reason' = 'consent_withdrawn_while_waiting'")).rows[0].n).toBe(1)
@@ -636,7 +669,8 @@ describe('too little to draft from', () => {
     const res = await start(e.id, doctor)
     expect(res.statusCode).toBe(202)
     const s = await ready(e.id, doctor)
-    expect(s.draft).toMatchObject({ status: 'ready', insufficient: true, items: [] })
+    // startedAt added with the draft's start time (U1): the model was not asked, so nothing started and no time is said to have been spent.
+    expect(s.draft).toMatchObject({ status: 'ready', insufficient: true, items: [], startedAt: null, latencyMs: null })
     expect(model.calls).toHaveLength(0)
     expect(s.draft!.recordCheck.missing.length).toBeGreaterThan(0)
   })
@@ -688,6 +722,101 @@ describe('when the record moves, the draft says so', () => {
     expect(v2.draft).toMatchObject({ version: 2, stale: false })
     expect(v2.earlier).toEqual([expect.objectContaining({ version: 1, status: 'ready' })])
     expect((await adminQuery('SELECT count(*)::int AS n FROM consultation_drafts')).rows[0].n).toBe(2)
+  })
+
+  // A wearable band at the patient's visit, its readings stored as the device gateway stores them (unverified; the band is not a simulator).
+  async function band(o: Awaited<ReturnType<typeof open>>) {
+    const [d] = await ctx.db.insert(devices).values({ facilityId: fx.facilityId, kind: 'wearable_band', label: 'Band', serialNumber: `SN-${crypto.randomUUID().slice(0, 8)}`, integration: 'gateway_api', createdBy: fx.users.admin }).returning({ id: devices.id })
+    return async (kind: VitalKind, value: number, measuredAt: Date) => {
+      const [r] = await ctx.db.insert(observations).values({ patientId: o.p.id, visitId: o.v.id, kind, value, unit: VITALS[kind].unit, measuredAt, source: 'device', validationStatus: 'device_unverified', deviceId: d!.id, createdAt: measuredAt }).returning({ id: observations.id })
+      return r!.id
+    }
+  }
+  /** The model's answer, with one observation that repeats the record's line starting with `line` and cites it. */
+  const citing = (line: string) => (sources: ReturnType<typeof sourcesIn>) => {
+    const d = faithfulDraft(sources) as { observations: unknown[] }
+    const s = sources.find((x) => x.text.startsWith(line))!
+    d.observations = [{ text: s.text, refs: [s.ref], basis: 'stated', uncertainty: null }]
+    return d
+  }
+
+  it('newer readings from a device, of the kinds the draft was made from, do not make it stale; what staff measure does, as before', async () => {
+    const o = await open()
+    const send = await band(o)
+    const t0 = Date.now() - 60_000
+    // Five readings of each kind before the draft, one every two seconds: the record keeps the newest five of each kind, visit and source.
+    for (let n = 0; n < 5; n++) {
+      await send('heart_rate', 80 + n, new Date(t0 + n * 2000))
+      await send('spo2', 95 + n, new Date(t0 + n * 2000))
+    }
+    // One statement rests on the oldest heart rate: the first reading that newer ones push out.
+    model.answer = citing('Heart rate 80 bpm')
+    await start(o.e.id, o.doctor)
+    const made = (await ready(o.e.id, o.doctor)).draft!
+    expect(made).toMatchObject({ status: 'ready', stale: false })
+    const reading = made.items.find((i) => i.section === 'observations')!
+    expect(reading.sources[0]!.excerpt).toMatch(/^Heart rate 80 bpm, device reading/)
+    // Two more of each kind arrive, and the two oldest of each are no longer among the newest five a draft reads.
+    for (let n = 5; n < 7; n++) {
+      await send('heart_rate', 80 + n, new Date(t0 + n * 2000))
+      await send('spo2', 90 + n, new Date(t0 + n * 2000))
+    }
+    const after = (await state(o.e.id, o.doctor)).draft!
+    expect(after).toMatchObject({ stale: false, staleSummary: null })
+    // The reading the statement rests on is still on the record, as it was: it is not said to have changed or gone.
+    const same = after.items.find((i) => i.id === reading.id)!
+    expect(same.sourceChanged).toBe(false)
+    expect(same.sources[0]!.change).toBeNull()
+    // What staff measure is new information, as before.
+    expect((await call(ctx.app, 'POST', `/api/visits/${o.v.id}/observations`, { cookie: o.nurse, body: { items: [{ kind: 'spo2', value: 97 }] } })).statusCode).toBe(201)
+    const stale = (await state(o.e.id, o.doctor)).draft!
+    expect(stale.stale).toBe(true)
+    expect(stale.staleSummary).toMatch(/\(1 added: SpO₂\)/)
+    // And the readings did move under the first draft: a new one is made from the newest five, without the two oldest heart rates.
+    // (The model answers faithfully this time: the reading the first answer quoted is not shown to it any more.)
+    model.answer = null
+    await start(o.e.id, o.doctor)
+    expect((await until(o.e.id, o.doctor, (s) => finished(s) && s.draft!.version === 2)).draft).toMatchObject({ stale: false })
+    expect(model.calls[1]!.user).toContain('Heart rate 86 bpm')
+    expect(model.calls[1]!.user).not.toMatch(/Heart rate 8[01] bpm/)
+  })
+
+  it('a device’s first reading of a kind the draft had none of is new information: the draft is stale', async () => {
+    const o = await open()
+    const send = await band(o)
+    await send('heart_rate', 82, new Date(Date.now() - 30_000))
+    await start(o.e.id, o.doctor)
+    expect((await ready(o.e.id, o.doctor)).draft!.stale).toBe(false)
+    // A newer heart rate is not...
+    await send('heart_rate', 84, new Date(Date.now() - 20_000))
+    expect((await state(o.e.id, o.doctor)).draft!.stale).toBe(false)
+    // ...the band's first temperature is: the draft knows of no temperature at all.
+    await send('temperature', 37.9, new Date(Date.now() - 10_000))
+    const s = (await state(o.e.id, o.doctor)).draft!
+    expect(s.stale).toBe(true)
+    expect(s.staleSummary).toMatch(/\(1 added: Temperature\)/)
+  })
+
+  it('a device reading the draft rests on that staff then mark as entered in error makes it stale, newer readings or not, and the statement says its source has gone', async () => {
+    const o = await open()
+    const send = await band(o)
+    const t0 = Date.now() - 30_000
+    const ids: string[] = []
+    for (let n = 0; n < 3; n++) ids.push(await send('heart_rate', 80 + n, new Date(t0 + n * 2000)))
+    model.answer = citing('Heart rate 82 bpm')
+    await start(o.e.id, o.doctor)
+    const made = (await ready(o.e.id, o.doctor)).draft!
+    expect(made.stale).toBe(false)
+    const reading = made.items.find((i) => i.section === 'observations')!
+    expect((await call(ctx.app, 'POST', `/api/observations/${ids[2]}/entered-in-error`, { cookie: o.nurse, body: { reason: 'The band was on another patient' } })).statusCode).toBe(200)
+    await send('heart_rate', 85, new Date())
+    const s = (await state(o.e.id, o.doctor)).draft!
+    expect(s.stale).toBe(true)
+    // The newer reading is still no change; the correction is.
+    expect(s.staleSummary).toMatch(/\(1 removed: Heart rate\)/)
+    const gone = s.items.find((i) => i.id === reading.id)!
+    expect(gone.sourceChanged).toBe(true)
+    expect(gone.sources[0]!.change).toBe('removed')
   })
 
   it('a statement whose source changed says so (and the excerpt it was made from is kept)', async () => {

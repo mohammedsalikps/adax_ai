@@ -1,6 +1,7 @@
 import type { PatientDetail, Role } from '@adaxai/contracts'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { createBrowserRouter, Outlet, RouterProvider } from 'react-router'
 import { PortalLayout } from './components/PortalLayout.tsx'
 import { CapturePanel } from './components/capture/CapturePanel.tsx'
@@ -9,9 +10,11 @@ import { ConsultAction, ConsultationLink } from './components/clinical/ConsultAc
 import { Timeline } from './components/clinical/Timeline.tsx'
 import { RequireAuth, RoleRedirect } from './components/RequireAuth.tsx'
 import type { RouteHandle } from './components/shell/AppShell.tsx'
+import { Button } from './components/ui/Button.tsx'
 import { PanelBoundary } from './components/ui/PanelBoundary.tsx'
 import { ToastProvider } from './components/ui/Toast.tsx'
 import { watchSessionOnFocus } from './lib/focus.ts'
+import { expandPart, showPart } from './lib/workspace.ts'
 import { createQueryClient } from './lib/queryClient.ts'
 import { AdminAuditPage } from './pages/admin/AdminAuditPage.tsx'
 import { AppointmentsPage } from './pages/clinical/AppointmentsPage.tsx'
@@ -32,7 +35,7 @@ import { QueuePage } from './pages/clinical/QueuePage.tsx'
 import { TodaysPatientsPage } from './pages/doctor/TodaysPatientsPage.tsx'
 import { RegisterPatientPage } from './pages/clinical/RegisterPatientPage.tsx'
 import { PatientThermalCard, ThermalDetailPage, ThermalListPage } from './pages/clinical/ThermalPages.tsx'
-import { ConsultationPage, showPart } from './pages/doctor/ConsultationPage.tsx'
+import { ConsultationPage } from './pages/doctor/ConsultationPage.tsx'
 import { PrescriptionPrintPage } from './pages/doctor/PrescriptionPrintPage.tsx'
 import { ApplicationSelectorPage } from './pages/ApplicationSelectorPage.tsx'
 import { LoginPage } from './pages/LoginPage.tsx'
@@ -42,10 +45,40 @@ import { AuscultationCard } from './components/clinical/AuscultationCard.tsx'
 import { DeviceReadingsCard } from './components/clinical/DeviceReadingsCard.tsx'
 import { PortalConsentsPage, PortalHomePage, PortalProfilePage, PortalRecordPage, PortalRecordsPage, PortalVisitsPage, PortalVitalsPage } from './pages/patient/PortalPages.tsx'
 import { ClinicalImagesCard } from './components/clinical/ClinicalImagesCard.tsx'
-import { ConsultationIntelligence } from './components/ai/ConsultationIntelligence.tsx'
 import { ManaAssistant } from './components/mana/ManaAssistant.tsx'
 import { ThermalPanel } from './components/thermal/ThermalPanel.tsx'
-import { ConsultationOverview } from './components/clinical/ConsultationOverview.tsx'
+import { ManaArea } from './components/workspace/ManaArea.tsx'
+import { PrescriptionAiLane } from './components/workspace/PrescriptionAiLane.tsx'
+
+/**
+ * Module 5's two actions while the module is closed: the thermal imaging workspace and the research view. The page shows them only while it
+ * is closed, because the full panel (ThermalPanel) has the same two once it is open. Each opens the module and then uses the panel's own
+ * action, so there is one workspace and one research view on the page, drawn where a dialog can be seen (not inside the module's hidden
+ * body), and focus comes back to the panel's button when it closes. One dense row of two (36px, words only), beside the newest image. The visible words start each button's name, which says the rest ("Open viewer (thermal imaging)",
+ * "Pediatric shock research"): the module's title already says "Thermal imaging".
+ */
+function ThermalModuleActions({ canEdit }: { canEdit: boolean }) {
+  const use = (action: 'thermal-open' | 'thermal-research-open') => {
+    // Open now, not at the next render: the panel's button must be on the screen to take focus and the click.
+    flushSync(() => expandPart('tools-thermal'))
+    showPart('tools-thermal')
+    const button = document.getElementById('tools-thermal')?.querySelector<HTMLButtonElement>(`[data-testid="${action}"]`)
+    if (!button || button.disabled) return
+    button.focus({ preventScroll: true })
+    button.click()
+  }
+  return (
+    <>
+      <Button size="sm" variant="secondary" className="px-2.5!" onClick={() => use('thermal-open')} disabled={!canEdit} data-testid="module-thermal-open">
+        Open viewer<span className="sr-only"> (thermal imaging)</span>
+      </Button>
+      <Button size="sm" variant="secondary" className="px-2.5!" onClick={() => use('thermal-research-open')} data-testid="module-thermal-research">
+        <span className="sr-only">Pediatric </span>
+        <span className="first-letter:uppercase">shock research</span>
+      </Button>
+    </>
+  )
+}
 
 const portal = (role: Role) => (
   <RequireAuth roles={[role]}>
@@ -113,29 +146,22 @@ const router = createBrowserRouter([
       { path: 'patients', element: <PatientsPage /> },
       { path: 'patients/:patientId', element: doctorProfile },
       {
-        // The doctor's consultation: one workspace (D1), the tools beside the note. Mana is given no way into the note: it is read-only.
+        // The doctor's consultation (Doctor HERO): the five inputs on the left, Mana and the record on the right, in focus mode (the
+        // navigation a drawer at every width) while it is being written. Each panel is its own slot, so a fault in one stays in it.
         path: 'encounters/:encounterId',
-        handle: { workspace: true } satisfies RouteHandle,
+        handle: { workspace: true, focus: true } satisfies RouteHandle,
         element: (
           <ConsultationPage
             panels={{
-              // D2: the consultation's context in one place; each item leads to the part that says more, the way the tools bar does.
-              overview: (e) => <ConsultationOverview encounter={e} onJump={showPart} />,
               conversation: (e, inserter) => <CapturePanel encounter={e} inserter={inserter} />,
-              draft: (e, inserter) => <ConsultationIntelligence encounterId={e.id} inserter={inserter} />,
-              mana: (e) => <ManaAssistant patientId={e.patient.id} encounterId={e.id} />,
-              // Each card in its own boundary as well: the stethoscope recordings stay usable if the device readings cannot be drawn.
-              devices: (e) => (
-                <>
-                  <PanelBoundary label="The device readings">
-                    <DeviceReadingsCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />
-                  </PanelBoundary>
-                  <PanelBoundary label="The stethoscope recordings">
-                    <AuscultationCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />
-                  </PanelBoundary>
-                </>
-              ),
+              devices: (e) => <DeviceReadingsCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />,
+              stethoscope: (e) => <AuscultationCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />,
               thermal: (e, inserter) => <ThermalPanel encounter={e} inserter={inserter} canEdit={e.canEdit} />,
+              thermalActions: (e) => <ThermalModuleActions canEdit={e.canEdit} />,
+              // The analysis' progress, the Mana result (model output), the consultation overview with the safety rules (fixed rules), and
+              // Ask Mana, which is given no way into the note: it is read-only.
+              mana: (e, inserter) => <ManaArea encounter={e} inserter={inserter} />,
+              prescriptionLane: (e, inserter) => <PrescriptionAiLane encounterId={e.id} inserter={inserter} />,
               more: (e, inserter) => (
                 <>
                   <PanelBoundary label="The clinical photographs">

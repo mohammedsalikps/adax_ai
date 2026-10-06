@@ -1,10 +1,11 @@
 import { expect, type Page, test } from '@playwright/test'
-import { expectNoHorizontalOverflow, nurseHandsOverPatient, signIn } from './support.ts'
+import { expectNoHorizontalOverflow, nurseHandsOverPatient, openModule, signIn, stepTo } from './support.ts'
 
 /*
- * D1, the consultation as one workspace: what the layout promises beyond what each panel's own spec checks. A fault in one tool stays in that
- * tool; the bar of the tools column moves that column, not the page; the review-and-sign step cannot be closed while the signature is being
- * recorded; and only the consultation keeps the sidebar a drawer on a tablet held sideways. Synthetic patients, through the real API.
+ * D1, the consultation as one workspace (Doctor HERO since: the five input modules in a rail on the left, Mana and the record on the right):
+ * what the layout promises beyond what each panel's own spec checks. A fault in one tool stays in that tool and opens its module; a jump to a
+ * module (a status chip, the workflow strip) moves the rail, not the page; the review-and-sign step cannot be closed while the signature is
+ * being recorded; and only the consultation keeps the sidebar a drawer on a tablet held sideways. Synthetic patients, through the real API.
  */
 
 async function openConsultation(page: Page, baseURL: string) {
@@ -27,13 +28,21 @@ test('a tool that fails to draw says so in its own place; the note, the other to
   await page.route('**/api/patients/*/device-readings', (route) => route.fulfill({ json: { serverTime: new Date().toISOString(), thresholds: { liveSeconds: 6, disconnectedSeconds: 14 }, consent: 'granted', devices: 'not a list' } }))
   const p = await openConsultation(page, baseURL!)
   const tools = page.getByTestId('consultation-tools')
+  // The devices' panel is in module 3, closed when the page opens: a fault inside it opens the module by itself, so the failure and its one
+  // "Try again" are seen instead of hidden behind "Show" (Doctor HERO).
   await expect(tools.getByRole('alert').filter({ hasText: 'The device readings could not be shown' })).toBeVisible()
   await expect(tools.getByRole('button', { name: 'Try again' })).toBeVisible()
+  await expect(page.locator('#tools-devices')).toHaveAttribute('data-open', 'true')
   // The bar's status reads the same answer: it fails in its own place too, and the patient's name, MRN and allergies are still there.
   await expect(page.getByTestId('patient-banner').getByRole('alert')).toContainText('could not be shown')
   await expect(page.getByTestId('patient-banner')).toContainText(p.mrn)
-  // Everything else works: the other tools are drawn, and the note can be written and is saved.
+  // Everything else works: the other tools are drawn, and the note can be written and is saved. Their panels are in modules that start
+  // closed, so each is opened first, as the doctor would (Doctor HERO); the modules' summaries are drawn either way.
+  await expect(page.getByTestId('module-conversation')).toBeVisible()
+  await expect(page.getByTestId('module-stethoscope')).toBeVisible()
+  await openModule(page, 'Conversation')
   await expect(page.getByRole('region', { name: 'Live transcription' })).toBeVisible()
+  await openModule(page, 'Stethoscope')
   await expect(page.getByRole('region', { name: 'Stethoscope recordings' })).toBeVisible()
   await page.getByLabel('History of present illness').fill('Two days of sore throat (synthetic).')
   await expect(page.getByTestId('save-state')).toContainText(/Saved/, { timeout: 15_000 })
@@ -41,29 +50,40 @@ test('a tool that fails to draw says so in its own place; the note, the other to
   await ctx.close()
 })
 
-test('the bar of the tools column moves that column, not the page, and takes focus to the part; "Skip to the note" goes to the note', async ({ page, baseURL }) => {
+test('a jump to a module moves the inputs rail, not the page, and takes focus to it; a jump to Mana does the same where Mana has a column of its own; "Skip to the note" goes to the note', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
   await openConsultation(page, baseURL!)
   const tools = page.getByTestId('consultation-tools')
   await page.evaluate(() => window.scrollTo(0, 0))
-  const goTo = tools.getByRole('navigation', { name: 'Go to' })
-  for (const [label, id] of [
-    ['Devices', 'tools-devices'],
-    ['AI draft', 'tools-draft'],
-    ['Conversation', 'tools-conversation'],
+  // The "Go to" bar is gone (Doctor HERO: the workflow strip and the always-visible modules replace it). What leads to a module now is a
+  // status chip under the banner, which opens the module and brings it into view, and the strip's "Inputs", which leads to the rail's heading.
+  for (const [label, go, id] of [
+    ['the device chip', () => page.getByTestId('device-status-chip').click(), 'tools-devices'],
+    ['the speech chip', () => page.getByTestId('speech-status-chip').click(), 'tools-conversation'],
+    ['the strip’s Inputs', () => stepTo(page, 'Inputs'), 'consultation-inputs'],
   ] as const) {
-    await goTo.getByRole('button', { name: label }).click()
-    await expect(page.locator(`#${id}`)).toBeFocused()
+    await go()
+    await expect(page.locator(`#${id}`), label).toBeFocused()
     await expect(page.locator(`#${id}`)).toBeInViewport()
-    // The page did not move: the note beside the tools is where the doctor left it.
+    // A module reached this way is opened, so what the chip spoke of is shown.
+    if (id !== 'consultation-inputs') await expect(page.locator(`#${id}`)).toHaveAttribute('data-open', 'true')
+    // The page did not move: the note beside the rail is where the doctor left it. (At this width Mana is above the note in the right-hand
+    // pane, so the chief complaint is no longer on the screen when the page opens, by design; it is checked at 1920px below, where it is.)
     expect(await page.evaluate(() => window.scrollY), `${label}: the page scrolled`).toBe(0)
-    await expect(page.getByLabel('Chief complaint')).toBeInViewport()
   }
-  // The device chip in the bar leads to the devices the same way.
-  await page.getByTestId('device-status-chip').click()
-  await expect(page.locator('#tools-devices')).toBeFocused()
-  expect(await page.evaluate(() => window.scrollY)).toBe(0)
-  // From the keyboard, the first stop in the tools column is the way past it, to the note.
+
+  // On a wide screen Mana and the record stand side by side, and Mana scrolls on its own: the strip's "Mana analysis" leads to its heading
+  // without moving the page, and the note is on the screen from the start (the "Go to" bar's "AI draft" did this in the tools column before).
+  await page.setViewportSize({ width: 1920, height: 1080 })
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await expect(page.getByLabel('Chief complaint')).toBeInViewport()
+  await stepTo(page, 'Mana analysis')
+  await expect(page.locator('#mana-result [data-part-focus="mana-result"]')).toBeFocused()
+  await expect(page.locator('#mana-result')).toBeInViewport()
+  expect(await page.evaluate(() => window.scrollY), 'Mana analysis: the page scrolled').toBe(0)
+  await expect(page.getByLabel('Chief complaint')).toBeInViewport()
+
+  // From the keyboard, the first stop in the rail is the way past it, to the note.
   await tools.getByRole('button', { name: 'Skip to the note' }).focus()
   await expect(tools.getByRole('button', { name: 'Skip to the note' })).toBeVisible()
   await page.keyboard.press('Enter')

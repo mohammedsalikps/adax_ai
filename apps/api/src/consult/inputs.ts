@@ -246,6 +246,59 @@ export function diffManifests(then: ManifestEntry[], now: ManifestEntry[]): Mani
   }
 }
 
+/**
+ * A reading a device sent, as the stale rule reads it. Only an unverified reading from a device that is not a simulator, is not entered in error and is
+ * still this patient's is one (a simulator's readings never reach the draft at all).
+ */
+export interface DeviceReading {
+  /** The kind of reading and the visit it belongs to: within one of these, a device's newer readings take the place of its older ones among the newest few the draft reads. */
+  stream: string
+  measuredAt: number
+}
+
+export const deviceStream = (kind: string, visitId: string | null): string => `${kind}|${visitId ?? 'none'}`
+
+/** The device readings among the items the draft would be made from now, by key. */
+export function deviceReadingsIn(record: PatientRecord): Map<string, DeviceReading> {
+  const out = new Map<string, DeviceReading>()
+  for (const r of record.items) {
+    if (r.data.t !== 'observation' || r.data.source !== 'device' || r.data.validationStatus !== 'device_unverified') continue
+    out.set(keyOf(r.sourceType, r.sourceId, r.field), { stream: deviceStream(r.data.kind, r.data.visitId), measuredAt: r.data.measuredAt.getTime() })
+  }
+  return out
+}
+
+/** The record id in a source's key (null when the key has none). */
+export const idInKey = (key: string): string | null => {
+  const id = key.split(':')[1]
+  return id && id !== 'none' ? id : null
+}
+
+/**
+ * The diff without what a device sending readings does to it by itself. The record keeps the newest few readings of each kind, visit and source, and the
+ * draft reads those: a device that sends a reading every few seconds puts newer ones in and pushes the oldest out, so that, counted as changes, every
+ * draft would be out of date seconds after it was made, and making it again would not help. Of the device readings (`readings`: those the draft had and
+ * those there are now, see DeviceReading), two differences are therefore not counted:
+ * - a reading the draft did not have, of a kind and visit it had device readings of, measured after the newest of those: a newer value of what it had;
+ * - a reading the draft had that is no longer among the newest: it is still on the record, unchanged; newer ones took its place.
+ * Everything else counts as before: what staff measured; a reading that changed; one entered in error or taken off the patient (it is no device reading of
+ * this patient any more, so it is not in `readings`); a device's first reading of a kind, or at a visit, the draft had none of (that is new information,
+ * not a newer value of something the draft had: the draft is stale); the note, the points, the allergies, the medicines, thermal, and every other source.
+ */
+export function withoutDeviceStream(d: ManifestDiff, then: ManifestEntry[], readings: ReadonlyMap<string, DeviceReading>): ManifestDiff {
+  const newestHad = new Map<string, number>()
+  for (const m of then) {
+    const r = readings.get(m.key)
+    if (r) newestHad.set(r.stream, Math.max(newestHad.get(r.stream) ?? -Infinity, r.measuredAt))
+  }
+  const newer = (m: ManifestEntry) => {
+    const r = readings.get(m.key)
+    const had = r ? newestHad.get(r.stream) : undefined
+    return r !== undefined && had !== undefined && r.measuredAt > had
+  }
+  return { changed: d.changed, removed: d.removed.filter((m) => !readings.has(m.key)), added: d.added.filter((m) => !newer(m)) }
+}
+
 /** One sentence for the screen: what changed since the draft was made, in the doctor's words for each field. */
 export function staleSummary(d: ManifestDiff): string | null {
   const n = d.changed.length + d.removed.length + d.added.length

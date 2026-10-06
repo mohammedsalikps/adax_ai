@@ -29,5 +29,22 @@ export const useExtractPoints = (encounterId: string) => useAiMutation<string>(e
 
 export { fmtOffset, languageName } from './transcriptTime.ts'
 
+/** What the clinician is told when a service's own reason holds nothing but a setup instruction. */
+export const SPEECH_NOT_RUNNING = 'Speech-to-text is not running on this computer.'
+
+/**
+ * A service's reason in the clinician's words. The speech service's reasons can end with an instruction for whoever runs the computer ('Start
+ * it with "npm run speech:dev"', 'Set SPEECH_PROVIDER=local'): such a sentence is left out, and what is left says what is wrong. When nothing is
+ * left, `fallback`. Nothing is added or reworded.
+ */
+export function clinicianReason(reason: string | null | undefined, fallback = SPEECH_NOT_RUNNING): string {
+  const sentences = (reason ?? '').match(/[^.!?]+[.!?]+["”')]*\s*|[^.!?]+$/g) ?? []
+  const kept = sentences
+    .filter((s) => !/\bnpm\b|\bnpx\b|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+=|`/.test(s))
+    .join('')
+    .trim()
+  return kept || fallback
+}
+
 export type { AiResponse, EncounterAi }
 export { aiKey }

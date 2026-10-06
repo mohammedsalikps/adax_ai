@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { type AiResponse, aiKey, useAiMutation } from '../../lib/ai.ts'
 import { api, errorMessage } from '../../lib/api.ts'
 import { useStillSamePerson } from '../../lib/auth.tsx'
-import { fmtOffset, languageName, useAssignSpeakers, useExtractPoints } from '../../lib/capture.ts'
+import { clinicianReason, fmtOffset, languageName, useAssignSpeakers, useExtractPoints } from '../../lib/capture.ts'
 import { focusLines, useFocusedLines } from '../../lib/focusLines.ts'
 import { fmtDateTime, fmtTime } from '../../lib/format.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
@@ -157,7 +157,8 @@ function LiveTranscriptionCard({ encounter, ai, highlight }: { encounter: Encoun
             </p>
           ) : (
             <Alert tone="warning" title="Local transcription unavailable" className="text-sm">
-              <span data-testid="speech-unavailable">{stt.reason}</span>
+              {/* The service's reason without its setup instructions (a command to run is not the clinician's to do). */}
+              <span data-testid="speech-unavailable">{clinicianReason(stt.reason)}</span>
               <span className="mt-1 block text-xs">
                 No audio is ever sent to a hosted service instead. You can still add a typed transcript or upload a recording, which is transcribed here once the service is running.
               </span>

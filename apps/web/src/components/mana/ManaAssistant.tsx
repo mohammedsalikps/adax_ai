@@ -363,7 +363,7 @@ function announcement(m: ManaMessage): string {
  * the doctor may see, and a local model writes the answer from what was read; every statement shows the records it rests on. It is read-only. It is closed
  * until the doctor opens it, and nothing is asked of the server before that.
  */
-export function ManaAssistant({ encounterId, patientId, defaultOpen = false }: ManaScope & { defaultOpen?: boolean }) {
+export function ManaAssistant({ encounterId, patientId, defaultOpen = false, title }: ManaScope & { defaultOpen?: boolean; title?: string }) {
   const scope: ManaScope = { encounterId, patientId }
   const [open, setOpen] = useState(defaultOpen)
   const conv = useManaConversation(scope, open)
@@ -458,13 +458,25 @@ export function ManaAssistant({ encounterId, patientId, defaultOpen = false }: M
   return (
     <section aria-label="Mana AI, Doctor’s Clinical Assistant" className="min-w-0 rounded-xl border border-ai/30 bg-surface shadow-card" data-testid="mana-assistant" data-open={open}>
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
-        <h2 className="min-w-0 text-sm leading-tight">
-          <span className="inline-flex items-center gap-1.5 font-semibold tracking-wide text-ai">
-            <Sparkles aria-hidden="true" className="size-4 shrink-0" />
-            MANA AI
-          </span>
-          <span className="font-medium"> — Doctor’s Clinical Assistant</span>
-        </h2>
+        {/* In the consultation (`title`), a heading like the Mana area's others, under its h2, and a quiet Open beside "Complete consultation". */}
+        {title ? (
+          <h3 className="inline-flex min-w-0 items-center gap-2 text-base font-semibold">
+            <Sparkles aria-hidden="true" className="size-4 shrink-0 text-ai" />
+            {title}
+            <span className="sr-only">: Mana AI, Doctor’s Clinical Assistant</span>
+            <span aria-hidden="true" className="text-sm font-normal text-ink-muted">
+              Doctor’s clinical assistant
+            </span>
+          </h3>
+        ) : (
+          <h2 className="min-w-0 text-sm leading-tight">
+            <span className="inline-flex items-center gap-1.5 font-semibold tracking-wide text-ai">
+              <Sparkles aria-hidden="true" className="size-4 shrink-0" />
+              MANA AI
+            </span>
+            <span className="font-medium"> — Doctor’s Clinical Assistant</span>
+          </h2>
+        )}
         <div className="flex items-center gap-1.5">
           {open && (
             <Button size="sm" variant="ghost" loading={fresh.isPending} disabled={busy} icon={<MessageSquarePlus aria-hidden="true" className="size-4" />} onClick={() => fresh.mutate()} data-testid="mana-new">
@@ -473,7 +485,7 @@ export function ManaAssistant({ encounterId, patientId, defaultOpen = false }: M
           )}
           <Button
               size="sm"
-              variant={open ? 'secondary' : 'primary'}
+              variant={open || title ? 'secondary' : 'primary'}
               aria-expanded={open}
               aria-controls={panelId}
               onClick={() => {

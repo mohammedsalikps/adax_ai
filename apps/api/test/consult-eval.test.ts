@@ -186,7 +186,8 @@ describe('the report', () => {
     const md = toMarkdown('Test report', { Model: 'stub' }, [a], [c01], [b])
     expect(md).toMatch(/not a clinical validation/i)
     expect(md).toMatch(/no accuracy is claimed/i)
-    expect(md).toContain('consult-checks-v1')
+    // v2 since the checks read an item's day on the facility's calendar and stopped taking the digit of SpO₂ for a figure: the report names the checks it applied.
+    expect(md).toContain('consult-checks-v2')
     // Everything above the statements themselves is counts: a percentage there would be an accuracy figure nobody measured.
     expect(md.split('## The kept statements')[0]).not.toMatch(/\d\s?%/)
   })

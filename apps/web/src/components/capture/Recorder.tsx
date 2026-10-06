@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError, errorMessage } from '../../lib/api.ts'
 import type { AiResponse } from '../../lib/ai.ts'
 import { useStillSamePerson } from '../../lib/auth.tsx'
-import { fmtOffset, useCaptureStatus } from '../../lib/capture.ts'
+import { clinicianReason, fmtOffset, useCaptureStatus } from '../../lib/capture.ts'
 import { Button } from '../ui/Button.tsx'
 import { Alert } from '../ui/Feedback.tsx'
 
@@ -226,7 +226,7 @@ export function Recorder({
       stopTracks()
       setState('idle')
       setProblem('This recording was ended elsewhere. Nothing more was captured.')
-    } else if (!s.speech.available) setWarning(`${s.speech.reason ?? 'Local transcription is unavailable.'} The audio is still being saved; it is transcribed when the service is back (use “Retry” under the transcript).`)
+    } else if (!s.speech.available) setWarning(`${clinicianReason(s.speech.reason, 'Local transcription is unavailable.')} The audio is still being saved; it is transcribed when the service is back (use “Retry” under the transcript).`)
     else setWarning((w) => (w?.startsWith('A part') ? w : null))
   }, [status.data, status.dataUpdatedAt, state, haltForConsent, haltClosed])
 
@@ -399,7 +399,7 @@ export function Recorder({
       )}
       {!canStart && state === 'idle' && s?.blockedReason && (
         <p id="recorder-blocked" className="text-sm text-ink-muted">
-          {s.blockedReason}
+          {clinicianReason(s.blockedReason, 'Recording cannot start now.')}
         </p>
       )}
       {shownProblem && <Alert tone="error">{shownProblem}</Alert>}

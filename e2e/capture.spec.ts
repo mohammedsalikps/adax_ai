@@ -1,5 +1,5 @@
 import { expect, type Page, request as pwRequest, test } from '@playwright/test'
-import { DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, signIn } from './support.ts'
+import { DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, openModule, openMoreTools, signIn } from './support.ts'
 
 // Live consultation capture, end to end: real browser (Chromium's synthetic microphone), real API, and the TEST-ONLY
 // stand-in for the local speech service (e2e/mock-speech.mjs: a fixed synthetic script, no model, loopback only).
@@ -25,6 +25,9 @@ async function startConsultation(page: Page, baseURL: string, opts: Parameters<t
   await page.getByRole('listitem').filter({ hasText: p.name }).getByRole('button', { name: 'Start consultation' }).click()
   await expect(page).toHaveURL(/\/doctor\/encounters\/[0-9a-f-]{36}/)
   const encounterId = /\/encounters\/([0-9a-f-]{36})/.exec(page.url())![1]!
+  // Live transcription and the important points are module 1 of the inputs rail (Doctor HERO), which starts closed: opened, as the doctor
+  // would (and remembered, so it stays open after a reload).
+  await openModule(page, 'Conversation')
   return { ...p, encounterId }
 }
 
@@ -223,6 +226,9 @@ test('the microphone is refused: the doctor is told, nothing is recorded, and no
   await expect(live.getByRole('button', { name: 'Start recording' })).toBeEnabled()
   await expect(live.getByTestId('recording-state')).toHaveCount(0)
   expect((await aiView(page, p.encounterId)).transcripts).toHaveLength(0)
+  // From the top of the page, as at line 381: opening the Conversation module scrolled the page, and the workflow strip (which is not sticky)
+  // then sits half under the sticky bar, where axe measures only the uncovered part of its buttons.
+  await page.evaluate(() => window.scrollTo(0, 0))
   await expectNoAxeViolations(page)
 })
 
@@ -291,7 +297,10 @@ test('when the local speech service is unavailable the screen says so, recording
   await expect(notice).toContainText('The local speech service is not running')
   await expect(notice).toContainText('No audio is ever sent to a hosted service instead')
   await expect(live.getByRole('button', { name: 'Start recording' })).toBeDisabled()
-  await expect(live.getByText(unavailable.reason).last()).toBeVisible()
+  // The service's reason is shown in the clinician's words: its setup instruction for whoever runs the computer ("Start it with npm run …") is
+  // left out (lib/capture.ts clinicianReason), and no npm command appears anywhere in the panel.
+  await expect(live.getByText('The local speech service is not running.').last()).toBeVisible()
+  await expect(live).not.toContainText('npm run')
   await expect(page.getByTestId('speech-status-chip')).toContainText('Speech-to-text unavailable')
   // A typed transcript still works, and says it is not recorded speech.
   await live.getByText('Other ways to add a transcript').click()
@@ -365,11 +374,17 @@ test('layout: capture, important points and the record sit side by side on a wor
   }
   if (!isMobile) {
     await page.setViewportSize({ width: 1440, height: 900 })
-    // Wide enough for three columns: the patient's record is not pushed below the transcript.
+    // Wide enough for two panes: the transcript is in the inputs rail on the left, and the patient's record is on the right, not pushed
+    // below the transcript (Doctor HERO: Mana is above the record in that pane).
     const live1 = await page.getByRole('region', { name: 'Live transcription' }).boundingBox()
     const note = await page.getByLabel('Chief complaint').boundingBox()
     expect(note!.x).toBeGreaterThan(live1!.x + live1!.width - 1)
   }
+  // From the top of the page, as the five-widths test below does: on a phone the screenshots above leave the page scrolled wherever the
+  // points card put it, and since Doctor HERO (the workflow strip and the rail's heading above the conversation) that can leave a point's
+  // button half under the fixed action bar, which axe then measures by its uncovered part. Where the page happens to be scrolled is not a
+  // state of the page.
+  await page.evaluate(() => window.scrollTo(0, 0))
   await expectNoAxeViolations(page)
   expect(p.patientId).toBeTruthy()
 })
@@ -379,7 +394,8 @@ test('the assistant says whether hosted AI is allowed and where text would go; w
   const on = await browser.newContext({ baseURL, serviceWorkers: 'block' })
   const page = await on.newPage()
   await startConsultation(page, baseURL!, { consents: ['ai_recording'] })
-  const panel = page.getByRole('region', { name: 'AI consultation assistant' })
+  // The older assistant is not one of the five inputs: it is in the "More tools" sheet (Doctor HERO), drawn while the sheet is open.
+  const panel = (await openMoreTools(page)).getByRole('region', { name: 'AI consultation assistant' })
   await expect(panel.getByTestId('egress-badge')).toContainText('Hosted AI: allowed (to 127.0.0.1:4199)')
   await expect(panel.getByTestId('external-disclosure')).toContainText('not on this computer')
   await expect(panel.getByTestId('external-disclosure')).toContainText('Audio is never sent')
@@ -391,7 +407,7 @@ test('the assistant says whether hosted AI is allowed and where text would go; w
     await route.fulfill({ response: res, json: { ...body, status: { ...body.status, egress: { hosted: false, destination: null }, llm: { available: false, provider: null, model: null, reason }, qa: { available: false, provider: null, model: null, reason }, vision: { available: false, provider: null, model: null, reason } } } })
   })
   await page.reload()
-  const off = page.getByRole('region', { name: 'AI consultation assistant' })
+  const off = (await openMoreTools(page)).getByRole('region', { name: 'AI consultation assistant' })
   await expect(off.getByTestId('egress-badge')).toContainText('Hosted AI: off')
   await expect(off.getByTestId('egress-off-note')).toContainText('Nothing leaves this computer')
   await expect(off.getByTestId('egress-off-note')).toContainText('a server setting that this screen cannot change')
@@ -452,6 +468,8 @@ test('states at five widths: consent needed, local transcription unavailable, an
   const first = await nurseHandsOverPatient(baseURL!)
   await signIn(page, 'dr.meera')
   await page.getByRole('listitem').filter({ hasText: first.name }).getByRole('button', { name: 'Start consultation' }).click()
+  // Module 1 of the inputs rail (Doctor HERO), which starts closed; opened, it stays open after the reload below.
+  await openModule(page, 'Conversation')
   const live = page.getByRole('region', { name: 'Live transcription' })
   await expect(live.getByTestId('recording-consent')).toContainText('The patient’s consent to recording is needed')
   await fit('consent needed')

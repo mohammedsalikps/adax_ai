@@ -1,6 +1,6 @@
-import { type ConsultationContext, type ContextConflict, type Encounter, EVIDENCE_KINDS, type EvidenceItem, type EvidenceTrust } from '@adaxai/contracts'
+import { type ConsultationContext, type ContextConflict, type Encounter, EVIDENCE_KINDS, type EvidenceItem, type EvidenceKind, type EvidenceTrust } from '@adaxai/contracts'
 import { ChevronRight } from 'lucide-react'
-import { useEffect, useId, useState } from 'react'
+import { type ReactNode, useEffect, useId, useState } from 'react'
 import { useMe } from '../../lib/auth.tsx'
 import {
   clockTime,
@@ -21,27 +21,58 @@ import {
   statusTone,
   TARGET_LABEL,
   targetElementId,
+  targetLabel,
   trustLabel,
   trustTone,
   useConsultationContext,
   useDeviceLiveSeconds,
   visibleEvidence,
 } from '../../lib/consultationContext.ts'
+import type { PartId } from '../../lib/workspace.ts'
 import { Button } from '../ui/Button.tsx'
-import { LoadingState } from '../ui/Feedback.tsx'
+import { Badge, LoadingState } from '../ui/Feedback.tsx'
 import { Card } from '../ui/Layout.tsx'
+import { SafetyRules } from '../workspace/SafetyRules.tsx'
 import { SimulatedBadge, UnverifiedBadge } from './DeviceReadingsCard.tsx'
 
 /**
- * D2: the consultation's overview, first in the tools column. What waits for the doctor's review, where two sources disagree, the newest
- * evidence (each item with its kind, its time, its state, how far it can be trusted and where it came from), what is missing, and the summary
- * composed by fixed rules: all from one read of the consultation's context (GET /api/encounters/:id/context), which the server builds from the
- * records that already exist. It shows; it does not decide: no diagnosis or recommendation of its own, no disagreement resolved, nothing made
- * more current or more trusted than the server said, and a SIMULATED mark is never left out. Each item leads to the part of the page that says
- * more (`onJump` is the page's own way there, as the bar at the top of the tools column). If it cannot be read it says so here, and nothing else
- * on the page (the note included) is affected.
+ * D2: the consultation's overview, composed by fixed rules, never by AI. What waits for the doctor's review, where two sources disagree, the
+ * newest evidence (each item with its kind, its time, its state, how far it can be trusted and where it came from), what is missing, and the
+ * summary composed by fixed rules: all from one read of the consultation's context (GET /api/encounters/:id/context), which the server builds
+ * from the records that already exist. It shows; it does not decide: no diagnosis or recommendation of its own, no disagreement resolved,
+ * nothing made more current or more trusted than the server said, and a SIMULATED mark is never left out. Each item leads to the part of the
+ * page that says more (`onJump` is the page's own way there; `revealPart` from lib/workspace.ts also opens a collapsed module). If it cannot be
+ * read it says so here, and nothing else on the page (the note included) is affected.
+ *
+ * Doctor HERO shows it in the Mana area, after the model's result:
+ * - `compact` keeps open what needs the doctor (what waits for review, and where sources disagree) and folds the evidence, what is missing
+ *   and the summary behind "Show evidence": mounted, only hidden, with a line beside the button that says how much is there and how much of
+ *   it is SIMULATED. Without it, everything is shown as before.
+ * - `reviewPart` makes the review block the page's `#mana-review` part (the workflow strip's "Your review"); its heading takes the focus.
+ *   Only one block on the page may be that part, so the page asks for it.
+ * - `safetyRules` shows the fixed safety rules' results (SafetyRules) in this card, after the review block. They come from another read,
+ *   so they stay when the overview itself cannot be read. `recordCheck` (the fixed rules' record check before any draft) follows them.
+ * - `draftStatements`: the draft's statements that wait, as the page counts them (the same count as the workflow strip and the Mana result),
+ *   in place of the count in the overview's own read, which can be a moment older: one number for the same thing on the whole page.
+ * - Its heading is an h3 where it stands in an area with its own h2 (`compact`: the Mana area).
  */
-export function ConsultationOverview({ encounter, onJump }: { encounter: Encounter; onJump: (elementId: string) => void }) {
+export function ConsultationOverview({
+  encounter,
+  onJump,
+  compact = false,
+  reviewPart = false,
+  safetyRules = false,
+  recordCheck,
+  draftStatements,
+}: {
+  encounter: Encounter
+  onJump: (part: PartId) => void
+  compact?: boolean
+  reviewPart?: boolean
+  safetyRules?: boolean
+  recordCheck?: ReactNode
+  draftStatements?: number | null
+}) {
   const q = useConsultationContext(encounter.id)
   const liveSeconds = useDeviceLiveSeconds(encounter.patient.id)
   const { data: me } = useMe()
@@ -50,20 +81,62 @@ export function ConsultationOverview({ encounter, onJump }: { encounter: Encount
   const c = q.data && q.data.encounterId === encounter.id && q.data.patientId === encounter.patient.id ? q.data : null
   // Ages the times on the screen; every second while a device value is LIVE, so that it turns STALE when the device card's does.
   useTick(c?.evidence.some(isLiveDeviceItem) ? 1000 : CONTEXT_POLL_MS)
-  const jump = (t: EvidenceTarget) => onJump(targetElementId(t))
+  // A stethoscope recording leads to the Stethoscope module whatever target the server gave it; the pending groups and conflicts have no kind.
+  const jump = (t: EvidenceTarget, kind?: EvidenceKind) => onJump(targetElementId(t, kind))
   const readAt = c ? clockTime(c.generatedAt) : null
+  const rules =
+    safetyRules || recordCheck ? (
+      <>
+        {safetyRules && <SafetyRules encounterId={encounter.id} />}
+        {recordCheck && <div className={safetyRules ? 'mt-5' : undefined}>{recordCheck}</div>}
+      </>
+    ) : null
+  // The evidence, what is missing and the summary: shown as they are, or behind "Show evidence" in the compact overview.
+  const details = c && (
+    <>
+      <EvidenceBlock c={c} now={serverNow(c.generatedAt, q.dataUpdatedAt, Date.now())} liveSeconds={liveSeconds} showAll={showAll} onToggle={() => setShowAll((s) => !s)} jump={jump} />
+      {c.missing.length > 0 && (
+        <div data-testid="overview-missing">
+          <h3 className="text-sm font-semibold">Missing</h3>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5">
+            {c.missing.map((m, i) => (
+              <li key={i} className="break-words">
+                {m}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <SummaryBlock c={c} />
+    </>
+  )
   return (
     <div data-testid="consultation-overview">
-      <Card title="Consultation overview" actions={readAt ? <p className="text-xs text-ink-muted">Read at {readAt}</p> : undefined}>
-        {q.isPending ? (
-          <LoadingState label="Reading this consultation…" rows={3} />
-        ) : !c ? (
-          <div role="alert" className="rounded-lg border border-down/20 bg-down-soft px-3 py-3 text-sm text-ink" data-testid="overview-error">
-            <p>The overview could not be loaded. The consultation and the note are not affected.</p>
-            <Button size="sm" variant="secondary" className="mt-2" loading={q.isFetching} onClick={() => void q.refetch()}>
-              Try again
-            </Button>
+      <Card
+        level={compact ? 3 : 2}
+        title="Consultation overview"
+        actions={
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <Badge tone="neutral">Fixed rules, not AI</Badge>
+            {readAt && <p className="text-xs text-ink-muted">Read at {readAt}</p>}
           </div>
+        }
+      >
+        {q.isPending ? (
+          <>
+            <LoadingState label="Reading this consultation…" rows={3} />
+            {rules && <div className="mt-5 text-sm">{rules}</div>}
+          </>
+        ) : !c ? (
+          <>
+            <div role="alert" className="rounded-lg border border-down/20 bg-down-soft px-3 py-3 text-sm text-ink" data-testid="overview-error">
+              <p>The overview could not be loaded. The consultation and the note are not affected.</p>
+              <Button size="sm" variant="secondary" className="mt-2" loading={q.isFetching} onClick={() => void q.refetch()}>
+                Try again
+              </Button>
+            </div>
+            {rules && <div className="mt-5 text-sm">{rules}</div>}
+          </>
         ) : (
           <div className="space-y-5 text-sm">
             <p className="text-xs text-ink-muted">From this consultation’s records. Nothing here is a diagnosis or a recommendation.</p>
@@ -75,24 +148,51 @@ export function ConsultationOverview({ encounter, onJump }: { encounter: Encount
                 </Button>
               </div>
             )}
-            <ReviewBlock c={c} hidden={pendingNotShown(me, encounter.doctor.id)} jump={jump} />
-            <EvidenceBlock c={c} now={serverNow(c.generatedAt, q.dataUpdatedAt, Date.now())} liveSeconds={liveSeconds} showAll={showAll} onToggle={() => setShowAll((s) => !s)} jump={jump} />
-            {c.missing.length > 0 && (
-              <div data-testid="overview-missing">
-                <h3 className="text-sm font-semibold">Missing</h3>
-                <ul className="mt-1 list-disc space-y-0.5 pl-5">
-                  {c.missing.map((m, i) => (
-                    <li key={i} className="break-words">
-                      {m}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <SummaryBlock c={c} />
+            <ReviewBlock c={draftStatements === null || draftStatements === undefined ? c : { ...c, pending: { ...c.pending, draftStatements } }} hidden={pendingNotShown(me, encounter.doctor.id)} jump={jump} part={reviewPart} />
+            {rules}
+            {compact ? <EvidenceFold note={foldNote(c)}>{details}</EvidenceFold> : details}
           </div>
         )}
       </Card>
+    </div>
+  )
+}
+
+/** What the fold holds, in counts: the evidence items, how many of them are SIMULATED (never out of sight unsaid), and the missing items. */
+function foldNote(c: Pick<ConsultationContext, 'evidence' | 'missing'>): string {
+  const n = c.evidence.length
+  const simulated = c.evidence.filter((i) => trustTone(i.trust) === 'simulated').length
+  const evidence = !n ? 'No evidence recorded yet' : `${n} ${n === 1 ? 'item' : 'items'} of evidence${simulated ? ` (${simulated} SIMULATED, not ${simulated === 1 ? 'a measurement' : 'measurements'})` : ''}`
+  const m = c.missing.length
+  return m ? `${evidence} · ${m} missing ${m === 1 ? 'item' : 'items'}` : evidence
+}
+
+/** The compact overview's fold: closed until opened, always mounted (only hidden), and not remembered. */
+function EvidenceFold({ note, children }: { note: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const bodyId = useId()
+  const noteId = useId()
+  return (
+    <div data-testid="overview-fold" data-open={open}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <Button
+          variant="secondary"
+          icon={<ChevronRight aria-hidden="true" className={`size-4 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />}
+          aria-expanded={open}
+          aria-controls={bodyId}
+          aria-describedby={noteId}
+          onClick={() => setOpen((o) => !o)}
+          data-testid="overview-show-evidence"
+        >
+          {open ? 'Hide evidence' : 'Show evidence'}
+        </Button>
+        <p id={noteId} className="min-w-0 text-xs break-words text-ink-muted">
+          {note}
+        </p>
+      </div>
+      <div id={bodyId} hidden={!open} className="mt-4 space-y-5">
+        {children}
+      </div>
     </div>
   )
 }
@@ -108,14 +208,17 @@ function useTick(ms: number) {
 
 /**
  * What waits for the doctor (each count leads to where it is reviewed) and where two sources disagree (each leads to both sides). That nothing
- * waits is said only when every kind was counted: a kind that could not be read, or is not shown to this viewer, is said instead.
+ * waits is said only when every kind was counted: a kind that could not be read, or is not shown to this viewer, is said instead. As the
+ * page's `#mana-review` part (`part`), its heading is where a jump there puts the focus.
  */
-function ReviewBlock({ c, hidden, jump }: { c: ConsultationContext; hidden: readonly PendingKind[]; jump: (t: EvidenceTarget) => void }) {
+function ReviewBlock({ c, hidden, jump, part }: { c: ConsultationContext; hidden: readonly PendingKind[]; jump: (t: EvidenceTarget) => void; part: boolean }) {
   const groups = groupPending(c.pending)
   const notes = reviewNotes(c.pending, c.conflicts.length, hidden)
   return (
-    <div data-testid="overview-review">
-      <h3 className="text-sm font-semibold">Needs your review</h3>
+    <div data-testid="overview-review" id={part ? 'mana-review' : undefined}>
+      <h3 className="text-sm font-semibold" tabIndex={part ? -1 : undefined} data-part-focus={part ? 'mana-review' : undefined}>
+        Needs your review
+      </h3>
       {notes.nothingWaiting && <p className="mt-1 text-ink-muted">Nothing is waiting for your review.</p>}
       {notes.incomplete && (
         <p className="mt-1 break-words text-ink" data-testid="pending-incomplete">
@@ -128,13 +231,13 @@ function ReviewBlock({ c, hidden, jump }: { c: ConsultationContext; hidden: read
         </p>
       )}
       {groups.length > 0 && (
-        <ul className="mt-2 space-y-2">
+        <ul className="mt-1 divide-y divide-line border-y border-line">
           {groups.map((g) => (
             <li key={g.target}>
               <button
                 type="button"
                 onClick={() => jump(g.target)}
-                className="flex min-h-control w-full items-center justify-between gap-2 rounded-lg border border-line-strong bg-surface px-3 py-2 text-left font-medium shadow-card hover:bg-canvas"
+                className="flex min-h-control w-full items-center justify-between gap-2 rounded-md px-1 py-1.5 text-left font-medium hover:bg-canvas"
                 data-testid="pending-review"
                 data-target={g.target}
               >
@@ -183,7 +286,7 @@ function ConflictRow({ conflict, targets, jump }: { conflict: ContextConflict; t
 }
 
 /** The newest items, one compact row each; "Show all" lists the rest, and says when a SIMULATED item is among those not listed. */
-function EvidenceBlock({ c, now, liveSeconds, showAll, onToggle, jump }: { c: ConsultationContext; now: number; liveSeconds: number | null; showAll: boolean; onToggle: () => void; jump: (t: EvidenceTarget) => void }) {
+function EvidenceBlock({ c, now, liveSeconds, showAll, onToggle, jump }: { c: ConsultationContext; now: number; liveSeconds: number | null; showAll: boolean; onToggle: () => void; jump: (t: EvidenceTarget, kind?: EvidenceKind) => void }) {
   const listId = useId()
   const { shown, hiddenSimulated } = visibleEvidence(c.evidence, showAll)
   return (
@@ -195,7 +298,7 @@ function EvidenceBlock({ c, now, liveSeconds, showAll, onToggle, jump }: { c: Co
         <>
           <ul id={listId} className="mt-2 space-y-2">
             {shown.map((i) => (
-              <EvidenceRow key={i.id} item={i} now={now} generatedAt={c.generatedAt} liveSeconds={liveSeconds} onView={() => jump(i.target)} />
+              <EvidenceRow key={i.id} item={i} now={now} generatedAt={c.generatedAt} liveSeconds={liveSeconds} onView={() => jump(i.target, i.kind)} />
             ))}
           </ul>
           {c.evidence.length > EVIDENCE_LIMIT && (
@@ -250,7 +353,7 @@ function EvidenceRow({ item, now, generatedAt, liveSeconds, onView }: { item: Ev
           View
           <span className="sr-only">
             {' '}
-            {item.title} in {TARGET_LABEL[item.target]}
+            {item.title} in {targetLabel(item.target, item.kind)}
           </span>
         </Button>
       </div>

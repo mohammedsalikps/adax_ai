@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { expectNoAxeViolations, nurseHandsOverPatient, signIn } from './support.ts'
+import { expectNoAxeViolations, nurseHandsOverPatient, openModule, openMoreTools, signIn } from './support.ts'
 
 // In this suite the API talks to a TEST-ONLY mock of the Anthropic Messages API (e2e/mock-anthropic.mjs) through the real SDK, and
 // to the TEST-ONLY stand-in for the local speech service (e2e/mock-speech.mjs). Recording itself is covered by capture.spec.ts.
@@ -10,9 +10,10 @@ test('doctor records consent, saves a transcript, reviews AI suggestions and sig
   await page.getByRole('listitem').filter({ hasText: p.name }).getByRole('button', { name: 'Start consultation' }).click()
   await expect(page).toHaveURL(/\/doctor\/encounters\//)
 
+  // Live transcription is module 1 of the inputs rail (Doctor HERO), which starts closed; the older assistant is in the "More tools" sheet,
+  // opened below once there is a transcript (it is drawn while the sheet is open).
+  await openModule(page, 'Conversation')
   const live = page.getByRole('region', { name: 'Live transcription' })
-  const panel = page.getByRole('region', { name: 'AI consultation assistant' })
-  await expect(panel).toContainText('AI drafting: available')
   await expect(live.getByTestId('speech-status')).toContainText('Speech-to-text runs on this computer')
 
   // Nothing can be recorded or drafted before consent.
@@ -30,6 +31,9 @@ test('doctor records consent, saves a transcript, reviews AI suggestions and sig
   await expect(lines.nth(1)).toContainText('My throat hurts')
   await expect(lines.nth(1)).toContainText('Patient')
 
+  const sheet = await openMoreTools(page)
+  const panel = sheet.getByRole('region', { name: 'AI consultation assistant' })
+  await expect(panel).toContainText('AI drafting: available')
   await panel.getByRole('button', { name: 'Generate draft' }).click()
   const suggestions = panel.getByRole('region', { name: 'Suggestions to review' })
   await expect(suggestions).toContainText('3 pending')
@@ -73,6 +77,9 @@ test('doctor records consent, saves a transcript, reviews AI suggestions and sig
   await unsourced.getByRole('button', { name: 'Reject' }).click()
   await expect(unsourced).toContainText('Rejected')
   await expect(page.getByLabel('Assessment')).toHaveValue('')
+  // Back to the consultation (the sheet is a modal dialog; Escape closes it).
+  await page.keyboard.press('Escape')
+  await expect(sheet).toBeHidden()
 
   // Sign: the signed record contains exactly what the doctor accepted.
   await page.getByRole('button', { name: 'Add diagnosis' }).click()

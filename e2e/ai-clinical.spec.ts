@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, signIn } from './support.ts'
+import { expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, openModule, openMoreTools, signIn } from './support.ts'
 
 // The API talks to the TEST-ONLY mock of the Anthropic Messages API
 // (e2e/mock-anthropic.mjs) through the real SDK. The patient is synthetic.
@@ -9,9 +9,10 @@ test('extraction with evidence and record conflicts, rule and AI recommendations
   await signIn(page, 'dr.meera')
   await page.getByRole('listitem').filter({ hasText: p.name }).getByRole('button', { name: 'Start consultation' }).click()
   await expect(page).toHaveURL(/\/doctor\/encounters\//)
+  // Live transcription and the important points are module 1 of the inputs rail (Doctor HERO), which starts closed.
+  await openModule(page, 'Conversation')
   const live = page.getByRole('region', { name: 'Live transcription' })
   const points = page.getByRole('region', { name: 'Important points' })
-  const panel = page.getByRole('region', { name: 'AI consultation assistant' })
   await live.getByRole('button', { name: 'Patient agrees (verbal)' }).click()
   await live.getByText('Other ways to add a transcript').click()
   await live.getByLabel('Or type or paste a transcript').fill(
@@ -49,6 +50,8 @@ test('extraction with evidence and record conflicts, rule and AI recommendations
   await page.getByRole('button', { name: 'Add medicine' }).click()
   await page.getByLabel('Medicine', { exact: true }).fill('Amoxicillin')
   await expect(page.getByTestId('save-state')).toContainText('Saved', { timeout: 10_000 })
+  // The older assistant (its recommendations and its activity) is in the "More tools" sheet since Doctor HERO: not one of the five inputs.
+  const panel = (await openMoreTools(page)).getByRole('region', { name: 'AI consultation assistant' })
   await panel.getByRole('button', { name: 'Get recommendations' }).click()
   const recs = panel.getByRole('region', { name: 'Recommendations' })
   const allergyCheck = recs.getByTestId('recommendation').filter({ hasText: 'Check Amoxicillin' })
@@ -114,7 +117,8 @@ test('clinical photograph in a consultation: validated upload, AI description ma
   const p = await nurseHandsOverPatient(baseURL!, { consents: ['clinical_photography', 'ai_image_analysis'] })
   await signIn(page, 'dr.meera')
   await page.getByRole('listitem').filter({ hasText: p.name }).getByRole('button', { name: 'Start consultation' }).click()
-  const card = page.getByRole('region', { name: 'Clinical photographs' })
+  // The clinical photographs are in the "More tools" sheet since Doctor HERO: not one of the five inputs.
+  const card = (await openMoreTools(page)).getByRole('region', { name: 'Clinical photographs' })
   await card.getByRole('button', { name: 'Add photograph' }).click()
   const dlg = page.getByRole('dialog', { name: 'Add clinical photograph' })
   // A tiny synthetic PNG (not a patient image).

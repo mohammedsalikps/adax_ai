@@ -11,9 +11,11 @@ import { Alert, Badge, ErrorState, Spinner } from '../ui/Feedback.tsx'
 import { SelectField, TextField } from '../ui/Form.tsx'
 import { Card } from '../ui/Layout.tsx'
 import { useToast } from '../ui/Toast.tsx'
+import { recordingLength } from '../workspace/summaries/state.ts'
 import { SimulatedBadge } from './DeviceReadingsCard.tsx'
 
-const key = (patientId: string) => ['patient', patientId, 'auscultations'] as const
+/** The patient's recordings (this card reads them; the stethoscope module's summary observes the same query and never fetches it). */
+export const auscultationsKey = (patientId: string) => ['patient', patientId, 'auscultations'] as const
 /** A recording is stopped by itself after this long, so that a forgotten one does not grow without end. */
 const MAX_RECORDING_SECONDS = 120
 /** Speech clean-up (echo cancelling, noise suppression, automatic gain) is made for voices and changes other sounds: it is switched off. */
@@ -31,7 +33,8 @@ function captureLine(r: AuscultationRecording): string {
   const parts: string[] = [AUSCULTATION_CAPTURE[r.captureMethod]]
   if (r.captureMethod === 'browser_recording') parts.push(r.inputLabel ? `audio input “${r.inputLabel}” (as named by the browser)` : 'audio input not named by the browser')
   if (r.device) parts.push(r.device.label)
-  if (r.durationMs) parts.push(`${(r.durationMs / 1000).toFixed(1)} s`)
+  // The server measures no length: it says who timed it ("12.3 s, timed by the browser").
+  if (r.durationMs) parts.push(recordingLength(r))
   return parts.join(' · ')
 }
 
@@ -186,7 +189,7 @@ function RecordDialog({ patientId, encounterId, onClose }: { patientId: string; 
       return api(`/patients/${patientId}/auscultations`, { method: 'POST', body: fd })
     },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: key(patientId) })
+      void qc.invalidateQueries({ queryKey: auscultationsKey(patientId) })
       toast('success', 'Recording saved')
       onClose()
     },
@@ -285,7 +288,7 @@ function UploadDialog({ patientId, encounterId, onClose }: { patientId: string; 
       return api(`/patients/${patientId}/auscultations`, { method: 'POST', body: fd })
     },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: key(patientId) })
+      void qc.invalidateQueries({ queryKey: auscultationsKey(patientId) })
       toast('success', 'Recording saved')
       onClose()
     },
@@ -329,7 +332,7 @@ function UploadDialog({ patientId, encounterId, onClose }: { patientId: string; 
  */
 export function AuscultationCard({ patientId, encounterId, variant }: { patientId: string; encounterId?: string; variant?: 'consultation' | undefined }) {
   const patient = usePatient(patientId)
-  const q = useQuery({ queryKey: key(patientId), queryFn: () => api<{ recordings: AuscultationRecording[] }>(`/patients/${patientId}/auscultations`), select: (d) => d.recordings })
+  const q = useQuery({ queryKey: auscultationsKey(patientId), queryFn: () => api<{ recordings: AuscultationRecording[] }>(`/patients/${patientId}/auscultations`), select: (d) => d.recordings })
   const [dialog, setDialog] = useState<'upload' | 'record' | null>(null)
   const consented = !!patient.data?.consents.some((c) => c.type === 'device_monitoring' && c.status === 'granted')
   const consultation = variant === 'consultation'

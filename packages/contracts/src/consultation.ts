@@ -178,8 +178,16 @@ export const ConsultDraft = z.object({
   sourceCount: z.number().int(),
   omittedCount: z.number().int(),
   requestedByName: z.string().nullable(),
+  /** When the doctor asked for the draft. */
   createdAt: z.string(),
+  /**
+   * When the local model's turn came and the record was sent to it. Null while the draft waits for the model, and for a draft that never
+   * reached it (too little to draft from, or cancelled or refused while waiting). createdAt to startedAt is the wait; startedAt to
+   * completedAt is the model writing and the checks after it.
+   */
+  startedAt: z.string().nullable(),
   completedAt: z.string().nullable(),
+  /** From the request to the stored draft (the wait included), measured by the server when the draft was stored. */
   latencyMs: z.number().int().nullable(),
   errorCode: z.string().nullable(),
   errorMessage: z.string().nullable(),

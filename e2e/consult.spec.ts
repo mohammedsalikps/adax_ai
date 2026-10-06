@@ -1,5 +1,5 @@
 import { expect, type Page, request as pwRequest, test } from '@playwright/test'
-import { expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, signIn } from './support.ts'
+import { analyzeButton, expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, signIn } from './support.ts'
 
 // Local AI consultation intelligence (V3) in a real browser: the draft is made in the background by "the local model" (the labelled stand-in in
 // e2e/mock-llm.mjs, which answers from the record items it is shown: no model runs in this suite), arrives as statements with sources and a support
@@ -40,7 +40,12 @@ async function startConsultation(page: Page, baseURL: string) {
 }
 const panel = (page: Page) => page.getByTestId('consult-panel')
 const status = (page: Page) => panel(page).getByTestId('consult-status')
-const generate = async (page: Page, name = 'Generate draft') => panel(page).getByRole('button', { name }).click()
+/**
+ * Asks for a draft. Since Doctor HERO the result card has no button of its own: "Analyze with Mana" at the foot of the inputs rail asks for it
+ * (and runs the fixed safety rules beside it), named "Analyze again" once there has been a draft or an attempt (where the card said "Try
+ * again" or "Generate a new draft").
+ */
+const generate = async (page: Page, name: 'Analyze with Mana' | 'Analyze again' = 'Analyze with Mana') => analyzeButton(page, name).click()
 /** The panel has asked the model server and it is ready (the server's answer is remembered for a few seconds, so the panel looks again by itself). */
 const modelReady = (page: Page) => expect(status(page)).toContainText('NOT RUN', { timeout: 20_000 })
 
@@ -154,7 +159,7 @@ test('the draft says when the note moved on (STALE), and a new draft replaces it
   await page.getByLabel('Examination').fill('Throat red, no exudate.')
   await expect(status(page)).toContainText('STALE', { timeout: 15_000 })
   await expect(panel(page).getByTestId('consult-stale')).toContainText('have changed since this draft was made')
-  await generate(page, 'Generate a new draft')
+  await generate(page, 'Analyze again')
   await expect(status(page)).toContainText('GENERATING')
   await expect(status(page)).toContainText('READY FOR REVIEW', { timeout: 20_000 })
   await expect(panel(page).getByTestId('consult-stale')).toHaveCount(0)
@@ -176,7 +181,13 @@ test('with the local model down it says "Local AI unavailable.", offers no draft
   await expect(status(page)).toContainText('UNAVAILABLE', { timeout: 20_000 })
   await expect(panel(page).getByRole('alert').or(panel(page).getByRole('status')).filter({ hasText: 'Local AI unavailable.' }).first()).toBeVisible()
   await expect(page.getByTestId('model-status-chip')).toContainText('Local AI unavailable')
-  await expect(panel(page).getByRole('button', { name: 'Generate draft' })).toBeDisabled()
+  // No draft can be asked for: the one control is off, and says why under it (it is "Analyze with Mana" in the inputs rail since Doctor HERO,
+  // where the card's "Generate draft" was).
+  const analyze = page.getByTestId('analyze-mana')
+  await expect(analyze).toBeDisabled()
+  await expect(analyze).toHaveAttribute('data-state', 'blocked')
+  await expect(page.getByTestId('analyze-reason')).not.toBeEmpty()
+  await expect(analyze).toHaveAccessibleDescription((await page.getByTestId('analyze-reason').innerText()).trim())
   await expect(panel(page).getByTestId('record-check')).toContainText('Fixed rules, not AI')
   await expect(panel(page).getByTestId('consult-statement')).toHaveCount(0)
   await expectNoAxeViolations(page)
@@ -193,22 +204,22 @@ test('a draft that fails or is cancelled says so and can be tried again; an earl
   await expect(panel(page).getByTestId('consult-statement')).toHaveCount(0)
   // So is a cancelled draft (Cancel stops the model call).
   await llm('slow', 15_000)
-  await generate(page, 'Try again')
+  await generate(page, 'Analyze again')
   await expect(status(page)).toContainText('GENERATING')
   await panel(page).getByRole('button', { name: 'Cancel' }).click()
   await expect(status(page)).toContainText('CANCELLED', { timeout: 10_000 })
   await expect(panel(page)).toContainText('Cancelled')
   await llm('ok')
-  await generate(page, 'Try again')
+  await generate(page, 'Analyze again')
   await expect(status(page)).toContainText('READY FOR REVIEW', { timeout: 20_000 })
   // From here a draft exists. A later attempt that fails, or is cancelled, does not take its place: the doctor keeps reading it, and the screen says the newest attempt did not finish.
   await llm('invalid')
-  await generate(page, 'Generate a new draft')
+  await generate(page, 'Analyze again')
   await expect(panel(page).getByTestId('consult-last-attempt')).toContainText('did not have the required form', { timeout: 20_000 })
   await expect(status(page)).toContainText('READY FOR REVIEW')
   await expect(panel(page).getByTestId('consult-statement').first()).toBeVisible()
   await llm('slow', 15_000)
-  await generate(page, 'Generate a new draft')
+  await generate(page, 'Analyze again')
   await expect(status(page)).toContainText('GENERATING')
   await panel(page).getByRole('button', { name: 'Cancel' }).click()
   await expect(panel(page).getByTestId('consult-last-attempt')).toContainText(/cancel/i, { timeout: 10_000 })
@@ -216,7 +227,7 @@ test('a draft that fails or is cancelled says so and can be tried again; an earl
   await expect(panel(page).getByTestId('consult-statement').first()).toBeVisible()
   // A draft that does finish is shown again, and the note about the attempt goes.
   await llm('ok')
-  await generate(page, 'Generate a new draft')
+  await generate(page, 'Analyze again')
   await expect(status(page)).toContainText('READY FOR REVIEW', { timeout: 20_000 })
   await expect(panel(page).getByTestId('consult-last-attempt')).toHaveCount(0)
 })
@@ -229,6 +240,9 @@ test('a model that follows an instruction hidden in the record loses everything 
   await expect(status(page)).toContainText('PARTIALLY AVAILABLE', { timeout: 20_000 })
   const text = await panel(page).innerText()
   expect(text).not.toMatch(/amoxicillin|500 mg|250\/190|pneumonia|example\.invalid|azithromycin|no known allergies/i)
+  // The medication considerations are shown beside the prescription since Doctor HERO ("Before you prescribe"), outside the result card:
+  // nothing dangerous reaches them either.
+  expect(await page.getByTestId('rx-ai-lane').innerText()).not.toMatch(/amoxicillin|500 mg|250\/190|pneumonia|example\.invalid|azithromycin|no known allergies/i)
   await expect(panel(page)).toContainText('removed because they could not be verified')
 })
 
@@ -259,7 +273,8 @@ test('states at five widths: not run, failed, unavailable, ready for review and 
       await page.screenshot({ path: testInfo.outputPath(`consult-${label.replace(/\W+/g, '-')}-${size.width}.png`) })
     }
     // The accessibility check runs with the panel's top below the sticky bars (the page's scroll padding, as a jump to it places it): where the
-    // scroll above happens to leave a control half under the bar, axe measures only its uncovered part (D2's overview, above this panel, moved it there).
+    // scroll above happens to leave a control half under the bar, axe measures only its uncovered part (D2's overview, above this panel, moved it
+    // there; since Doctor HERO the panel is in the Mana area, under the analysis' progress).
     await panel(page).evaluate((el) => el.scrollIntoView({ block: 'start' }))
     await expectNoAxeViolations(page)
   }
@@ -277,13 +292,13 @@ test('states at five widths: not run, failed, unavailable, ready for review and 
   await llm('ok')
   await panel(page).getByRole('button', { name: 'Check again' }).click()
   await expect(status(page)).toContainText('FAILED')
-  await generate(page, 'Try again')
+  await generate(page, 'Analyze again')
   await expect(status(page)).toContainText('READY FOR REVIEW', { timeout: 20_000 })
   await panel(page).locator('[data-testid="consult-statement"]').first().getByText(/^Sources \(/).click()
   await fit('ready')
   // A newer attempt that fails does not replace it, and the screen says so.
   await llm('invalid')
-  await generate(page, 'Generate a new draft')
+  await generate(page, 'Analyze again')
   await expect(panel(page).getByTestId('consult-last-attempt')).toBeVisible({ timeout: 20_000 })
   await expect(status(page)).toContainText('READY FOR REVIEW')
   await fit('ready with a failed newer attempt')

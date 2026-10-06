@@ -12,20 +12,37 @@ import {
   VISIT_STATUS_LABELS,
 } from '@adaxai/contracts'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { CircleAlert, CircleCheck, CloudUpload, FilePlus2, LoaderCircle, Plus, Printer, Sparkles, Stethoscope, Trash2 } from 'lucide-react'
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  CircleAlert,
+  CircleCheck,
+  ClipboardList,
+  CloudUpload,
+  FilePlus2,
+  HeartPulse,
+  LoaderCircle,
+  Mic,
+  PanelRightOpen,
+  Plus,
+  Printer,
+  Sparkles,
+  Stethoscope,
+  Thermometer,
+  Trash2,
+} from 'lucide-react'
+import { memo, type ReactNode, type RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AllergyItems } from '../../components/clinical/AllergyItems.tsx'
 import { ConsultationBanner, PatientStrip } from '../../components/clinical/ConsultationBanner.tsx'
 import { ConsultationHeader, useOnScreen } from '../../components/clinical/ConsultationHeader.tsx'
 import { ConsultationStatus, type ToolSection } from '../../components/clinical/ConsultationStatus.tsx'
 import { PastHistoryPanel } from '../../components/clinical/PastHistory.tsx'
-import { PatientBanner } from '../../components/clinical/PatientBanner.tsx'
+import { ageSex, PatientBanner } from '../../components/clinical/PatientBanner.tsx'
 import { PatientProfileDrawer } from '../../components/clinical/PatientProfileDrawer.tsx'
 import { DiscardDraftDialog, RecordVerificationCard, StatusHistoryCard } from '../../components/clinical/RecordLifecycle.tsx'
 import { Timeline } from '../../components/clinical/Timeline.tsx'
 import { RecordVitalsDialog, VitalsInline, VitalsTiles } from '../../components/clinical/Vitals.tsx'
-import { Menu } from '../../components/ui/Menu.tsx'
+import { useFocusMode } from '../../components/shell/AppShell.tsx'
+import { Menu, type MenuItem } from '../../components/ui/Menu.tsx'
 import { Button } from '../../components/ui/Button.tsx'
 import { Dialog } from '../../components/ui/Dialog.tsx'
 import { Alert, Badge, Spinner } from '../../components/ui/Feedback.tsx'
@@ -33,6 +50,15 @@ import { CheckboxField, SelectField, TextAreaField, TextField } from '../../comp
 import { Card } from '../../components/ui/Layout.tsx'
 import { PanelBoundary } from '../../components/ui/PanelBoundary.tsx'
 import { useToast } from '../../components/ui/Toast.tsx'
+import { AnalyzeButton } from '../../components/workspace/AnalyzeButton.tsx'
+import { ModuleShell } from '../../components/workspace/ModuleShell.tsx'
+import { ConversationMeta, ConversationSummary, useConversationModule } from '../../components/workspace/summaries/ConversationSummary.tsx'
+import { HistoryMeta, HistorySummary, useHistoryModule } from '../../components/workspace/summaries/HistorySummary.tsx'
+import { StethoscopeMeta, StethoscopeSummary, useStethoscopeModule } from '../../components/workspace/summaries/StethoscopeSummary.tsx'
+import { ThermalMeta, ThermalSummary, useThermalModule } from '../../components/workspace/summaries/ThermalSummary.tsx'
+import { useVitalsModule, VitalsMeta, VitalsSummary } from '../../components/workspace/summaries/VitalsSummary.tsx'
+import { WorkflowStrip } from '../../components/workspace/WorkflowStrip.tsx'
+import type { NoteSaveState } from '../../lib/analysis.ts'
 import { ApiError, api, errorMessage } from '../../lib/api.ts'
 import { useMe, useStillSamePerson } from '../../lib/auth.tsx'
 import { usePortalBase } from '../../lib/clinical.ts'
@@ -42,6 +68,8 @@ import { consultKey } from '../../lib/consult.ts'
 import { contextKey } from '../../lib/consultationContext.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
+import { medicineCount } from '../../lib/workflow.ts'
+import { type PartId, revealPart, showPart } from '../../lib/workspace.ts'
 
 export interface Draft {
   note: NoteFields
@@ -53,58 +81,58 @@ export interface Draft {
 export type SidePanel = (e: Encounter, inserter: NoteInserter) => ReactNode
 
 /**
- * The tools beside the note, in the order a consultation uses them: the conversation (live transcription, important points), the AI draft,
- * Mana, the devices (readings, stethoscope recordings) and the rest (photographs, the older assistant). The doctor's route supplies them; the
- * visit and the patient's history are always there. Each is given the consultation and the one way into the note: `NoteInserter`, which
- * saves the doctor's edits first and records what was inserted, from which reviewed AI output, on the server.
+ * The panels of the doctor's consultation (Doctor HERO), supplied by the doctor's route; the page lays them out. The five inputs are numbered
+ * modules in the rail on the left, in the order a consultation uses them (the patient's history and the visit's own vital signs are the
+ * page's); Mana and the record are on the right. Each panel is given the consultation and the one way into the note: `NoteInserter`, which
+ * saves the doctor's edits first and records on the server what was inserted, from which reviewed AI output. Without any of the five (the
+ * nurse's route) the page keeps its earlier layout: the visit and the patient's history beside the note.
  */
 export interface ConsultationPanels {
-  /** D2: what the consultation holds in one place (pending reviews, disagreements, evidence, what is missing), first in the tools column. */
-  overview?: SidePanel
+  /** Module 1, the conversation: live transcription and the important points. */
   conversation?: SidePanel
-  draft?: SidePanel
-  mana?: SidePanel
+  /** Module 3, under the visit's own vital signs: the devices attached to the patient (the health band's readings). */
   devices?: SidePanel
-  /** V6: thermal imaging for this patient and this encounter. */
+  /** Module 4: the stethoscope recordings. */
+  stethoscope?: SidePanel
+  /** Module 5 (V6): thermal imaging for this patient and this encounter, with the research view. */
   thermal?: SidePanel
+  /** Module 5's quick actions, shown while the module is closed (its full panel has the same ones once it is open). */
+  thermalActions?: SidePanel
+  /** The Mana area: the analysis' progress, the Mana result, the consultation overview with the safety rules, and Ask Mana. */
+  mana?: SidePanel
+  /** Beside the prescription: "Before you prescribe" (the medication considerations, what Mana never does, the allergy name check). */
+  prescriptionLane?: SidePanel
+  /** Not one of the five inputs (the clinical photographs, the older assistant): in the "More tools" sheet, drawn only while it is open. */
   more?: SidePanel
 }
 
-/** The parts of the tools column, for the bar at its top (and for the chips under the banner, which lead to the part that says more). */
-const TOOL_PARTS: { id: 'overview' | 'history' | ToolSection | 'mana' | 'thermal' | 'more'; label: string; panel?: keyof ConsultationPanels }[] = [
-  { id: 'overview', label: 'Overview', panel: 'overview' },
-  { id: 'history', label: 'History' },
-  { id: 'conversation', label: 'Conversation', panel: 'conversation' },
-  { id: 'draft', label: 'AI draft', panel: 'draft' },
-  { id: 'mana', label: 'Mana', panel: 'mana' },
-  { id: 'devices', label: 'Devices', panel: 'devices' },
-  { id: 'thermal', label: 'Thermal', panel: 'thermal' },
-  { id: 'more', label: 'More', panel: 'more' },
-]
-const PANEL_LABEL: Record<keyof ConsultationPanels, string> = { overview: 'The consultation overview', conversation: 'The conversation', draft: 'The AI draft', mana: 'Mana', devices: 'The devices', thermal: 'Thermal imaging', more: 'This panel' }
+/** Whether the route supplies the Doctor HERO workspace (the doctor's) or none of it (the nurse's, which keeps the earlier layout). */
+const isHero = (p: ConsultationPanels) => !!(p.conversation || p.devices || p.stethoscope || p.thermal || p.mana)
+
+/** Where a status chip under the banner leads: the module that owns what it says, or the Mana result for the model. */
+const CHIP_PART: Record<ToolSection, PartId> = { conversation: 'tools-conversation', draft: 'mana-result', devices: 'tools-devices' }
 
 /**
- * Brings a part of the tools column (or the note) into view and moves focus there, so a keyboard or screen-reader user arrives with it. From
- * 1024px the tools column scrolls on its own: only it moves (under its bar), and the page, with the note beside it, stays where the doctor
- * left it. Below that, the page scrolls. Exported for the tools that lead to another part (the Overview), so that they get there the same way.
+ * Brings a part of the page into view and moves focus there (lib/workspace.ts: from 1024px a part of the inputs rail moves only the rail, and
+ * the page stays where the doctor left it). Still exported from here for whatever led to a part through this page before.
  */
-export function showPart(id: string) {
-  const el = document.getElementById(id)
-  if (!el) return
-  const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-  const column = el.closest<HTMLElement>('[data-tools-scroller]')
-  if (column && getComputedStyle(column).overflowY !== 'visible') column.scrollTo({ top: el.getBoundingClientRect().top - column.getBoundingClientRect().top + column.scrollTop - 4, behavior })
-  else el.scrollIntoView({ block: 'start', behavior })
-  el.focus({ preventScroll: true })
-}
+export { showPart }
 
 /**
- * One tool beside the note. It is drawn again when the consultation's AI insertions change (a tool says what is already in the note), not on
- * every keystroke in the note; and a fault inside it stays inside it (see PanelBoundary).
+ * One panel of the consultation. It is drawn again when the consultation's AI insertions change (a panel says what is already in the note),
+ * not on every keystroke in the note; and a fault inside it stays inside it (see PanelBoundary). `neutral`: its fallback does not speak of
+ * the note (a panel beside it, not one of the inputs).
  */
-const ToolSlot = memo(function ToolSlot({ render, encounter, inserter, label }: { render: SidePanel; encounter: Encounter; inserter: NoteInserter; label: string; insertions: NoteInsertion[] }) {
-  return <PanelBoundary label={label}>{render(encounter, inserter)}</PanelBoundary>
+const ToolSlot = memo(function ToolSlot({ render, encounter, inserter, label, neutral }: { render: SidePanel; encounter: Encounter; inserter: NoteInserter; label: string; neutral?: boolean; insertions: NoteInsertion[] }) {
+  return (
+    <PanelBoundary label={label} neutral={neutral}>
+      {render(encounter, inserter)}
+    </PanelBoundary>
+  )
 })
+
+/** The workflow strip under the header, drawn again only when what it says changes (the save state, the number of medicines). */
+const Strip = memo(WorkflowStrip)
 
 /** Where AI-produced text in the note came from (shown while editing, before signing and on the signed record). */
 export function AiProvenance({ insertions, section }: { insertions: NoteInsertion[]; section?: keyof NoteFields }) {
@@ -124,7 +152,7 @@ export function AiProvenance({ insertions, section }: { insertions: NoteInsertio
   )
 }
 
-type SaveState = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict' | 'blocked'
+type SaveState = NoteSaveState
 
 /** Refusals that retrying cannot fix: the draft was signed or discarded elsewhere, the visit left the doctor, or access ended. */
 const isTerminal = (err: unknown) => err instanceof ApiError && (['encounter_signed', 'encounter_discarded', 'visit_not_in_consultation'].includes(err.code) || err.status === 403 || err.status === 404)
@@ -175,11 +203,55 @@ function DiagnosesEditor({ items, onChange }: { items: DiagnosisInput[]; onChang
   )
 }
 
-function PrescriptionEditor({ encounter, items, onChange }: { encounter: Encounter; items: PrescriptionItemInput[]; onChange: (next: PrescriptionItemInput[]) => void }) {
+/**
+ * The doctor's prescription, written by the doctor alone: one numbered row per medicine (medicine, strength and form; dose, route, frequency
+ * and duration; instructions), each field with its own label, laid out by the width of the card. Nothing an AI writes is ever put here; the
+ * "Before you prescribe" lane beside it keeps the medication considerations apart. It is a draft, saved as it is written, until the
+ * consultation is signed. `onPrintPreview` (the doctor's workspace) adds "Print preview": the existing print page in a new tab, so the
+ * consultation (a recording, the device readings) goes on here; it shows what the server holds, marked there as a draft that is not a valid
+ * prescription, and the click sends any pending edits to be saved as it opens (an edit made a moment before may still be on its way).
+ * `allergyCheck`: the workspace runs the fixed rules' allergy name match when the doctor analyses, and the footer says so.
+ */
+function PrescriptionEditor({
+  encounter,
+  items,
+  onChange,
+  onPrintPreview,
+  allergyCheck = false,
+}: {
+  encounter: Encounter
+  items: PrescriptionItemInput[]
+  onChange: (next: PrescriptionItemInput[]) => void
+  onPrintPreview?: () => void
+  allergyCheck?: boolean
+}) {
   const set = (i: number, patch: Partial<PrescriptionItemInput>) => onChange(items.map((d, j) => (j === i ? { ...d, ...patch } : d)))
   return (
-    <Card title="Prescription" actions={<Button size="sm" variant="secondary" icon={<Plus aria-hidden="true" className="size-4" />} onClick={() => onChange([...items, emptyRx()])}>Add medicine</Button>}>
-      <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1.5" data-testid="prescription-allergies">
+    <Card
+      title="Prescription"
+      actions={
+        <div className="flex flex-wrap items-center gap-2">
+          {onPrintPreview && (
+            <Link
+              to={`/print/encounters/${encounter.id}`}
+              target="_blank"
+              rel="noopener"
+              onClick={onPrintPreview}
+              className="inline-flex min-h-control items-center gap-2 rounded-md border border-line-strong bg-surface px-4 text-sm font-medium shadow-card hover:bg-canvas"
+              data-testid="print-preview"
+            >
+              <Printer aria-hidden="true" className="size-4" />
+              Print preview
+              <span className="sr-only"> (opens in a new tab)</span>
+            </Link>
+          )}
+          <Button variant="secondary" icon={<Plus aria-hidden="true" className="size-4" />} onClick={() => onChange([...items, emptyRx()])}>
+            Add medicine
+          </Button>
+        </div>
+      }
+    >
+      <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border border-line bg-canvas px-3 py-2" data-testid="prescription-allergies">
         <p className="text-sm font-medium">Allergies on record</p>
         <ul className="flex flex-wrap items-center gap-1.5" aria-label="Allergies on record">
           <AllergyItems encounter={encounter} />
@@ -193,14 +265,14 @@ function PrescriptionEditor({ encounter, items, onChange }: { encounter: Encount
       </datalist>
       <ol className="space-y-3">
         {items.map((p, i) => (
-          <li key={i} className="rounded-lg border border-line p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-semibold">Medicine {i + 1}</p>
+          <li key={i} className="min-w-0 rounded-lg border border-line">
+            <div className="flex items-center justify-between gap-2 rounded-t-lg border-b border-line bg-canvas py-1 pr-1 pl-3">
+              <p className="text-sm font-semibold tabular-nums">Medicine {i + 1}</p>
               <Button size="sm" variant="ghost" aria-label={`Remove medicine ${i + 1}`} icon={<Trash2 aria-hidden="true" className="size-4" />} onClick={() => onChange(items.filter((_, j) => j !== i))}>
                 Remove
               </Button>
             </div>
-            <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2 @2xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 p-3 @sm:grid-cols-2 @xl:grid-cols-4">
               <TextField label="Medicine" value={p.drugName ?? ''} onChange={(e) => set(i, { drugName: e.target.value })} className="@sm:col-span-2" />
               <TextField label="Strength" placeholder="500 mg" value={p.strength ?? ''} onChange={(e) => set(i, { strength: e.target.value })} />
               <TextField label="Form" placeholder="Tablet" value={p.form ?? ''} onChange={(e) => set(i, { form: e.target.value })} />
@@ -208,12 +280,21 @@ function PrescriptionEditor({ encounter, items, onChange }: { encounter: Encount
               <TextField label="Route" value={p.route ?? ''} onChange={(e) => set(i, { route: e.target.value })} />
               <TextField label="Frequency" list="frequency-presets" value={p.frequency ?? ''} onChange={(e) => set(i, { frequency: e.target.value })} />
               <TextField label="Duration" placeholder="5 days" value={p.duration ?? ''} onChange={(e) => set(i, { duration: e.target.value })} />
-              <TextField label="Instructions" placeholder="After food" value={p.instructions ?? ''} onChange={(e) => set(i, { instructions: e.target.value })} className="@sm:col-span-2 @2xl:col-span-4" />
+              <TextField label="Instructions" placeholder="After food" value={p.instructions ?? ''} onChange={(e) => set(i, { instructions: e.target.value })} className="@sm:col-span-2 @xl:col-span-4" />
             </div>
           </li>
         ))}
       </ol>
-      <p className="mt-3 text-xs text-ink-muted">No drug-interaction, allergy or dose checking is performed by this system. Check the medicines against the allergies listed here.</p>
+      <div className="mt-4 space-y-1 border-t border-line pt-3 text-xs text-ink-muted">
+        <p>
+          <span className="font-medium text-ink">Finalized when you sign the consultation.</span> Until then it is a draft, saved as you write it.
+        </p>
+        <p>
+          {allergyCheck
+            ? 'No drug-interaction or dose checking is performed by this system. A fixed-rule allergy name match runs when you use Analyze with Mana (its result is under “Before you prescribe”); it is not a drug database. Check the medicines against the allergies listed here.'
+            : 'No drug-interaction, allergy or dose checking is performed by this system. Check the medicines against the allergies listed here.'}
+        </p>
+      </div>
     </Card>
   )
 }
@@ -306,6 +387,177 @@ function ReviewAndSignDialog({ draft, encounter, insertions, onClose, onSign, si
   )
 }
 
+/**
+ * Publishes on `ref`'s element, as `--room`, the height between its top and the bottom of the screen, kept current as the page scrolls and
+ * changes size. A sticky column uses it for its height from 1024px (see the classes that read it): where it sticks, under the bars, its
+ * height is the rest of the screen; but when the page opens it starts lower (the development notice and the workflow strip are above it), and
+ * a height worked out for where it sticks would put its foot, "Analyze with Mana", below the screen.
+ */
+function useRoomBelow(ref: RefObject<HTMLElement | null>) {
+  // Before the first paint, so the column is never drawn taller than its room and then shrunk.
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    let frame = 0
+    let last = ''
+    const apply = () => {
+      frame = 0
+      const room = `${Math.max(0, Math.round(window.innerHeight - Math.max(0, el.getBoundingClientRect().top)))}px`
+      if (room === last) return
+      last = room
+      el.style.setProperty('--room', room)
+    }
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(apply)
+    }
+    apply()
+    window.addEventListener('scroll', schedule, { passive: true })
+    window.addEventListener('resize', schedule)
+    // What is above the column can change height (the banner as the record loads, the strip as it wraps), which moves its top.
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
+    ro?.observe(document.body)
+    return () => {
+      window.removeEventListener('scroll', schedule)
+      window.removeEventListener('resize', schedule)
+      ro?.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [ref])
+}
+
+/** The inputs rail's props, all unchanged while the doctor types (see ConsultationEditor): typing in the note does not draw the rail again. */
+interface InputsRailProps {
+  encounter: Encounter
+  panels: ConsultationPanels
+  inserter: NoteInserter
+  insertions: NoteInsertion[]
+  save: NoteSaveState
+  /** The page's save chain, resolving with the note's save state once nothing is pending (what Analyze needs before it asks anything). */
+  flush: () => Promise<NoteSaveState>
+  onRecordVitals: () => void
+}
+
+/**
+ * The left pane of the doctor's consultation (Doctor HERO): the five inputs in the order a consultation uses them, each a numbered module
+ * (components/workspace/ModuleShell.tsx) whose compact summary is always shown and whose full panel stays mounted behind "Show", so a
+ * recording, the device readings and every panel's reads go on, and the summaries and the chips under the banner, which only observe those
+ * reads, stay current. Then what an analysis reads and, at the foot, "Analyze with Mana". From 1024px the rail keeps its place under the
+ * consultation bar and scrolls on its own: a jump to a module (the workflow strip, a chip, the overview) moves the rail, not the page, so the
+ * note stays where the doctor left it; the foot is always in view. Below 1024px it is the top of one column, and the page scrolls.
+ */
+const InputsRail = memo(function InputsRail({ encounter, panels, inserter, insertions, save, flush, onRecordVitals }: InputsRailProps) {
+  const rail = useRef<HTMLElement>(null)
+  useRoomBelow(rail)
+  const conversation = useConversationModule(encounter)
+  const history = useHistoryModule(encounter)
+  const vitals = useVitalsModule(encounter)
+  const stethoscope = useStethoscopeModule(encounter)
+  const thermal = useThermalModule(encounter)
+  const slot = (key: 'conversation' | 'devices' | 'stethoscope' | 'thermal', label: string) => {
+    const render = panels[key]
+    return render ? <ToolSlot render={render} encounter={encounter} inserter={inserter} insertions={insertions} label={label} /> : null
+  }
+  const p = encounter.patient
+  return (
+    <aside
+      ref={rail}
+      aria-label="Clinical inputs"
+      // Sticky under the top bar and the consultation bar (which publishes its height); no taller than the room below its top (useRoomBelow).
+      className="min-w-0 lg:sticky lg:top-[calc(var(--spacing-topbar)+var(--consult-header-h,0px)+0.75rem)] lg:-ml-1 lg:flex lg:max-h-[min(calc(100dvh-var(--spacing-topbar)-var(--consult-header-h,0px)-1.25rem),calc(var(--room,100dvh)-0.5rem))] lg:flex-col"
+      data-testid="consultation-tools"
+    >
+      {/* The note is after the inputs and Mana in the reading order; a keyboard user can go straight to it (visible when focused). */}
+      <button type="button" onClick={() => showPart('consultation-note')} className="sr-only rounded-md bg-surface px-3 py-2 text-sm font-medium shadow-pop focus:not-sr-only focus:inline-flex">
+        Skip to the note
+      </button>
+      {/* relative: the scroller is the containing block of what is absolutely placed inside it (visually hidden labels), so that it clips
+          them; otherwise they escape its overflow at their place far down the column and make the page taller than the workspace,
+          which carries the sticky bar away at the bottom of the page. */}
+      <div data-scroller className="relative min-w-0 space-y-1.5 lg:min-h-0 lg:space-y-1.25 lg:overflow-y-auto lg:overscroll-contain lg:pr-2 lg:pb-2 lg:pl-1">
+        {/* The workflow strip's "Inputs" leads here (lib/workspace.ts showPart: inside the rail, so only the rail moves). Its top is the top of
+            the Mana area's heading (and of the note's, where they stand side by side). One short line under it says whose inputs these are. */}
+        <h2 id="consultation-inputs" tabIndex={-1} className="scroll-mt-20 rounded px-1 text-lg font-semibold focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand lg:scroll-mt-0">
+          Consultation inputs
+        </h2>
+        <p className="-mt-1 truncate px-1 text-xs text-ink-muted" data-testid="inputs-patient">
+          <span className="font-medium text-ink">{p.fullName}</span>{' '}
+          · {ageSex(p)} · Token {encounter.visit.tokenNumber}
+        </p>
+        <ModuleShell id="tools-conversation" title="Conversation" icon={Mic} state={conversation.state} summary={<ConversationSummary encounter={encounter} />} meta={<ConversationMeta encounter={encounter} />}>
+          {slot('conversation', 'The conversation')}
+        </ModuleShell>
+        <ModuleShell id="tools-history" title="History" icon={ClipboardList} state={history.state} summary={<HistorySummary encounter={encounter} />} meta={<HistoryMeta encounter={encounter} />}>
+          {/* No scroller of its own: the rail scrolls. The profile is opened from the bar ("View profile" beside the MRN). */}
+          <Card title="Past history" level={3} bodyClassName="p-4">
+            <PastHistoryPanel patientId={p.id} bare />
+          </Card>
+        </ModuleShell>
+        <ModuleShell
+          id="tools-devices"
+          // "Vitals": the band's state is the chip's ("Not connected", "Live"), its values are in the line under the title.
+          title="Vitals"
+          icon={HeartPulse}
+          state={vitals.state}
+          summary={<VitalsSummary encounter={encounter} />}
+          meta={<VitalsMeta encounter={encounter} />}
+        >
+          {/* The dialog is the page's: "Record vitals" is with the visit's own vital signs, in the open module. */}
+          <Card
+            title="This visit"
+            level={3}
+            actions={
+              <Button size="sm" variant="secondary" icon={<Plus aria-hidden="true" className="size-4" />} onClick={onRecordVitals}>
+                Record vitals
+              </Button>
+            }
+          >
+            <VitalsTiles vitals={encounter.vitals} />
+          </Card>
+          {slot('devices', 'The device readings')}
+        </ModuleShell>
+        <ModuleShell id="tools-stethoscope" title="Stethoscope" icon={Stethoscope} state={stethoscope.state} summary={<StethoscopeSummary encounter={encounter} />} meta={<StethoscopeMeta encounter={encounter} />}>
+          {slot('stethoscope', 'The stethoscope recordings')}
+        </ModuleShell>
+        <ModuleShell
+          id="tools-thermal"
+          title="Thermal imaging"
+          icon={Thermometer}
+          state={thermal.state}
+          // The full panel has the same two actions once the module is open: the summary shows these only while it is closed, so each is on
+          // the screen once; beside the newest image, under its two lines.
+          summary={<ThermalSummary encounter={encounter} actions={panels.thermalActions?.(encounter, inserter)} />}
+          meta={<ThermalMeta encounter={encounter} />}
+        >
+          {slot('thermal', 'Thermal imaging')}
+        </ModuleShell>
+      </div>
+      {/* The foot: "Analyze with Mana", and one line that opens what an analysis reads from each input (marks, never progress). */}
+      <div className="min-w-0 pt-2 lg:shrink-0 lg:border-t lg:border-line lg:pt-1 lg:pr-2 lg:pl-1">
+        <AnalyzeButton encounter={encounter} flush={flush} save={save} />
+      </div>
+    </aside>
+  )
+})
+
+/**
+ * The Mana area's column. Where the right-hand side is wide enough for Mana and the record side by side (from 72rem of its own width: a
+ * 1920px screen), it keeps its place under the consultation bar and scrolls on its own, as the inputs rail does, so the draft stays in view
+ * while the doctor writes the note beside it. Narrower, it is the top of the right-hand side and the page scrolls.
+ */
+function ManaColumn({ children }: { children: ReactNode }) {
+  const column = useRef<HTMLDivElement>(null)
+  useRoomBelow(column)
+  return (
+    <div
+      ref={column}
+      data-scroller
+      className="relative min-w-0 @min-[72rem]/main:sticky @min-[72rem]/main:top-[calc(var(--spacing-topbar)+var(--consult-header-h,0px)+0.75rem)] @min-[72rem]/main:-ml-1 @min-[72rem]/main:max-h-[min(calc(100dvh-var(--spacing-topbar)-var(--consult-header-h,0px)-1.25rem),calc(var(--room,100dvh)-0.5rem))] @min-[72rem]/main:self-start @min-[72rem]/main:overflow-y-auto @min-[72rem]/main:overscroll-contain @min-[72rem]/main:pr-2 @min-[72rem]/main:pb-4 @min-[72rem]/main:pl-1"
+    >
+      {children}
+    </div>
+  )
+}
+
 function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: ConsultationPanels }) {
   const qc = useQueryClient()
   const toast = useToast()
@@ -319,6 +571,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
   const [savedAt, setSavedAt] = useState<Date | null>(null)
   const [reviewing, setReviewing] = useState(false)
   const [vitalsOpen, setVitalsOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
   const [insertions, setInsertions] = useState<NoteInsertion[]>(initial.aiInsertions)
   const [inserting, setInserting] = useState(false)
   const [blocked, setBlocked] = useState<string | null>(null)
@@ -492,23 +745,81 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
   const toolInserter = useMemo<NoteInserter>(() => ({ insert: (...a) => inserterRef.current.insert(...a), inserted: (...a) => inserterRef.current.inserted(...a) }), [])
 
   const locked = state === 'conflict' || state === 'blocked'
-  const parts = TOOL_PARTS.filter((p) => !p.panel || panels[p.panel])
-  const tool = (key: keyof ConsultationPanels) => {
-    const render = panels[key]
-    return render ? <ToolSlot render={render} encounter={initial} inserter={toolInserter} insertions={insertions} label={PANEL_LABEL[key]} /> : null
-  }
-  // A part of the tools column: a named group the bar at its top leads to, focusable so that arriving there by the bar or a chip moves focus too.
-  const part = (id: (typeof TOOL_PARTS)[number]['id'], children: ReactNode) => (
-    <div
-      id={`tools-${id}`}
-      role="group"
-      aria-label={TOOL_PARTS.find((p) => p.id === id)?.label}
-      tabIndex={-1}
-      className="scroll-mt-20 space-y-6 rounded-xl focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand lg:scroll-mt-0"
-    >
-      {children}
+  const hero = isHero(panels)
+  const noteHeadingId = useId()
+  // What the rail is given does not change while the doctor types, so that typing in the note does not draw the five inputs again.
+  const flushForAnalysis = useCallback(async (): Promise<NoteSaveState> => {
+    await flush()
+    return stateRef.current
+  }, [flush])
+  const openVitals = useCallback(() => setVitalsOpen(true), [])
+  const menu: MenuItem[] = [
+    // Not one of the five inputs: the clinical photographs and the older assistant, in a sheet beside the consultation.
+    ...(panels.more ? [{ label: 'More tools…', icon: <PanelRightOpen aria-hidden="true" className="size-4" />, onSelect: () => setMoreOpen(true) }] : []),
+    // Closing a draft without signing is deliberate, so it is kept away from the save and complete buttons.
+    { label: 'Discard draft…', tone: 'danger', icon: <Trash2 aria-hidden="true" className="size-4" />, disabled: locked, onSelect: () => void flush().then(() => setDiscarding(true)) },
+  ]
+
+  // The record: what the doctor writes, and the only part of the page that becomes the signed consultation.
+  const noteFields = (
+    <div className="space-y-4">
+      {NOTE_SECTIONS.map((s) => (
+        <div key={s.key}>
+          <TextAreaField
+            label={s.label}
+            hint={s.hint}
+            rows={s.rows}
+            value={draft.note[s.key]}
+            onChange={(e) => update((d) => ({ ...d, note: { ...d.note, [s.key]: e.target.value } }))}
+            readOnly={state === 'conflict' || state === 'blocked' || inserting}
+          />
+          <AiProvenance insertions={insertions} section={s.key} />
+        </div>
+      ))}
     </div>
   )
+  const record = (
+    <>
+      {hero ? (
+        // The doctor's workspace: the note's heading stands above it as the Mana area's does (an h2 and a line), so the tops of the panes'
+        // headings line up; the region is still named "Consultation note".
+        <section id="consultation-note" tabIndex={-1} aria-labelledby={noteHeadingId} className="scroll-mt-20 space-y-4 rounded-xl focus:outline-none">
+          <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+            <div className="min-w-0">
+              <h2 id={noteHeadingId} className="text-lg font-semibold">
+                Consultation note
+              </h2>
+              <p className="text-sm text-ink-muted">Yours to write. With the diagnosis and the prescription, it is what you sign.</p>
+            </div>
+            {inserting && <Badge tone="ai">Inserting AI text…</Badge>}
+          </div>
+          <div className="min-w-0 rounded-xl border border-line bg-surface p-5 shadow-card">{noteFields}</div>
+        </section>
+      ) : (
+        <div id="consultation-note" tabIndex={-1} className="scroll-mt-20 focus:outline-none">
+          <Card title="Consultation note" actions={inserting ? <Badge tone="ai">Inserting AI text…</Badge> : undefined}>
+            {noteFields}
+          </Card>
+        </div>
+      )}
+      <DiagnosesEditor items={draft.diagnoses} onChange={(diagnoses) => update((d) => ({ ...d, diagnoses }))} />
+      {hero ? (
+        // The prescription, with "Before you prescribe" under it; beside it only where the record is wide enough for both (64rem), so the
+        // lane never stands as a tall column next to a short prescription. The prescription lays its fields out by its own width.
+        <div id="rx" tabIndex={-1} className="@container/rx min-w-0 scroll-mt-20 rounded-xl focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand">
+          <div className="grid grid-cols-1 gap-4 @min-[64rem]/rx:grid-cols-[minmax(0,1fr)_22rem] @min-[64rem]/rx:items-start">
+            <div className="@container min-w-0">
+              <PrescriptionEditor encounter={initial} items={draft.prescription} onChange={(prescription) => update((d) => ({ ...d, prescription }))} onPrintPreview={() => void flush()} allergyCheck />
+            </div>
+            {panels.prescriptionLane && <ToolSlot render={panels.prescriptionLane} encounter={initial} inserter={toolInserter} insertions={insertions} label="Before you prescribe" neutral />}
+          </div>
+        </div>
+      ) : (
+        <PrescriptionEditor encounter={initial} items={draft.prescription} onChange={(prescription) => update((d) => ({ ...d, prescription }))} />
+      )}
+    </>
+  )
+
   return (
     <>
       <ConsultationHeader
@@ -519,7 +830,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
         patient={bannerOnScreen ? null : <PatientStrip encounter={initial} />}
         banner={
           <div ref={bannerRef}>
-            <ConsultationBanner encounter={initial} onOpenProfile={() => setProfileOpen(true)} status={<ConsultationStatus encounterId={initial.id} patientId={initial.patient.id} onSelect={(s) => showPart(`tools-${s}`)} />} />
+            <ConsultationBanner encounter={initial} onOpenProfile={() => setProfileOpen(true)} status={<ConsultationStatus encounterId={initial.id} patientId={initial.patient.id} onSelect={(s) => revealPart(CHIP_PART[s])} />} />
           </div>
         }
         actions={
@@ -531,8 +842,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
             <Button onClick={() => setReviewing(true)} disabled={locked}>
               Complete consultation
             </Button>
-            {/* Closing a draft without signing is deliberate, so it is kept away from the save and complete buttons. */}
-            <Menu label="More consultation actions" items={[{ label: 'Discard draft…', tone: 'danger', icon: <Trash2 aria-hidden="true" className="size-4" />, disabled: locked, onSelect: () => void flush().then(() => setDiscarding(true)) }]} />
+            <Menu label="More consultation actions" items={menu} triggerClassName="inline-flex size-control items-center justify-center rounded-md border border-transparent text-ink-muted hover:bg-surface hover:text-ink" />
           </>
         }
       />
@@ -554,40 +864,51 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
           .
         </Alert>
       )}
-      {/*
-        One workspace, two panes from 1024px (a tablet held sideways): the tools on the left, in the order a consultation uses them, and the note
-        on the right, so reviewed text moves left to right into it. The tools column keeps its place under the consultation bar and scrolls on
-        its own, so the note stays in view while the doctor reads the transcript or the AI draft, and the reverse. Below 1024px one column.
-        Every tool stays mounted and visible: a recording, the device readings and the AI draft keep running while the doctor works elsewhere.
-      */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(20rem,26rem)_minmax(0,1fr)] 2xl:grid-cols-[30rem_minmax(0,1fr)]">
-        <aside
-          aria-label="Consultation tools"
-          className="min-w-0 lg:sticky lg:top-[calc(var(--spacing-topbar)+var(--consult-header-h,0px)+1rem)] lg:-ml-1 lg:flex lg:max-h-[calc(100dvh-var(--spacing-topbar)-var(--consult-header-h,0px)-2rem)] lg:flex-col"
-          data-testid="consultation-tools"
-        >
-          {/* The note is after the tools in the reading order; a keyboard user can go straight to it (visible when focused). */}
-          <button type="button" onClick={() => showPart('consultation-note')} className="sr-only rounded-md bg-surface px-3 py-2 text-sm font-medium shadow-pop focus:not-sr-only focus:inline-flex">
-            Skip to the note
-          </button>
-          <nav aria-label="Go to" className="mb-4 flex flex-wrap gap-1 lg:shrink-0 lg:pl-1">
-            {parts.map((p) => (
-              <button key={p.id} type="button" onClick={() => showPart(`tools-${p.id}`)} className="inline-flex min-h-control-sm items-center rounded-full border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted hover:bg-canvas hover:text-ink">
-                {p.label}
-              </button>
-            ))}
-            <button type="button" onClick={() => showPart('consultation-note')} className="inline-flex min-h-control-sm items-center rounded-full border border-line bg-surface px-2.5 text-xs font-medium text-ink-muted hover:bg-canvas hover:text-ink lg:hidden">
-              Note
+      {hero ? (
+        <>
+          {/* The story of the consultation, each step with the state it is in now and a way to its part of the page. */}
+          <div className="mb-3">
+            <Strip encounter={initial} save={state} medicines={medicineCount(draft.prescription)} />
+          </div>
+          {/*
+            Inputs, then intelligence and action (Doctor HERO): from 1024px two panes, the five inputs on the left and, on the right, Mana (the
+            analysis, the model's draft, the fixed rules' checks, Ask Mana) above the record (note, diagnosis, prescription). Where the right
+            side is itself wide (72rem: a 1920px screen) Mana and the record stand side by side, each no wider than a line can be read. Below
+            1024px one column, in the same order. Every input panel stays mounted: a recording, the device readings and the draft keep running
+            while the doctor works elsewhere.
+          */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[20rem_minmax(0,1fr)] xl:grid-cols-[22rem_minmax(0,1fr)] 2xl:grid-cols-[24rem_minmax(0,1fr)]">
+            <InputsRail encounter={initial} panels={panels} inserter={toolInserter} insertions={insertions} save={state} flush={flushForAnalysis} onRecordVitals={openVitals} />
+            <div className="@container/main min-w-0">
+              <div className="grid grid-cols-1 gap-6 @min-[72rem]/main:grid-cols-[minmax(0,46rem)_minmax(0,46rem)]">
+                <ManaColumn>{panels.mana && <ToolSlot render={panels.mana} encounter={initial} inserter={toolInserter} insertions={insertions} label="The Mana area" neutral />}</ManaColumn>
+                {/* The editors inside lay themselves out by the width of this column (container queries). */}
+                <div className="@container min-w-0 space-y-6">{record}</div>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        // No panels (the nurse's route): the earlier layout, the visit and the patient's history beside the note.
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(20rem,26rem)_minmax(0,1fr)] 2xl:grid-cols-[30rem_minmax(0,1fr)]">
+          <aside
+            aria-label="Consultation tools"
+            className="min-w-0 lg:sticky lg:top-[calc(var(--spacing-topbar)+var(--consult-header-h,0px)+1rem)] lg:-ml-1 lg:flex lg:max-h-[calc(100dvh-var(--spacing-topbar)-var(--consult-header-h,0px)-2rem)] lg:flex-col"
+            data-testid="consultation-tools"
+          >
+            {/* The note is after the tools in the reading order; a keyboard user can go straight to it (visible when focused). */}
+            <button type="button" onClick={() => showPart('consultation-note')} className="sr-only rounded-md bg-surface px-3 py-2 text-sm font-medium shadow-pop focus:not-sr-only focus:inline-flex">
+              Skip to the note
             </button>
-          </nav>
-          {/* relative: the scroller is the containing block of what is absolutely placed inside it (visually hidden labels), so that it clips
-              them; otherwise they escape its overflow at their place far down the column and make the page taller than the workspace,
-              which carries the sticky bar away at the bottom of the page. */}
-          <div data-tools-scroller className="relative min-w-0 space-y-6 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pr-2 lg:pb-4 lg:pl-1">
-            {panels.overview && part('overview', tool('overview'))}
-            {part(
-              'history',
-              <>
+            {/* relative: the scroller clips what is absolutely placed inside it (visually hidden labels); see the inputs rail. */}
+            <div data-scroller className="relative min-w-0 space-y-6 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pr-2 lg:pb-4 lg:pl-1">
+              <div
+                id="tools-history"
+                role="group"
+                aria-label="History"
+                tabIndex={-1}
+                className="scroll-mt-20 space-y-6 rounded-xl focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand lg:scroll-mt-0"
+              >
                 <Card title="This visit">
                   <VitalsTiles vitals={initial.vitals} />
                   <div className="mt-3">
@@ -611,44 +932,25 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
                     <PastHistoryPanel patientId={initial.patient.id} bare />
                   </div>
                 </Card>
-              </>,
-            )}
-            {panels.conversation && part('conversation', tool('conversation'))}
-            {panels.draft && part('draft', tool('draft'))}
-            {panels.mana && part('mana', tool('mana'))}
-            {panels.devices && part('devices', tool('devices'))}
-            {panels.thermal && part('thermal', tool('thermal'))}
-            {panels.more && part('more', tool('more'))}
-          </div>
-        </aside>
-        {/* The editors inside lay themselves out by the width of this column (container queries). */}
-        <div className="@container min-w-0 space-y-6">
-          <div id="consultation-note" tabIndex={-1} className="scroll-mt-20 focus:outline-none">
-            <Card title="Consultation note" actions={inserting ? <Badge tone="ai">Inserting AI text…</Badge> : undefined}>
-              <div className="space-y-4">
-                {NOTE_SECTIONS.map((s) => (
-                  <div key={s.key}>
-                    <TextAreaField
-                      label={s.label}
-                      hint={s.hint}
-                      rows={s.rows}
-                      value={draft.note[s.key]}
-                      onChange={(e) => update((d) => ({ ...d, note: { ...d.note, [s.key]: e.target.value } }))}
-                      readOnly={state === 'conflict' || state === 'blocked' || inserting}
-                    />
-                    <AiProvenance insertions={insertions} section={s.key} />
-                  </div>
-                ))}
               </div>
-            </Card>
-          </div>
-          <DiagnosesEditor items={draft.diagnoses} onChange={(diagnoses) => update((d) => ({ ...d, diagnoses }))} />
-          <PrescriptionEditor encounter={initial} items={draft.prescription} onChange={(prescription) => update((d) => ({ ...d, prescription }))} />
+            </div>
+          </aside>
+          {/* The editors inside lay themselves out by the width of this column (container queries). */}
+          <div className="@container min-w-0 space-y-6">{record}</div>
         </div>
-      </div>
+      )}
       {/* Room for the actions that stay at the bottom of the screen below 1024px: as tall as that bar actually is. */}
       <div aria-hidden="true" className="lg:hidden" style={{ height: 'calc(var(--action-bar-h, 7rem) + 1rem)' }} />
       <PatientProfileDrawer patientId={initial.patient.id} open={profileOpen} onClose={() => setProfileOpen(false)} />
+      {panels.more && (
+        // On demand, so drawn only while open (nothing else on the page reads what these panels read).
+        <Dialog open={moreOpen} onClose={() => setMoreOpen(false)} title="More tools" placement="right" wide testId="more-tools">
+          <div className="space-y-6">
+            <p className="text-sm text-ink-muted">Tools that are not among the five inputs. They are drawn only while this sheet is open.</p>
+            <ToolSlot render={panels.more} encounter={initial} inserter={toolInserter} insertions={insertions} label="More tools" />
+          </div>
+        </Dialog>
+      )}
       {discarding && (
         <DiscardDraftDialog
           draft={{ id: initial.id, version: versionRef.current, patientName: initial.patient.fullName, visitStatus: initial.visit.status }}
@@ -866,6 +1168,9 @@ export function ConsultationPage({ panels = {} }: { panels?: ConsultationPanels 
   const q = useEncounter(encounterId)
   const navigate = useNavigate()
   useDocumentTitle(q.data ? `Consultation · ${q.data.patient.fullName}` : 'Consultation')
+  // While the doctor writes it, the consultation has the whole screen (the navigation a drawer at every width); the read view keeps the frame
+  // it had. Until the consultation is read, as its route says.
+  useFocusMode(q.data ? q.data.canEdit && isHero(panels) : null)
   if (q.isPending) return <Spinner />
   if (q.isError)
     return (

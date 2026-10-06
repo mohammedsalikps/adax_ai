@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
 import { type ReactNode, useEffect, useId, useRef } from 'react'
+import { CardFrameContext } from './Layout.tsx'
 
 /**
  * Modal dialog on the native <dialog> element: focus is trapped and restored
@@ -21,9 +22,10 @@ export function Dialog({
   title: ReactNode
   children: ReactNode
   footer?: ReactNode
+  /** Centred: up to 48rem instead of 32rem. A side sheet: up to 48rem wide instead of 32rem (never wider than the screen). */
   wide?: boolean
   dismissible?: boolean
-  /** `right`: a panel from the right edge (a side sheet) that keeps the page visible behind it; everything else is the same dialog. */
+  /** `right`: a panel from the right edge (a side sheet), full height, that keeps the page visible behind it; everything else is the same dialog. */
   placement?: 'center' | 'right'
   testId?: string
 }) {
@@ -59,12 +61,14 @@ export function Dialog({
       data-testid={testId}
       className={
         placement === 'right'
-          ? 'animate-slide-in-right m-0 mr-0 ml-auto h-dvh max-h-dvh w-[min(100%,32rem)] max-w-none overflow-hidden rounded-none rounded-l-2xl border-l border-line bg-surface p-0 text-ink shadow-pop backdrop:bg-ink/40'
+          ? `animate-slide-in-right m-0 mr-0 ml-auto h-dvh max-h-dvh ${wide ? 'w-[min(100%,48rem)]' : 'w-[min(100%,32rem)]'} max-w-none overflow-hidden rounded-none rounded-l-2xl border-l border-line bg-surface p-0 text-ink shadow-pop backdrop:bg-ink/40`
           : `m-auto max-h-[90dvh] w-[calc(100%-2rem)] overflow-hidden ${wide ? 'max-w-3xl' : 'max-w-lg'} rounded-2xl border border-line bg-surface p-0 text-ink shadow-pop backdrop:bg-ink/40`
       }
     >
       {open && (
-        // Header and footer stay fixed; only the body scrolls (min-h-0 lets it shrink).
+        // Header and footer stay fixed; only the body scrolls (min-h-0 lets it shrink). Cards in a dialog are drawn as cards, also when the
+        // dialog was opened from inside a consultation module (whose open body draws the cards in it flat).
+        <CardFrameContext.Provider value="card">
         <div className={placement === 'right' ? 'flex h-dvh max-h-dvh flex-col' : 'flex max-h-[90dvh] flex-col'}>
           <div className="flex shrink-0 items-center justify-between gap-4 border-b border-line px-5 py-3.5">
             <h2 id={titleId} className="text-lg font-semibold">
@@ -80,6 +84,7 @@ export function Dialog({
           </div>
           {footer && <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-line px-5 py-3">{footer}</div>}
         </div>
+        </CardFrameContext.Provider>
       )}
     </dialog>
   )

@@ -1,5 +1,5 @@
 import { expect, type Page, request as pwRequest, test } from '@playwright/test'
-import { expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, signIn, uniq } from './support.ts'
+import { analyzeButton, expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, signIn, uniq } from './support.ts'
 
 // Mana AI (V4), the doctor's clinical assistant, in a real browser. The planner and the writer are "the local model": the labelled stand-in in
 // e2e/mock-llm.mjs (keyword rules for the plan; the writer copies the facts it is shown). No model runs in this suite. Everything else is real: the
@@ -56,11 +56,19 @@ test('Mana is closed until the doctor opens it, then answers from the record: st
   page.on('request', (r) => {
     if (r.url().includes('/api/mana-assistant')) manaRequests.push(`${r.method()} ${new URL(r.url()).pathname}`)
   })
-  const p = await startConsultation(page, baseURL!)
+  // With the recording consent as well, so that "Analyze with Mana" can be used below (the local model's draft needs it; Mana does not).
+  const p = await startConsultation(page, baseURL!, { allergies: ['Penicillin'], consents: ['ai_recording'] })
   // Closed: a header and one button; nothing was asked of the server.
   await expect(mana(page)).toHaveAttribute('data-open', 'false')
-  await expect(mana(page).getByRole('heading', { name: /MANA AI.*Doctor’s Clinical Assistant/ })).toBeVisible()
+  // In the consultation the card's heading is "Ask Mana", sized like the Mana area's other headings (Doctor HERO polish, round 2); its name
+  // still says what it is.
+  await expect(mana(page).getByRole('heading', { name: /^Ask Mana: Mana AI, Doctor’s Clinical Assistant/ })).toBeVisible()
   await expect(input(page)).toBeHidden()
+  expect(manaRequests).toEqual([])
+  // "Analyze with Mana" (Doctor HERO) asks the local model for the draft and runs the fixed rules: it does not open Mana or ask it anything.
+  await analyzeButton(page).click()
+  await expect(page.getByTestId('consult-panel').getByTestId('consult-status')).toContainText('READY FOR REVIEW', { timeout: 30_000 })
+  await expect(mana(page)).toHaveAttribute('data-open', 'false')
   expect(manaRequests).toEqual([])
   await openMana(page)
   await expect(mana(page)).toHaveAttribute('data-open', 'true')
@@ -348,7 +356,8 @@ test('states at five widths: the workspace with Mana closed, open, generating, a
       expect(box!.x + box!.width, `${label} at ${size.width}px`).toBeLessThanOrEqual(size.width + 0.5)
       expect(box!.x, `${label} at ${size.width}px`).toBeGreaterThanOrEqual(-0.5)
       // Brought into view the way the page itself does it (honouring its scroll padding), so the panel's header is not left under the sticky top bar:
-      // since D1 Mana sits in the middle of a phone's one column, and centring a tall panel there put its buttons behind that bar.
+      // Mana is the last block of the Mana area (Doctor HERO), in the middle of a phone's one column, and centring a tall panel there put its
+      // buttons behind that bar.
       await target.evaluate((el) => el.scrollIntoView({ block: 'start' }))
       const slug = label.replace(/\W+/g, '-')
       // The crop of the panel is taken with the page's own sticky and fixed bars (the patient banner, the action bar) out of the way: a panel taller than the window

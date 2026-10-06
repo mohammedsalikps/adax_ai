@@ -25,10 +25,12 @@ import {
   statusTone,
   TARGET_LABEL,
   targetElementId,
+  targetLabel,
   trustLabel,
   trustTone,
   visibleEvidence,
 } from '../src/lib/consultationContext.ts'
+import { isPartId } from '../src/lib/workspace.ts'
 
 const T0 = Date.UTC(2026, 9, 5, 10, 0, 0)
 const iso = (secondsAfter: number) => new Date(T0 + secondsAfter * 1000).toISOString()
@@ -208,11 +210,26 @@ test('a disagreement leads to the parts that hold its two sides, each once; by i
   assert.deepEqual(conflictTargets(conflict({ kind: 'point_vs_record' }), evidence), ['conversation', 'history'])
 })
 
-test('every target leads to an element of the consultation page, named as the tools bar names it', () => {
+test('every target leads to a part of the consultation page, named as the page names it', () => {
+  // Changed with the Doctor HERO workspace (deliberately, not weakened): the tools column became the five-module inputs rail, the AI draft moved
+  // to the Mana result and Mana to Ask Mana at its foot, and the stethoscope got a module of its own. The server's targets are unchanged
+  // (apps/api/test/consultation-context.test.ts), so the page maps each one to where it now is; every target still leads to exactly one part.
   assert.equal(targetElementId('note'), 'consultation-note')
-  for (const t of EVIDENCE_TARGETS.filter((x) => x !== 'note')) assert.equal(targetElementId(t), `tools-${t}`)
+  assert.equal(targetElementId('draft'), 'mana-result')
+  assert.equal(targetElementId('mana'), 'mana-chat')
+  for (const t of ['history', 'conversation', 'devices', 'thermal'] as const) assert.equal(targetElementId(t), `tools-${t}`)
+  for (const t of EVIDENCE_TARGETS) assert.ok(isPartId(targetElementId(t)), `${t} leads to a part of the page`)
+  // A stethoscope recording leads to its own module whatever target the server gave it, and is named so; other kinds go where their target is.
+  assert.equal(targetElementId('devices', 'stethoscope'), 'tools-stethoscope')
+  assert.equal(targetLabel('devices', 'stethoscope'), 'Stethoscope')
+  assert.equal(targetElementId('devices', 'vital_device'), 'tools-devices')
+  assert.equal(targetLabel('devices', 'vital_device'), 'Devices')
+  assert.equal(targetElementId('draft', 'ai_draft'), 'mana-result')
+  assert.equal(targetElementId('note', 'note_insertion'), 'consultation-note')
   assert.deepEqual(Object.keys(TARGET_LABEL).sort(), [...EVIDENCE_TARGETS].sort())
-  assert.equal(TARGET_LABEL.draft, 'AI draft')
+  // Was 'AI draft': the draft is now shown as the Mana result, and the label says where the doctor arrives.
+  assert.equal(TARGET_LABEL.draft, 'Mana result')
+  for (const t of EVIDENCE_TARGETS) assert.equal(targetLabel(t), TARGET_LABEL[t])
 })
 
 test('the newest items are listed first and only the newest eight until "Show all"; a SIMULATED item out of sight is counted', () => {

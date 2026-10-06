@@ -1,10 +1,11 @@
 import { type APIRequestContext, expect, type Locator, request as pwRequest, test } from '@playwright/test'
-import { DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, signIn, uniq } from './support.ts'
+import { analyzeButton, DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, openModule, signIn, stepTo, uniq } from './support.ts'
 
-// The doctor hero journey of D1, the integrated consultation workspace, from sign-in to the signed record and its audit trail: one synthetic
-// patient, one consultation. Everything is real (browser, API, database) except the stand-ins this suite always uses: the local model
-// (e2e/mock-llm.mjs), the local speech service (e2e/mock-speech.mjs), Chromium's synthetic microphone, and a SIMULATOR device whose "gateway"
-// is this test posting fixed numbers with the device record's token. None of them is a model, a speech recogniser or a device.
+// The doctor hero journey of D1, the integrated consultation workspace (in its Doctor HERO layout: five input modules in a rail on the left,
+// Mana and the record on the right), from sign-in to the signed record and its audit trail: one synthetic patient, one consultation.
+// Everything is real (browser, API, database) except the stand-ins this suite always uses: the local model (e2e/mock-llm.mjs), the local
+// speech service (e2e/mock-speech.mjs), Chromium's synthetic microphone, and a SIMULATOR device whose "gateway" is this test posting fixed
+// numbers with the device record's token. None of them is a model, a speech recogniser or a device.
 
 const LLM = 'http://127.0.0.1:8181'
 
@@ -90,7 +91,6 @@ type AuditRow = { id: number; action: string; outcome: string; actorRole: string
 test('the doctor hero: dashboard, today’s patients, the workspace (transcript, important points, AI draft, Mana, devices, stethoscope), signing, and the audit trail', async ({ page, baseURL }) => {
   test.setTimeout(420_000)
   const tools = page.getByTestId('consultation-tools')
-  const goTo = (name: string) => tools.getByRole('navigation', { name: 'Go to' }).getByRole('button', { name, exact: true }).click()
 
   // ---- 0. The nurse has registered the patient, recorded consents (recording, devices, Mana), an allergy and vital signs, and handed over. ----
   const p = await nurseHandsOverPatient(baseURL!, { name: { given: `Hero${uniq()}`, family: 'Synthetic' }, allergies: ['Penicillin'], consents: ['ai_recording', 'device_monitoring', 'ai_record_assistant'] })
@@ -142,15 +142,23 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
   const deviceChip = header.getByTestId('device-status-chip')
   await expect(deviceChip).toHaveAttribute('data-state', 'none', { timeout: 15_000 })
   await expect(deviceChip).toContainText('No device attached')
-  // Two panes: the tools column on the left, the note on the right, both on the screen.
+  // Two panes: the inputs rail on the left; on the right Mana, then the note under it (the right-hand side is not wide enough at these sizes
+  // to put them side by side). Doctor HERO: inputs, then intelligence, then action; before it the note was the whole right-hand pane.
   const note = page.getByRole('region', { name: 'Consultation note' })
+  const manaArea = page.getByTestId('mana-result')
   await expect(tools).toBeVisible()
   await expect(note).toBeVisible()
+  await expect(manaArea).toBeVisible()
   const twoPanes = async (label: string) => {
     const t = (await tools.boundingBox())!
     const n = (await note.boundingBox())!
+    const m = (await manaArea.boundingBox())!
     expect(n.x, `${label}: the note is right of the tools`).toBeGreaterThanOrEqual(t.x + t.width)
     expect(n.x + n.width, `${label}: the note fits the screen`).toBeLessThanOrEqual(page.viewportSize()!.width + 0.5)
+    expect(m.x, `${label}: Mana is right of the tools`).toBeGreaterThanOrEqual(t.x + t.width)
+    expect(m.y + m.height, `${label}: Mana is above the note`).toBeLessThanOrEqual(n.y + 0.5)
+    // "Analyze with Mana" is at the foot of the rail, on the screen without scrolling.
+    await expect(analyzeButton(page)).toBeInViewport()
   }
   await twoPanes('1280x800')
   await expectNoHorizontalOverflow(page)
@@ -163,8 +171,10 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
   await expectNoAxeViolations(page)
 
   // ---- 6. TRANSCRIPT: recorded from the synthetic microphone; the stand-in's timed lines appear; the doctor says who spoke. ----
-  await goTo('Conversation')
+  // The speech chip leads to the conversation (module 1), which it opens (the "Go to" bar it used to be reached by is gone: Doctor HERO).
+  await header.getByTestId('speech-status-chip').click()
   await expect(page.locator('#tools-conversation')).toBeFocused()
+  await expect(page.locator('#tools-conversation')).toHaveAttribute('data-open', 'true')
   const live = page.getByRole('region', { name: 'Live transcription' })
   await expect(live.getByTestId('recording-consent')).toContainText('recorded (ongoing)')
   // The speech service is named by its model id: here the TEST-ONLY stand-in, and it says it is not validated.
@@ -222,17 +232,32 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
   const confirmedCount = await confirmedPoints.count()
   expect(confirmedCount).toBeGreaterThanOrEqual(1)
 
-  // ---- 8. AI DRAFT: reached from the "Go to" bar; made from the record, the note and the confirmed points; each statement decided by the doctor. ----
-  await goTo('AI draft')
-  await expect(page.locator('#tools-draft')).toBeFocused()
+  // ---- 8. AI DRAFT: reached from the workflow strip ("Mana analysis", which replaced the "Go to" bar); asked for with "Analyze with Mana" at
+  // the foot of the inputs rail (the result card has no button of its own any more); made from the record, the note and the confirmed points;
+  // each statement decided by the doctor. ----
+  await stepTo(page, 'Mana analysis')
+  await expect(page.locator('#mana-result [data-part-focus="mana-result"]')).toBeFocused()
   const panel = page.getByTestId('consult-panel')
   await expect(panel).toBeInViewport()
   const status = panel.getByTestId('consult-status')
   await expect(status).toContainText('NOT RUN', { timeout: 20_000 })
   await expect(panel.getByTestId('consult-inputs')).toContainText(`the ${confirmedCount} important point${confirmedCount === 1 ? '' : 's'} you confirmed`)
   await expect(panel.getByTestId('consult-inputs')).toContainText('never from the raw transcript or the audio')
-  await panel.getByRole('button', { name: 'Generate draft' }).click()
+  // What the analysis will read, said beside the button before it is pressed: the points the doctor confirmed, never the stethoscope.
+  const reads = page.getByTestId('analysis-inputs')
+  await expect(reads.locator('li[data-input="conversation"]')).toHaveAttribute('data-included', 'true')
+  await expect(reads.locator('li[data-input="conversation"]')).toContainText(`${confirmedCount} point${confirmedCount === 1 ? '' : 's'} you confirmed`)
+  await expect(reads.locator('li[data-input="stethoscope"]')).toHaveAttribute('data-included', 'false')
+  const clicked = Date.now()
+  await analyzeButton(page).click()
   await expect(status).toContainText('READY FOR REVIEW', { timeout: 30_000 })
+  // Measured on this run with the suite's model stand-in: a number about this test, not the product's speed.
+  test.info().annotations.push({ type: 'timing', description: `Analyze with Mana to READY FOR REVIEW: ${Date.now() - clicked} ms (mock-llm stand-in, not a product timing)` })
+  // The same click ran the fixed safety rules, and the analysis' steps say so.
+  const rulesStep = page.locator('[data-testid="analysis-steps"] li[data-step="rules"]')
+  await expect(rulesStep).toHaveAttribute('data-state', 'done')
+  await expect(rulesStep).toContainText('safety-rules-v1')
+  await expect(analyzeButton(page, 'Analyze again')).toBeEnabled()
   const statements = panel.getByTestId('consult-statement')
   await expect(statements.first()).toBeVisible()
   // Every statement carries a support state, in words and as data.
@@ -286,10 +311,11 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
   await expect(page.getByRole('region', { name: 'Diagnosis', exact: true })).toContainText('No diagnosis yet.')
   await expect(page.getByRole('region', { name: 'Prescription', exact: true })).toContainText('No medicines prescribed.')
 
-  // ---- 9. MANA: reached from the "Go to" bar; asked about the patient; it answers from the record, with sources, and cannot write to the note. ----
-  await goTo('Mana')
-  await expect(page.locator('#tools-mana')).toBeFocused()
-  const mana = page.getByTestId('mana-assistant')
+  // ---- 9. MANA: Ask Mana, the last block of the Mana area (no longer a part of the tools column with a "Go to" button: Doctor HERO); asked
+  // about the patient; it answers from the record, with sources, and cannot write to the note. Analyzing did not open it. ----
+  const mana = page.locator('#mana-result #mana-chat').getByTestId('mana-assistant')
+  await mana.scrollIntoViewIfNeeded()
+  await expect(mana).toBeInViewport()
   await expect(mana).toHaveAttribute('data-open', 'false')
   await mana.getByTestId('mana-toggle').click()
   await expect(mana.getByTestId('mana-context')).toContainText(p.name)
@@ -311,8 +337,10 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
   const admin = await staff(baseURL!, 'admin')
   const simLabel = `Simulator band ${uniq()}`
   const sim = await registerSimulator(admin, baseURL!, simLabel)
-  await goTo('Devices')
+  // The device chip leads to the devices (module 3, "Health band & vitals"), which it opens (it used to be reached by the "Go to" bar).
+  await deviceChip.click()
   await expect(page.locator('#tools-devices')).toBeFocused()
+  await expect(page.locator('#tools-devices')).toHaveAttribute('data-open', 'true')
   const card = page.getByTestId('device-readings')
   await expect(card.getByTestId('device-none')).toContainText('No device is attached to this patient.')
   await card.getByRole('button', { name: 'Attach a device' }).click()
@@ -338,6 +366,9 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
   await expect(deviceChip.getByTestId('simulated-badge')).toHaveText('SIMULATED')
   // The visit's own vital signs are what the nurse measured (heart rate 92): the simulator's 131 is not among them, after a reload either.
   await page.reload()
+  // What a jump opened is not remembered (only the doctor's own "Show" is): after the reload the module is closed again, and is opened.
+  await expect(page.locator('#tools-devices')).toHaveAttribute('data-open', 'false')
+  await openModule(page, 'Vitals')
   await expect(card).toBeVisible()
   await expect(page.getByTestId('vitals-tiles')).toContainText('92')
   await expect(page.getByTestId('vitals-tiles')).not.toContainText('131')
@@ -357,6 +388,9 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
   await sim.dispose()
 
   // ---- 11. STETHOSCOPE: recorded in the browser from an audio input (Chromium's synthetic one), kept with this consultation, not analysed. ----
+  // Module 4 since Doctor HERO (it shared the devices' part before): opened, and its summary already says that it is not analysed.
+  const stethoscope = await openModule(page, 'Stethoscope')
+  await expect(stethoscope.getByTestId('summary-stethoscope-honesty')).toContainText('Recorded, not analysed.')
   const recordings = page.getByRole('region', { name: 'Stethoscope recordings' })
   await expect(recordings).toContainText('No recording available.')
   await recordings.getByRole('button', { name: 'Record', exact: true }).click()
@@ -376,6 +410,8 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
   await expect(recording.getByTestId('auscultation-this-consultation')).toHaveText('This consultation')
   await expect(recording.locator('audio')).toHaveAttribute('src', /^\/api\/files\//)
   await expect(recording).not.toContainText(/analys|murmur|abnormal|finding/i)
+  // The module's summary counts it, from the same records.
+  await expect(stethoscope.getByTestId('summary-stethoscope')).toContainText('1 recording in this consultation')
 
   // ---- 12. FINALIZE: a diagnosis typed by the doctor, review and sign; the page becomes the signed record, with the AI-assisted text and its source. ----
   await page.getByRole('button', { name: 'Add diagnosis' }).click()
@@ -426,6 +462,8 @@ test('the doctor hero: dashboard, today’s patients, the workspace (transcript,
     ['ai.extraction', () => true],
     ['ai.review', (e) => e.details.type === 'fact' && e.details.decision === 'accepted'],
     ['ai.consultation_draft_requested', () => true],
+    // "Analyze with Mana" also ran the fixed safety rules.
+    ['ai.safety_check', () => true],
     ['ai.consultation_draft', (e) => e.details.insufficient === false],
     ['ai.consultation_review', (e) => e.details.decision === 'accepted'],
     ['ai.consultation_review', (e) => e.details.decision === 'edited'],

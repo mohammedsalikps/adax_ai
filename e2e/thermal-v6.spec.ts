@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { type APIRequestContext, expect, type Page, request as pwRequest, test } from '@playwright/test'
 import { simulateThermalMatrix, thermalStats } from '../packages/contracts/src/thermalSim.ts'
-import { DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, signIn } from './support.ts'
+import { DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, openModule, signIn } from './support.ts'
 
 /*
  * V6 in a real browser, against the real API and database: thermal imaging inside the doctor's consultation. NO CAMERA IS USED. A browser has
@@ -39,9 +39,13 @@ test('thermal imaging in the consultation: no camera in a browser, a SIMULATED c
   const p = await openConsultation(page, baseURL!)
   const encounterId = /\/encounters\/([0-9a-f-]{36})/.exec(page.url())![1]!
 
-  // The tools column has a Thermal part; in a browser it says plainly that no camera can be reached.
-  await page.getByRole('navigation', { name: 'Go to' }).getByRole('button', { name: 'Thermal' }).click()
-  await expect(page.locator('#tools-thermal')).toBeFocused()
+  // Thermal imaging is module 5 of the inputs rail (Doctor HERO; it was the tools column's Thermal part, reached by the "Go to" bar). In a
+  // browser it says plainly that no camera can be reached: in its summary while the module is closed, and in its panel once it is opened.
+  const thermalModule = page.getByTestId('module-thermal')
+  await expect(thermalModule.getByRole('heading', { name: 'Thermal imaging' })).toBeVisible()
+  await expect(thermalModule.getByTestId('summary-thermal-camera')).toContainText('FLIR ONE not connected')
+  await openModule(page, 'Thermal')
+  await expect(page.locator('#tools-thermal')).toHaveAttribute('data-testid', 'module-thermal')
   const panel = page.getByTestId('thermal-panel')
   await expect(page.getByTestId('thermal-panel-camera')).toContainText('FLIR ONE not connected')
   await expect(panel).toContainText('No thermal image in this consultation.')

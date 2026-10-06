@@ -19,7 +19,7 @@ import { audit } from '../audit/audit.ts'
 import type { SessionUser } from '../auth/sessions.ts'
 import { consentState, requireConsent } from '../consents/service.ts'
 import { type Db, type DbOrTx, pgCode } from '../db/client.ts'
-import { aiEvidence, aiJobs, auditEvents, consultationDraftItems, consultationDrafts, encounters, noteInsertions, users } from '../db/schema.ts'
+import { aiEvidence, aiJobs, auditEvents, consultationDraftItems, consultationDrafts, encounters, noteInsertions, observations, users } from '../db/schema.ts'
 import { getEncounterOr404 } from '../encounters/service.ts'
 import { conflict, forbidden, HttpError, notFound } from '../http/errors.ts'
 import type { Gate } from '../ai/llm/gate.ts'
@@ -30,7 +30,7 @@ import { sha256 } from '../ai/jobs.ts'
 import { AiProviderError } from '../ai/providers.ts'
 import type { AppSettings } from '../settings/schema.ts'
 import { RECORD_CHECK_VERSION } from '../mana/answers.ts'
-import { buildConsultationInputs, type ConsultationInputs, diffManifests, type ManifestEntry, staleSummary } from './inputs.ts'
+import { buildConsultationInputs, type ConsultationInputs, type DeviceReading, deviceReadingsIn, deviceStream, diffManifests, idInKey, type ManifestDiff, type ManifestEntry, staleSummary, withoutDeviceStream } from './inputs.ts'
 import { CONSULT_PROMPT, CONSULT_SCHEMA_VERSION, ConsultOutput, renderUserMessage } from './prompt.ts'
 import { VALIDATION_VERSION, validateDraft } from './validate.ts'
 
@@ -65,6 +65,9 @@ export function editableEncounterFor(db: Db) {
     return e
   }
 }
+
+/** The shape of a record id: only that is looked up, whatever a stored manifest holds. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const settingsOf = (s: AppSettings) => ({ maxContextChars: s.ai.reasoning.maxContextChars, maxEncounters: s.mana.maxEncounters, observationDays: s.mana.observationDays, settings: { safety: s.safety, outdatedDays: s.mana.outdatedDays } })
 
@@ -131,7 +134,9 @@ export class ConsultationService {
     const inserted = ids.length ? new Set((await db.select({ id: noteInsertions.subjectId }).from(noteInsertions).where(and(eq(noteInsertions.subjectType, 'consultation_item'), inArray(noteInsertions.subjectId, ids)))).map((r) => r.id)) : new Set<string>()
     const manifest = row.contextManifest as ManifestEntry[]
     const finished = row.status === 'ready' || row.status === 'partial'
-    const diff = finished && inputs ? diffManifests(manifest, inputs.manifest) : null
+    const raw = finished && inputs ? diffManifests(manifest, inputs.manifest) : null
+    // A device's newer readings taking the place of its older ones do not by themselves make a draft stale, or mark a source as changed (see withoutDeviceStream).
+    const diff = raw && inputs ? withoutDeviceStream(raw, manifest, await this.deviceReadings(row, inputs, raw)) : null
     const changed = new Set([...(diff?.changed ?? []), ...(diff?.removed ?? [])].map((m) => m.key))
     const removed = new Set((diff?.removed ?? []).map((m) => m.key))
     const summary = diff ? staleSummary(diff) : null
@@ -189,6 +194,7 @@ export class ConsultationService {
       omittedCount: row.omittedCount,
       requestedByName: requester?.name ?? null,
       createdAt: row.createdAt.toISOString(),
+      startedAt: row.startedAt?.toISOString() ?? null,
       completedAt: row.completedAt?.toISOString() ?? null,
       latencyMs: row.latencyMs,
       errorCode: row.errorCode,
@@ -198,6 +204,27 @@ export class ConsultationService {
       recordCheck: row.recordCheck as RecordCheck,
       items,
     }
+  }
+
+  /**
+   * The device readings among the sources a draft was made from and those there are now, for the stale rule: those in the record now are read from it;
+   * those the draft had that are no longer among the newest are looked up, and count only while they are still this patient's device readings,
+   * unverified and not entered in error.
+   */
+  private async deviceReadings(row: DraftRow, inputs: ConsultationInputs, diff: ManifestDiff): Promise<Map<string, DeviceReading>> {
+    const readings = deviceReadingsIn(inputs.record)
+    const gone = new Map<string, string>()
+    for (const m of diff.removed) {
+      const id = m.sourceType === 'observation' ? idInKey(m.key) : null
+      if (id && UUID.test(id)) gone.set(id, m.key)
+    }
+    if (!gone.size) return readings
+    const rows = await this.d.db
+      .select({ id: observations.id, kind: observations.kind, visitId: observations.visitId, measuredAt: observations.measuredAt })
+      .from(observations)
+      .where(and(inArray(observations.id, [...gone.keys()]), eq(observations.patientId, row.patientId), eq(observations.source, 'device'), eq(observations.validationStatus, 'device_unverified'), eq(observations.enteredInError, false)))
+    for (const o of rows) readings.set(gone.get(o.id)!, { stream: deviceStream(o.kind, o.visitId), measuredAt: o.measuredAt.getTime() })
+    return readings
   }
 
   /** One draft by id, without re-reading the record (the screen polls this while a draft is being made). */

@@ -1,4 +1,5 @@
 import { CONSULT_SECTION_KEYS, type ConsultSection, type DraftValidation, FACT_SECTIONS, type ItemFlag, SUGGESTION_SECTIONS, type SupportState } from '@adaxai/contracts'
+import { dayOf } from '../mana/assistant/format.ts'
 import type { ConsultOutput, FactStatement, SuggestionStatement } from './prompt.ts'
 import type { ConsultationInputs, SourceItem } from './inputs.ts'
 
@@ -11,7 +12,11 @@ import type { ConsultationInputs, SourceItem } from './inputs.ts'
  * statement reaching the doctor; they do not make a statement true.
  */
 
-export const VALIDATION_VERSION = 'consult-checks-v1'
+/**
+ * v2: the age of a cited item is read on the facility's calendar (an item measured just after local midnight is today's, not yesterday's), and the digit of a
+ * symbol such as SpO₂ is not a figure, however it is written.
+ */
+export const VALIDATION_VERSION = 'consult-checks-v2'
 
 export interface ValidatedItem {
   section: ConsultSection
@@ -56,11 +61,44 @@ const REF_MARKS = /[[(]\s*[A-Z]{1,2}\d{1,3}(?:\s*[,;/]\s*[A-Z]{1,2}\d{1,3})*\s*[
  */
 export function cleanText(raw: string, knownRefs?: ReadonlySet<string>): string {
   // Compatibility forms become plain ones (fullwidth digits and letters), and characters that only format text (zero-width spaces, soft hyphens, the
-  // marks that reverse the direction of text) are taken out, so that none of them can hide a word or a figure from the checks that follow.
-  const plain = asciiDigits(raw.normalize('NFKC')).replace(/\p{Cf}/gu, '')
+  // marks that reverse the direction of text) are taken out, so that none of them can hide a word or a figure from the checks that follow. The digit of
+  // a symbol or a unit (the ₂ of SpO₂) stays as it is written: see SYMBOL_SCRIPT_DIGIT.
+  const plain = asciiDigits(plainForms(raw)).replace(/\p{Cf}/gu, '')
   const withoutMarks = plain.replace(CONTROL, ' ').replace(TAGS, ' ').replace(REF_MARKS, (m) => (m.startsWith('[') || !knownRefs || (m.match(/[A-Z]{1,2}\d{1,3}/g) ?? []).every((id) => knownRefs.has(id)) ? ' ' : m))
   return withoutMarks.replace(/\s+/g, ' ').replace(/\s+([,.;:])/g, '$1').trim()
 }
+
+/** Superscript and subscript digits: ⁰ ¹ ² ³ ⁴ to ⁹, and ₀ to ₉. */
+const SCRIPT_DIGITS = '\\u00b2\\u00b3\\u00b9\\u2070\\u2074-\\u2079\\u2080-\\u2089'
+/**
+ * A superscript or subscript digit that is part of a symbol or a unit, not a figure: ONE such digit right after a letter, with no digit after it (the ₂
+ * of SpO₂, CO₂ or H₂O, the ² of m²). The record writes these as they are, and its figures are read without them; made plain, the model's "SpO₂ 94 %"
+ * would claim a "2" that no record holds. A run of them, or one after a digit or on its own ("³⁹"), is made plain like any other digit and checked.
+ */
+const SYMBOL_SCRIPT_DIGIT = new RegExp(`(?<=\\p{L})[${SCRIPT_DIGITS}](?!\\p{N})`, 'gu')
+
+/** Compatibility forms made plain (NFKC), except the digit of a symbol or a unit, which is kept as it is written (see SYMBOL_SCRIPT_DIGIT). */
+function plainForms(s: string): string {
+  let out = ''
+  let at = 0
+  for (const m of s.matchAll(SYMBOL_SCRIPT_DIGIT)) {
+    out += s.slice(at, m.index).normalize('NFKC') + m[0]
+    at = m.index + m[0].length
+  }
+  return out + s.slice(at).normalize('NFKC')
+}
+
+/**
+ * The oxygen and carbon dioxide symbols written with a plain 2 (SpO2, SaO2, PaO2, FiO2, PaCO2, EtCO2, PCO2, CO2, O2), as a model or a note may write
+ * them: the 2 is part of the name, not a figure. With a subscript ₂ it is no figure already (only 0 to 9 are read as figures).
+ */
+const GAS_SYMBOL = /\b((?:Sp|Sa|Pa|Fi|Et|P)?C?O)2(?![0-9])/gi
+/**
+ * A text without the digit of those symbols ("SpO2 94 %" becomes "SpO 94 %"). The consultation checks read figures from this, on the record's side and
+ * on the statement's alike: a statement that writes SpO2 against a record that writes SpO₂ (or the other way round) claims only the figures it gives,
+ * and no record gains a "2" for a made-up figure to rest on.
+ */
+export const withoutSymbolDigits = (text: string): string => text.replace(GAS_SYMBOL, '$1')
 
 /** The first digit (zero) of the decimal digit blocks of the scripts this product is likely to meet; a digit of any other block is left as it is and refused. */
 const DIGIT_ZEROS = [0x0660, 0x06f0, 0x07c0, 0x0966, 0x09e6, 0x0a66, 0x0ae6, 0x0b66, 0x0be6, 0x0c66, 0x0ce6, 0x0d66, 0x0de6, 0x0e50, 0x0ed0, 0x0f20, 0x1040, 0x1090, 0x17e0, 0x1810, 0xa620, 0xa8d0, 0xa900, 0xaa50, 0xabf0, 0xff10]
@@ -272,7 +310,8 @@ const ABSENCE_CONCEPTS: [RegExp, RegExp][] = [
   [/\bweight\b/i, /\bweight\b|\bkg\b/i],
   [/\bblood pressure\b|\bbp\b/i, /\bblood pressure\b|\bmmhg\b/i],
   [/\bheart rate\b|\bpulse\b/i, /\bheart rate\b|\bbpm\b|\bpulse\b/i],
-  [/\boxygen\b|\bspo2\b|\bsaturation\b/i, /\boxygen\b|\bsaturation\b|\bspo2\b/i],
+  // SpO2 with a plain or a subscript 2: the record writes SpO₂, and a statement keeps the ₂ it was written with (see SYMBOL_SCRIPT_DIGIT).
+  [/\boxygen\b|\bspo[2₂](?![0-9])|\bsaturation\b/i, /\boxygen\b|\bsaturation\b|\bspo[2₂](?![0-9])/i],
   [/\ballerg/i, /\ballerg/i],
   [/\bmedicines?\b|\bmedications?\b|\bdrugs?\b/i, /\bmedicine\b|\bmedication\b|\btablet\b|\bcapsule\b|\binhaler\b/i],
   [/\bvital signs?\b/i, /\btemperature\b|\bblood pressure\b|\bheart rate\b|\boxygen\b|\brespiratory rate\b/i],
@@ -336,28 +375,50 @@ const RELATIVE = /\b(?:father|mother|brother|sister|sibling|siblings|parent|pare
 const NOW_CUE = /\b(?:today|currently|now|at present|this visit|right now)\b/i
 const itemInactive = (i: SourceItem) => /^(?:inactive|stopped|resolved|ended|discontinued)\b/i.test(i.status) || /\b(?:stopped|discontinued|resolved|ended)\b/i.test(i.text)
 
+/**
+ * The day an item is from on the facility's calendar, the calendar `inputs.today` is a day of: a date without a time is a day already; a time (stored in
+ * UTC) is read in the facility's time zone. Its first ten characters are the UTC day, which in India is the day before until 05:30.
+ */
+const localDay = (date: string, timeZone: string): string => (date.length === 10 ? date : dayOf(new Date(date), timeZone))
+/** Whole calendar days from one day to a later one (as the record rules count the age of an item). */
+const daysFrom = (from: string, to: string): number => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000)
+
 export function validateDraft(out: ConsultOutput, inputs: ConsultationInputs, opts: ValidateOptions): ValidationResult {
   const reasons: Record<string, number> = {}
   const byRef = new Map(inputs.items.map((i) => [i.ref, i]))
+  const known = new Set(inputs.items.map((i) => i.ref))
+  // Figures are read without the digit of a symbol such as SpO2, on both sides (see withoutSymbolDigits).
+  const recordFigures = (t: string) => figureTokens(withoutSymbolDigits(t))
+  const claimedFigures = (t: string) => figuresIn(withoutSymbolDigits(t), inputs.patientLine, known)
   const allText = inputs.items.map(sourceHaystack).join('\n')
-  const allNumbers = new Set(figureTokens(allText))
+  const allNumbers = new Set(recordFigures(allText))
   const allWords = new Set(allText.toLowerCase().match(/[a-z][a-z-]+/g) ?? [])
   const activeAllergy = inputs.items.some((i) => i.sourceType === 'allergy' && i.status === 'active')
   const conflictFindings = inputs.recordCheck.conflicts
   const conflictKeys = new Set(conflictFindings.flatMap((c) => c.keys))
-  const known = new Set(inputs.items.map((i) => i.ref))
   const cands = candidatesOf(out)
   const kept: ValidatedItem[] = []
   const seen = new Set<string>()
   let flagged = 0
-  const today = Date.parse(`${inputs.today}T00:00:00Z`)
+  // The day of an item, on the facility's calendar (see localDay).
+  const dayOfItem = (i: SourceItem): string | null => (i.date ? localDay(i.date, inputs.timeZone) : null)
+  /** From a day before today. */
+  const beforeToday = (i: SourceItem): boolean => {
+    const day = dayOfItem(i)
+    return day !== null && day < inputs.today
+  }
+  /** Older than the configured age, in whole calendar days. */
+  const olderThanAllowed = (i: SourceItem): boolean => {
+    const day = dayOfItem(i)
+    return day !== null && daysFrom(day, inputs.today) > opts.outdatedDays
+  }
 
   /** A reason or an uncertainty is text the doctor reads too: it is held to what a suggestion is held to, and dropped (not the statement) if it breaks a rule. */
   const vetField = (field: string): boolean => {
     if (!field || URLS.test(field) || hasUnreadableDigits(field)) return false
     if (hasDoseOrRegimen(field, true) || ASSERTIVE.test(field)) return false
     if (drugLikeWords(field).some((d) => !allWords.has(d))) return false
-    return figuresIn(field, inputs.patientLine, known).every((n) => allNumbers.has(n))
+    return claimedFigures(field).every((n) => allNumbers.has(n))
   }
 
   for (const c of cands) {
@@ -425,16 +486,16 @@ export function validateDraft(out: ConsultOutput, inputs: ConsultationInputs, op
 
     // Figures: each number (and each date) must be in an item the statement cites; failing that, in an item the model was shown (which is then added);
     // failing that, it is not in the record and the statement does not stay.
-    const wanted = figuresIn(text, inputs.patientLine, known)
+    const wanted = claimedFigures(text)
     if (wanted.length) {
-      const citedNumbers = new Set(figureTokens(cited.map(sourceHaystack).join('\n')))
+      const citedNumbers = new Set(recordFigures(cited.map(sourceHaystack).join('\n')))
       const missing = wanted.filter((n) => !citedNumbers.has(n))
       if (missing.some((n) => !allNumbers.has(n))) {
         bump(reasons, 'figure_not_in_record')
         continue
       }
       if (missing.length) {
-        const extra = inputs.items.filter((i) => !cited.includes(i) && missing.some((n) => figureTokens(sourceHaystack(i)).includes(n)))
+        const extra = inputs.items.filter((i) => !cited.includes(i) && missing.some((n) => recordFigures(sourceHaystack(i)).includes(n)))
         cited = [...cited, ...extra].slice(0, 8)
         bump(reasons, 'source_added')
         flags.add('figure_not_in_source')
@@ -504,7 +565,7 @@ export function validateDraft(out: ConsultOutput, inputs: ConsultationInputs, op
       if (!summary && cited.some(itemInactive) && !PAST_CUE.test(text)) flags.add('record_status_differs')
       if (!summary && cited.some((i) => RELATIVE.test(`${i.field} ${i.text}`)) && !RELATIVE.test(text)) flags.add('record_subject_differs')
       // ("currently taking" is what a medicine list says: its age is the 180-day rule's business, not this one's.)
-      if (['observations', 'symptoms', 'presenting_problem'].includes(c.section) && NOW_CUE.test(text) && cited.every((i) => i.date && i.date.slice(0, 10) < inputs.today)) flags.add('record_outdated')
+      if (['observations', 'symptoms', 'presenting_problem'].includes(c.section) && NOW_CUE.test(text) && cited.every(beforeToday)) flags.add('record_outdated')
     }
 
     // Wording that states a diagnosis as a fact, where the cited items do not.
@@ -544,7 +605,7 @@ export function validateDraft(out: ConsultOutput, inputs: ConsultationInputs, op
     } else if (c.section === 'uncertainties' && askedConflict) {
       support = 'inferred'
       flags.add('conflict_unverified')
-    } else if (['observations', 'medications', 'symptoms'].includes(c.section) && cited.length && cited.every((i) => i.date && today - Date.parse(i.date.length === 10 ? `${i.date}T00:00:00Z` : i.date) > opts.outdatedDays * 86_400_000)) {
+    } else if (['observations', 'medications', 'symptoms'].includes(c.section) && cited.length && cited.every(olderThanAllowed)) {
       support = 'outdated'
       flags.add('record_outdated')
     } else if (absenceClaim) support = 'not_found'

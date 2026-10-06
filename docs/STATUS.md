@@ -22,6 +22,46 @@ What the Doctor App actually does today, and the plan for its first complete con
 | D1. The doctor's consultation as one workspace: V1 to V5 for one patient and one encounter, a tablet held sideways first, one way for AI text into the note | the commit titled "D1 integrated doctor consultation" (see `git log`) |
 | V6. Thermal imaging in the consultation: a camera boundary for a FLIR ONE on a tablet (native bridge written, not compiled), captures with their provenance, a simulator, measurements, a summary the doctor reviews | the commit titled "V6 real FLIR thermal capture and analysis" (see `git log`) |
 | D2. The multimodal consultation: one context read from the records, an overview with what waits, disagreements found by fixed rules and the evidence with how far it can be trusted, a summary composed by fixed rules, Mana's consultation questions | the commit titled "D2 multimodal doctor consultation" (see `git log`) |
+| Doctor HERO redesign, **partial (stopped by the owner)**: five input modules, Analyze with Mana, the result and the prescription lane, the pediatric shock research view; three V3 check fixes | the commit titled "Doctor HERO redesign (partial, stopped early) and V3 check fixes" (see `git log`) |
+
+## Doctor HERO redesign (partial: stopped by the owner) and three V3 check fixes
+
+**Basis:** the owner's brief "Doctor HERO — premium clinical workstation UI/UX redesign + thermal imaging + pediatric shock research integration". Decisions: [ADR 0022](adr/0022-doctor-hero-five-inputs-and-mana.md). **The owner stopped the work for time after the first polish round; it is committed as it stood after the essential checks below, NOT through the brief's full final gate** (no independent adversarial review of this diff, no full end-to-end suite run, design documentation not rewritten). No hardware was used. V7 and later were not started.
+
+### What was built
+
+- **Layout** (doctor's consultation editor only; the nurse's view and the signed record are unchanged): a workflow strip (*Inputs → Mana analysis → Your review → Note & prescription → Sign*, each step's real state, replacing D1's "Go to" bar); on the left the **five input modules** (*Conversation, History, Health band & vitals, Stethoscope, Thermal imaging*), each a compact summary with its existing full panel kept mounted underneath; **Analyze with Mana** at the foot of the rail; on the right the Mana area (analysis, the local model's draft as the Mana result, the D2 fixed-rule overview with the safety rules, Ask Mana closed until opened) and the record (note, diagnosis, prescription with "Before you prescribe"); side by side only on a wide screen (1920). The app's navigation is a drawer on the consultation. Clinical photographs and the older assistant are under "More tools".
+- **Analyze with Mana:** saves the note, then runs the fixed safety rules and the local model's draft (V3) together; shows what each input contributes (stethoscope recordings are never analysed; simulated values never read), the real steps (saving, rules, *waiting for the local model* / *writing*), an elapsed clock, and afterwards the server's "took", "waited" and "writing and checks" (`ConsultDraft.startedAt` added).
+- **Prescription:** no AI prescription rows exist or were added. "Before you prescribe" shows the draft's medication considerations as **AI DRAFT** text (to the note's Plan only, by the doctor), "No AI prescription suggestions", and the fixed-rule allergy name check; "Print preview" of the unsigned draft.
+- **Thermal and PEDIATRIC SHOCK — RESEARCH MODE:** module 5 with a thumbnail of the newest image, its source, approval and range; a research sheet with the pipeline's real stage statuses, the feature set of approved non-simulated images, "Research model unavailable", and the **published research** (Sudhi et al., *Engineered Science* 2025, 33, 1367, doi:10.30919/es1367, a review article; figures attributed to the primary studies Nagori et al. 2019 and Vats et al. 2022, checked against those papers), labelled "PUBLISHED RESEARCH — NOT ADAX-AI VALIDATION". No score, threshold, probability or prediction.
+- **V3 fixes** (`consult-checks-v2`): local-day date comparison (00:00–05:30 IST defect, and the 180-day rule); SpO₂'s subscript no longer counted as a figure; newer readings from a streaming device no longer make a draft STALE (staff readings, withdrawn readings and a device's first reading of a new kind still do).
+- **Clinician wording:** the speech service's setup instructions ("Start it with npm run …") are no longer shown to clinicians.
+
+### Measured Mana latency (real local model, not a stand-in)
+
+| Run | Click to result (browser) | Server (latency) | Waited for the model | Writing and checks |
+| --- | --- | --- | --- | --- |
+| 1 | 36.9 s | 36.2 s | 0.0 s | 36.2 s |
+| 2 | 39.8 s | 39.0 s | 0.0 s | 39.0 s |
+| 3 | 43.0 s | 40.2 s | 0.0 s | 40.2 s |
+
+Development stack on this machine: llama.cpp b11379 with CUDA, Qwen3.5-4B Q4_K_M, a synthetic consultation with every input (a streaming band, a recording, an approved imported thermal image). The model read about 1,700–1,800 prompt tokens at about 1,300 tokens/s and wrote about 1,500–1,700 tokens at **43.7 tokens/s**: the writing is the time. Two more runs by the visual reviewer took 37 s and 40 s. **The owner's target of about 10 seconds is NOT met** (average about 40 s, slowest 43 s). Reaching it needs a shorter first answer (a summary-first step with its own prompt and checks) or a faster model: an owner decision. The browser test stand-in (mock model, 0.4 s) takes about 3.5 s click to result, dominated by the 3-second draft poll; that is not a product timing.
+
+### Verification done (essential only, at the owner's request)
+
+- Typecheck, lint, web build: clean. **Web unit tests 151 passed.** API: `consult*` and `consultation-context` tests **149 passed** (V3 fixes with `consult-checks-v2`).
+- Browser (Chromium, desktop project, the suite's stand-ins): ten consultation specs (doctor-hero, hero-journey, mana-analyze, thermal-research, multimodal-consultation, workspace, capture, history, consult, devices-live; 55 tests). **Every test passed in its latest run.** Their history in this last stage: on the tree left by the stopped polish round, 8 of 21 failed, all from that round's unfinished edits (the draft's status badge moved out of its region, the rail's patient line removed, a compact header hiding the status chips, the AI labels hidden before a draft, the record check moved) and one test reading the speech service's setup instruction, now hidden on purpose; each was fixed (the compact header removed, the rest restored) and the test updated with its reason. Then 51 of 55 passed; of the 4, two were this machine's network stalls (the queue page never loaded) and two were the AI labels and the record check above, fixed; the five specs concerned then passed 17 of 17. **The full end-to-end suite was not run.**
+- Screenshots of the development stack at 1366×768, 1440×900, 1920×1080, 1180×820, 1024×768, 768×1024 and 390×844 (two passes): no horizontal overflow at any size; inspected by me and by one visual reviewer.
+
+### Known issues and limitations
+
+- **At 1366×768 only two of the five modules are fully visible when the consultation opens** (three or four once the page scrolls and the rail sticks): the consultation header (D1's, kept so that the vital-signs alert and the status chips stay on screen) and the strip take the top. A compact header was tried in the stopped second polish round and **removed**, because it hid the out-of-range vital-signs alert and the status chips while scrolling.
+- The thermal thumbnail occasionally appears only after about 17 s (the matrix fetch is retried); at 56px the iron palette reads dark.
+- Opening "What Mana reads" under the Analyze button enlarges the rail's footer and squeezes the module list at 768px-high screens.
+- The 10-second target is not met (above).
+- Not done: the independent adversarial review of this diff, the full end-to-end suite (only the consultation specs listed above), a rewrite of DESIGN.md (ADR 0022 records the decisions), a tablet or screen reader by hand, any hardware.
+- V3, left as is: the dates shown *to the model* are still UTC days; an exponent such as "10⁹/L" is still removed as a figure (fails safe); Mana's checks still count the "2" of "SpO2".
+- Product behaviour to note: with a band streaming, the device values change between analyses (the draft is no longer marked STALE for that alone).
 
 ## D2: the multimodal consultation — one context read from the records, an overview, disagreements found by rules, a summary made by rules, and Mana's consultation questions
 

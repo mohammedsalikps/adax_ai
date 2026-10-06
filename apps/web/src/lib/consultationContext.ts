@@ -1,8 +1,9 @@
-import { ConsultationContext, type ContextConflict, EVIDENCE_TRUST, type EvidenceItem, type EvidenceTrust, type PatientDeviceReadings, PENDING_KINDS, type PendingReview, type Role } from '@adaxai/contracts'
+import { ConsultationContext, type ContextConflict, EVIDENCE_TRUST, type EvidenceItem, type EvidenceKind, type EvidenceTrust, type PatientDeviceReadings, PENDING_KINDS, type PendingReview, type Role } from '@adaxai/contracts'
 import { useQuery } from '@tanstack/react-query'
 import { ZodError } from 'zod'
 import { ApiError, api } from './api.ts'
 import { ageText, deviceReadingsKey, fmtClock, fmtWhen, type ReceivedDeviceReadings } from './devices.ts'
+import type { PartId } from './workspace.ts'
 
 /*
  * D2: the consultation's context, as the Overview reads it. One read (GET /api/encounters/:id/context), built by the server from the records
@@ -101,19 +102,36 @@ export function trustTone(trust: EvidenceTrust): TrustTone {
 /** The trust in the words the screen uses (the contract's). */
 export const trustLabel = (trust: EvidenceTrust): string => EVIDENCE_TRUST[trust] ?? trust
 
-/** The parts of the consultation an item can lead to, named as the bar at the top of the tools column names them. */
+/** The parts of the consultation an item can lead to, as the page names them. The local model's draft is shown as the Mana result. */
 export const TARGET_LABEL: Record<EvidenceTarget, string> = {
   history: 'History',
   conversation: 'Conversation',
-  draft: 'AI draft',
+  draft: 'Mana result',
   mana: 'Mana',
   devices: 'Devices',
   thermal: 'Thermal',
   note: 'Note',
 }
 
-/** The element a target is on the consultation page: a part of the tools column (`tools-<id>`) or the note. */
-export const targetElementId = (target: EvidenceTarget): string => (target === 'note' ? 'consultation-note' : `tools-${target}`)
+/** Where on the page each target is (the server's targets are unchanged; the page they lead to was rearranged). */
+const TARGET_PART: Record<EvidenceTarget, PartId> = {
+  history: 'tools-history',
+  conversation: 'tools-conversation',
+  draft: 'mana-result',
+  mana: 'mana-chat',
+  devices: 'tools-devices',
+  thermal: 'tools-thermal',
+  note: 'consultation-note',
+}
+
+/**
+ * The element a target is on the consultation page: an input module of the rail (`tools-<id>`), the Mana result, Ask Mana, or the note. A
+ * stethoscope recording leads to its own module, whatever target the server gave it (it was under the devices before the stethoscope had one).
+ */
+export const targetElementId = (target: EvidenceTarget, kind?: EvidenceKind): PartId => (kind === 'stethoscope' ? 'tools-stethoscope' : TARGET_PART[target])
+
+/** The name of the part an item leads to, as `targetElementId` decides it: a stethoscope recording's is the Stethoscope module. */
+export const targetLabel = (target: EvidenceTarget, kind?: EvidenceKind): string => (kind === 'stethoscope' ? 'Stethoscope' : TARGET_LABEL[target])
 
 /** What waits for the doctor, one line per part where it is reviewed. */
 export interface PendingGroup {

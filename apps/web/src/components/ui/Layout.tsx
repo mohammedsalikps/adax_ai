@@ -1,5 +1,13 @@
 import type { LucideIcon } from 'lucide-react'
-import { type ReactNode, useId } from 'react'
+import { createContext, type ReactNode, useContext, useId } from 'react'
+
+/**
+ * How a Card draws its frame where it stands. `card` (everywhere by default): a bordered, raised card. `flat`: inside something that is already
+ * a card (a consultation module's open body), the Card keeps its heading, its actions and its region, but draws no box of its own: a line above
+ * it separates it from what comes before, so a card is never drawn inside a card. Its heading is then an h3 (the module has the h2). A dialog
+ * opened from inside sets it back to `card`.
+ */
+export const CardFrameContext = createContext<'card' | 'flat'>('card')
 
 export function PageHeader({ title, description, actions }: { title: ReactNode; description?: ReactNode; actions?: ReactNode }) {
   return (
@@ -13,22 +21,43 @@ export function PageHeader({ title, description, actions }: { title: ReactNode; 
   )
 }
 
-/** A titled section (the design's SectionCard); its heading names the region for assistive technology. */
-export function Card({ title, actions, children, className = '', bodyClassName = 'p-5' }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string; bodyClassName?: string }) {
+/**
+ * A titled section (the design's SectionCard); its heading names the region for assistive technology. `level` 3 makes the heading an h3,
+ * for a card inside an area that has its own h2 (a full panel inside a consultation module); it looks the same.
+ */
+export function Card({ title, actions, children, className = '', bodyClassName, level = 2 }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string; bodyClassName?: string; level?: 2 | 3 }) {
   const headingId = useId()
+  const flat = useContext(CardFrameContext) === 'flat'
+  const Heading = level === 3 || flat ? 'h3' : 'h2'
+  if (flat)
+    return (
+      <section aria-labelledby={title ? headingId : undefined} className={`min-w-0 border-t border-line ${className}`}>
+        {(title || actions) && (
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3 pb-1">
+            {title && (
+              <Heading id={headingId} className="text-sm font-semibold">
+                {title}
+              </Heading>
+            )}
+            {actions}
+          </div>
+        )}
+        <div className={bodyClassName ?? 'px-4 pt-2 pb-4'}>{children}</div>
+      </section>
+    )
   return (
     <section aria-labelledby={title ? headingId : undefined} className={`min-w-0 rounded-xl border border-line bg-surface shadow-card ${className}`}>
       {(title || actions) && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-5 py-3.5">
           {title && (
-            <h2 id={headingId} className="text-base font-semibold">
+            <Heading id={headingId} className="text-base font-semibold">
               {title}
-            </h2>
+            </Heading>
           )}
           {actions}
         </div>
       )}
-      <div className={bodyClassName}>{children}</div>
+      <div className={bodyClassName ?? 'p-5'}>{children}</div>
     </section>
   )
 }

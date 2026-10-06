@@ -5,7 +5,7 @@ import { type PointerEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { api, errorMessage } from '../../lib/api.ts'
 import { useMe } from '../../lib/auth.tsx'
 import { fmtDateTime } from '../../lib/format.ts'
-import { boxPolygon, countNonFinite, fmtC, fmtReading, noReadingCss, noReadingShade, type PaletteName, paletteCss, paletteLut, polygonBounds, type RoiGeom, type RoiPoint, roiPreviewStats, thermalKey, useMatrix } from '../../lib/thermal.ts'
+import { boxPolygon, cacheThermalCapture, countNonFinite, fmtC, fmtReading, noReadingCss, noReadingShade, type PaletteName, paletteCss, paletteLut, polygonBounds, type RoiGeom, type RoiPoint, roiPreviewStats, useMatrix } from '../../lib/thermal.ts'
 import { Button } from '../ui/Button.tsx'
 import { Alert, Badge, Spinner } from '../ui/Feedback.tsx'
 import { SelectField, TextAreaField, TextField } from '../ui/Form.tsx'
@@ -492,7 +492,8 @@ export function ThermalViewer({
         },
       }),
     onSuccess: (d) => {
-      qc.setQueryData(thermalKey(d.id), d)
+      // The patient's list of images is read again too: the consultation's thermal module, its research view and what Analyze reads show its regions.
+      cacheThermalCapture(qc, d)
       setRois(fromCapture(d))
       setDirty(false)
       toast('success', 'Regions saved; statistics computed')
@@ -751,7 +752,7 @@ export function ThermalViewer({
       {showModelStatus && <ThermalModelStatus />}
       {capture.status === 'approved' && <ThermalLabelsCard capture={capture} />}
 
-      {editable && me?.role === 'doctor' && !dirty && <ReviewPanel c={capture} onDone={(d) => (qc.setQueryData(thermalKey(d.id), d), setRois(fromCapture(d)))} />}
+      {editable && me?.role === 'doctor' && !dirty && <ReviewPanel c={capture} onDone={(d) => (cacheThermalCapture(qc, d), setRois(fromCapture(d)))} />}
       {editable && me?.role === 'doctor' && dirty && <Alert tone="info">Save the regions before reviewing.</Alert>}
     </div>
   )

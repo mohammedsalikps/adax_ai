@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { type APIRequestContext, expect, type Locator, request as pwRequest, test } from '@playwright/test'
-import { DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, signIn, uniq } from './support.ts'
+import { analyzeButton, DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, openModule, signIn, stepTo, uniq } from './support.ts'
 
 /*
  * D2 in a real browser, against the real API and database: one consultation in which every modality is used, and its Overview (the consultation
@@ -103,19 +103,31 @@ test('the multimodal consultation: every modality in one consultation, its overv
   test.skip(!fs.existsSync(path.join(SAMPLES, 'flir_example.jpg')), 'thermal sample images not fetched (npm run setup)')
   test.setTimeout(600_000)
   const tools = page.getByTestId('consultation-tools')
-  const goTo = (name: string) => tools.getByRole('navigation', { name: 'Go to' }).getByRole('button', { name, exact: true }).click()
   const overview = page.getByTestId('consultation-overview')
   const review = overview.getByTestId('overview-review')
+  /**
+   * The overview's evidence, what is missing and the summary are behind "Show evidence" in the Mana area (Doctor HERO: the overview shows
+   * what waits for review and the disagreements first). Opened once; it stays open.
+   */
+  const showEvidence = async () => {
+    const fold = overview.getByTestId('overview-fold')
+    if ((await fold.getAttribute('data-open')) !== 'true') await overview.getByRole('button', { name: 'Show evidence' }).click()
+    await expect(fold).toHaveAttribute('data-open', 'true')
+  }
   /** The overview's evidence rows of one kind (every row listed: "Show all" is opened once and stays open). */
   const rows = async (kind: string): Promise<Locator> => {
+    await showEvidence()
     const all = overview.getByTestId('evidence-show-all')
     if ((await all.count()) && (await all.getAttribute('aria-expanded')) === 'false') await all.click()
     return overview.locator(`[data-testid="evidence-item"][data-kind="${kind}"]`)
   }
+  /** The overview is in the Mana area, on the right (it was the first part of the tools column, reached by the "Go to" bar, before Doctor HERO). */
+  const toOverview = () => overview.scrollIntoViewIfNeeded()
   /** The overview reads the context again every 15 s (and after an insertion): a step waits for its next read. */
   const READ = { timeout: 25_000 }
   const summarySection = (key: string) => overview.getByTestId('overview-summary').locator(`[data-testid="summary-section"][data-key="${key}"]`)
   const openSummary = async () => {
+    await showEvidence()
     const d = overview.getByTestId('overview-summary')
     if ((await d.getAttribute('open')) === null) await d.locator('summary').click()
   }
@@ -139,10 +151,17 @@ test('the multimodal consultation: every modality in one consultation, its overv
   const encounterId = /\/encounters\/([0-9a-f-]{36})/.exec(page.url())![1]!
   const note = page.getByRole('region', { name: 'Consultation note' })
 
-  // ---- 2. THE OVERVIEW, first in the tools column: the staff's vital signs (entered by staff), nothing waiting, and what is missing. ----
-  await expect(tools.getByRole('navigation', { name: 'Go to' }).getByRole('button').first()).toHaveText('Overview')
-  await goTo('Overview')
-  await expect(page.locator('#tools-overview')).toBeFocused()
+  // ---- 2. THE OVERVIEW, in the Mana area with the fixed rules' checks (Doctor HERO; it was first in the tools column before, and the inputs
+  // rail now starts with the conversation): the staff's vital signs (entered by staff), nothing waiting, and what is missing. ----
+  const modules = tools.locator('[role="group"][data-testid^="module-"]')
+  await expect(modules).toHaveCount(5)
+  expect(await modules.evaluateAll((els) => els.map((el) => el.getAttribute('data-testid')))).toEqual(['module-conversation', 'module-history', 'module-vitals', 'module-stethoscope', 'module-thermal'])
+  await expect(page.locator('#mana-result').getByTestId('consultation-overview')).toBeVisible()
+  // The workflow strip's "Your review" leads to what waits for the doctor: with no draft yet, the overview's "Needs your review".
+  await expect(overview.getByRole('heading', { name: 'Consultation overview' })).toBeVisible()
+  await expect(review).toContainText('Nothing is waiting for your review.')
+  await stepTo(page, 'Your review')
+  await expect(review.locator('[data-part-focus="mana-review"]')).toBeFocused()
   await expect(overview.getByRole('heading', { name: 'Consultation overview' })).toBeVisible()
   await expect(overview).toContainText('Nothing here is a diagnosis or a recommendation.')
   await expect(review).toContainText('Nothing is waiting for your review.')
@@ -165,7 +184,7 @@ test('the multimodal consultation: every modality in one consultation, its overv
   await expectNoAxeViolations(page)
 
   // ---- 3. CONVERSATION: recorded from the synthetic microphone; the important points wait for review; the doctor confirms the allergy. ----
-  await goTo('Conversation')
+  await openModule(page, 'Conversation')
   const live = page.getByRole('region', { name: 'Live transcription' })
   await live.getByRole('button', { name: 'Start recording' }).click()
   await expect(live.getByTestId('recording-state')).toContainText(/00:0[3-9]/, { timeout: 15_000 })
@@ -176,13 +195,15 @@ test('the multimodal consultation: every modality in one consultation, its overv
   const drafts = points.getByRole('region', { name: 'Extracted drafts' })
   await expect(drafts.getByTestId('important-point').first()).toBeVisible({ timeout: 20_000 })
   // The overview: the conversation (said in the consultation), and the extracted points waiting, leading to the conversation.
-  await goTo('Overview')
+  await toOverview()
   await expect(await rows('transcript')).toHaveCount(1, READ)
   await expect((await rows('transcript')).first()).toHaveAttribute('data-trust', 'observed')
   const pendingPoints = review.locator('[data-testid="pending-review"][data-target="conversation"]')
   await expect(pendingPoints).toContainText('important point', READ)
   await pendingPoints.click()
   await expect(page.locator('#tools-conversation')).toBeFocused()
+  // It leads to module 1 in the inputs rail and opens it (it is open already here; a closed one is opened: lib/workspace.ts revealPart).
+  await expect(page.locator('#tools-conversation')).toHaveAttribute('data-open', 'true')
   const allergyPoint = drafts.locator('[data-testid="important-point"][data-category="allergy"]').first()
   await expect(allergyPoint).toContainText(/penicillin/i, { timeout: 20_000 })
   const tick = allergyPoint.getByLabel('I have checked this against the conversation and the record')
@@ -190,7 +211,7 @@ test('the multimodal consultation: every modality in one consultation, its overv
   await allergyPoint.getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(points.getByRole('region', { name: 'Confirmed by the doctor' }).getByTestId('important-point').first()).toHaveAttribute('data-state', 'confirmed')
   // The patient said an allergy while the record has no allergy status: the overview says the sources disagree, and resolves nothing.
-  await goTo('Overview')
+  await toOverview()
   const allergyConflict = review.locator('[data-testid="context-conflict"][data-kind="allergy_status"]')
   await expect(allergyConflict).toContainText('Sources disagree.', READ)
   await expect(allergyConflict).toContainText('Not resolved: each side is shown as it was recorded.')
@@ -204,10 +225,11 @@ test('the multimodal consultation: every modality in one consultation, its overv
   // The banner still shows no allergy: nothing was written to the record.
   await expect(page.getByTestId('patient-banner')).not.toContainText('Allergy: Penicillin')
 
-  // ---- 4. AI DRAFT: made by the (stand-in) local model, one statement accepted; the rest wait. ----
-  await goTo('AI draft')
+  // ---- 4. AI DRAFT: made by the (stand-in) local model, one statement accepted; the rest wait. Asked for with "Analyze with Mana" at the foot
+  // of the inputs rail (the result card has no button of its own since Doctor HERO); the strip's "Mana analysis" leads to the result. ----
+  await stepTo(page, 'Mana analysis')
   const consult = page.getByTestId('consult-panel')
-  await consult.getByRole('button', { name: 'Generate draft' }).click()
+  await analyzeButton(page).click()
   // With no allergy status on the record the draft is only partly available (V3 says so); either way its statements wait for the doctor.
   await expect(consult.getByTestId('consult-status')).toContainText(/READY FOR REVIEW|PARTIALLY AVAILABLE/, { timeout: 30_000 })
   const accepted = consult.locator('[data-testid="consult-statement"][data-section="presenting_problem"]').first()
@@ -215,7 +237,7 @@ test('the multimodal consultation: every modality in one consultation, its overv
   if (await ack.count()) await ack.check()
   await accepted.getByRole('button', { name: 'Accept' }).click()
   await expect(accepted).toHaveAttribute('data-decision', 'accepted')
-  await goTo('Overview')
+  await toOverview()
   const draftRow = (await rows('ai_draft')).first()
   await expect(draftRow).toHaveAttribute('data-trust', 'model_output', READ)
   await expect(draftRow).toContainText('AI output, to review')
@@ -230,7 +252,8 @@ test('the multimodal consultation: every modality in one consultation, its overv
   const admin = await staff(baseURL!, 'admin')
   const band = await register(admin, baseURL!, 'gateway_api', `Band under test ${uniq()}`)
   const sim = await register(admin, baseURL!, 'simulator', `Simulator band ${uniq()}`)
-  await goTo('Devices')
+  // Module 3 of the inputs rail ("Health band & vitals"; the "Go to" bar's "Devices" before Doctor HERO).
+  await openModule(page, 'Vitals')
   const card = page.getByTestId('device-readings')
   for (const label of [band.label, sim.label]) {
     await card.getByRole('button', { name: /^Attach (a|another) device$/ }).click()
@@ -245,7 +268,7 @@ test('the multimodal consultation: every modality in one consultation, its overv
   every(2000, () => sim.send([{ kind: 'heart_rate', value: 131 }]))
   await expect(card.locator('[data-testid="attached-device"][data-simulated="false"]')).toHaveAttribute('data-state', 'live', { timeout: 20_000 })
   await expect(card.locator('[data-testid="attached-device"][data-simulated="true"]')).toHaveAttribute('data-state', 'live', { timeout: 20_000 })
-  await goTo('Overview')
+  await toOverview()
   // The band's values: device readings, unverified, LIVE while they arrive. The simulator's: SIMULATED, never LIVE.
   const deviceRows = await rows('vital_device')
   const bandSpo2 = deviceRows.filter({ hasText: band.label }).filter({ hasText: 'SpO₂' }).first()
@@ -269,9 +292,10 @@ test('the multimodal consultation: every modality in one consultation, its overv
   // The visit's own vital signs are still the staff's.
   await expect(page.getByTestId('vitals-tiles')).not.toContainText('131')
 
-  // ---- 6. MANA: the consultation's own questions, answered from the consultation context, read-only; nothing SIMULATED reaches it. ----
-  await goTo('Mana')
-  const mana = page.getByTestId('mana-assistant')
+  // ---- 6. MANA: the consultation's own questions, answered from the consultation context, read-only; nothing SIMULATED reaches it. Ask Mana
+  // is the last block of the Mana area (Doctor HERO; a part of the tools column before). ----
+  const mana = page.locator('#mana-chat').getByTestId('mana-assistant')
+  await mana.scrollIntoViewIfNeeded()
   await mana.getByTestId('mana-toggle').click()
   const suggestions = mana.getByRole('group', { name: 'Suggested questions' })
   await suggestions.getByRole('button', { name: 'What was recorded in this consultation?' }).click()
@@ -286,8 +310,9 @@ test('the multimodal consultation: every modality in one consultation, its overv
   await expect(toReview.getByTestId('mana-answer')).toContainText('To review', { timeout: 30_000 })
   await expect(mana.getByRole('button', { name: /add to note/i })).toHaveCount(0)
 
-  // ---- 7. STETHOSCOPE: recorded in the browser from Chromium's synthetic audio input; kept with this consultation, not analysed. ----
-  await goTo('Devices')
+  // ---- 7. STETHOSCOPE: recorded in the browser from Chromium's synthetic audio input; kept with this consultation, not analysed. Module 4 of
+  // the inputs rail (it shared the "Devices" part before Doctor HERO). ----
+  await openModule(page, 'Stethoscope')
   const recordings = page.getByRole('region', { name: 'Stethoscope recordings' })
   await recordings.getByRole('button', { name: 'Record', exact: true }).click()
   const rec = page.getByRole('dialog', { name: 'Record from an audio input' })
@@ -297,7 +322,7 @@ test('the multimodal consultation: every modality in one consultation, its overv
   await rec.getByRole('button', { name: 'Stop' }).click()
   await rec.getByRole('button', { name: 'Save recording' }).click()
   await expect(rec).toBeHidden({ timeout: 15_000 })
-  await goTo('Overview')
+  await toOverview()
   const steth = (await rows('stethoscope')).first()
   await expect(steth).toHaveAttribute('data-trust', 'recorded', READ)
   await expect(steth).toContainText('Recorded, not analysed')
@@ -305,8 +330,9 @@ test('the multimodal consultation: every modality in one consultation, its overv
   await openSummary()
   await expect(summarySection('observations')).toContainText('recording available for clinician review; not analysed', READ)
 
-  // ---- 8. THERMAL: a SIMULATED capture (left to review), and an imported public FLIR sample approved, summarised, accepted, added to the note. ----
-  await goTo('Thermal')
+  // ---- 8. THERMAL: a SIMULATED capture (left to review), and an imported public FLIR sample approved, summarised, accepted, added to the note.
+  // Module 5 of the inputs rail. ----
+  await openModule(page, 'Thermal')
   await page.getByTestId('thermal-open').click()
   const ws = page.getByTestId('thermal-workspace')
   await expect(ws.getByTestId('thermal-no-camera')).toContainText('FLIR ONE not connected')
@@ -342,7 +368,7 @@ test('the multimodal consultation: every modality in one consultation, its overv
   await expect(page.getByLabel('Examination', { exact: true })).toHaveValue(/./)
   // The overview, read again after the insertion: the imported image measured and approved, the simulated one SIMULATED and waiting, the
   // summary of fixed rules, and what is in the note (reviewed by the doctor).
-  await goTo('Overview')
+  await toOverview()
   const thermalRows = await rows('thermal')
   await expect(thermalRows).toHaveCount(2, READ)
   const imported = thermalRows.filter({ has: page.locator('[data-trust="measured"]') })
@@ -369,6 +395,11 @@ test('the multimodal consultation: every modality in one consultation, its overv
     await expectNoHorizontalOverflow(page)
   }
   await page.setViewportSize({ width: 1180, height: 820 })
+  // From the top of the page (as capture.spec does): since Doctor HERO the draft's statements are in the page's own flow (the Mana area), not
+  // in the tools column's scroller, so wherever the sizes above left the page scrolled, a statement's small "Sources" toggle can sit half under
+  // the sticky bar, and axe then measures only its uncovered part. A control covered by where the page happens to be scrolled is not a state
+  // of the page.
+  await page.evaluate(() => window.scrollTo(0, 0))
   await expectNoAxeViolations(page)
 
   // ---- 10. The doctor writes the diagnosis and the prescription, reviews and signs. ----
