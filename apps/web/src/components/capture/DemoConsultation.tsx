@@ -1,6 +1,6 @@
 import type { DeviceList, Encounter, EncounterAi } from '@adaxai/contracts'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pause, Play, Square } from 'lucide-react'
+import { Pause, Play, Square, X } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { type AiResponse, aiKey } from '../../lib/ai.ts'
 import { api, ApiError, errorMessage } from '../../lib/api.ts'
@@ -171,11 +171,26 @@ export function DemoConsultation({
   ai,
   onUpdate,
   onActiveChange,
+  onPart,
+  playRequest = 0,
+  onPlayRequestHandled,
+  onDismiss,
 }: {
   encounter: Pick<Encounter, 'id' | 'status' | 'canEdit'>
   ai: EncounterAi
   onUpdate: (r: AiResponse) => void
   onActiveChange: (active: boolean) => void
+  /** A part of the demo was stored and transcribed (its answer has gone to onUpdate). */
+  onPart?: (transcriptId: string) => void
+  /**
+   * A new number each time the doctor chooses "Play demo consultation" elsewhere (the live transcription's menu), 0 when there is none: the
+   * demo then starts as if its own button had been pressed, once it can. It is the doctor's act; nothing ever plays the demo by itself.
+   */
+  playRequest?: number
+  /** The request was taken (played, or dropped because the demo could not start then): the caller stops passing it. */
+  onPlayRequestHandled?: () => void
+  /** Offered while the demo is not playing: hides the demo's box (the live transcription shows it only on request). */
+  onDismiss?: () => void
 }) {
   const id = encounter.id
   const qc = useQueryClient()
@@ -303,6 +318,7 @@ export function DemoConsultation({
           fd.append('file', blob, p.file)
           await apply(await api<AiResponse>(`/transcripts/${r.tid}/chunks`, { method: 'POST', body: fd }))
           r.answered += 1
+          onPart?.(r.tid)
           return
         } catch (e) {
           if (e instanceof ApiError && e.code === 'chunk_already_received') {
@@ -433,6 +449,19 @@ export function DemoConsultation({
     r.resumed?.()
   }
 
+  // The doctor chose "Play demo consultation" from the live transcription's menu: it plays as soon as what it needs has been read (the
+  // manifest, the recorder's status), and only if it can start then. A request it cannot honour is dropped (the box says why), never kept
+  // to play later by itself.
+  const handled = useRef(0)
+  useEffect(() => {
+    if (!playRequest || playRequest === handled.current) return
+    const checking = simulatorAllowed === null || (simulatorAllowed && plan.isPending && !plan.isError) || !status.data
+    if (checking && !active) return
+    handled.current = playRequest
+    onPlayRequestHandled?.()
+    if (!active && gate.canStart && plan.data) void play()
+  })
+
   // A demo recording still open, but not played from here (its page was closed or reloaded before it ended): it can be ended now.
   const orphan = !active && live?.audioOrigin === 'demo_synthetic' && live.id !== tid ? live : null
   const endOrphan = async () => {
@@ -481,6 +510,11 @@ export function DemoConsultation({
         <span id={labelId} className="inline-flex items-center rounded-md border border-dashed border-ink/60 px-1.5 py-px text-[0.6875rem] leading-4 font-semibold tracking-wide text-ink" data-testid="demo-audio-label">
           {DEMO_AUDIO_LABEL}
         </span>
+        {onDismiss && !active && !orphan && (
+          <button type="button" className="ml-auto inline-flex size-control-sm items-center justify-center rounded-md text-ink-muted hover:bg-canvas hover:text-ink" aria-label="Hide the demo consultation" onClick={onDismiss}>
+            <X aria-hidden="true" className="size-4" />
+          </button>
+        )}
       </div>
       {/* While it plays, only the mark stays above the controls, so that the transcript's new lines stay close by. */}
       {!active && (

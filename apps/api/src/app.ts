@@ -43,6 +43,10 @@ import { audit } from './audit/audit.ts'
 import { HttpError } from './http/errors.ts'
 import { RateLimiter } from './http/rate-limit.ts'
 import { registerHealthRoutes } from './routes/health.ts'
+import { registerDoctorDayRoutes } from './doctor-day/routes.ts'
+import { registerDocumentRoutes } from './documents/routes.ts'
+import { registerHandwritingRoutes } from './handwriting/routes.ts'
+import { registerServiceOrderRoutes } from './service-orders/routes.ts'
 
 export interface AppDeps {
   config: Config
@@ -159,7 +163,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerAiRoutes(app, { db, config: deps.config, providers, settings, routing, jobs, executors, limiter })
   registerManaRoutes(app, { db, providers, settings, jobs, executors, dataOrigin: deps.config.dataOrigin })
   registerConsultationRoutes(app, { db, service: consult, limiter, settings })
-  registerManaAssistantRoutes(app, { db, service: manaAssistant, limiter, settings })
+  registerManaAssistantRoutes(app, { db, service: manaAssistant, limiter, settings, transcriber: providers.transcriber })
   registerImageRoutes(app, { db, config: deps.config, settings, providers, thermal, jobs, executors })
   registerThermalRoutes(app, { db, config: deps.config, thermal })
   registerThermalSummaryRoutes(app, { db, config: deps.config, thermal, limiter })
@@ -169,6 +173,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   registerPortalRoutes(app, { db })
   registerDeviceRoutes(app, { db, config: deps.config, settings, limiter, clock: deps.clock })
   registerConsultationContextRoutes(app, { db, config: deps.config, settings, limiter, clock: deps.clock, reasoningStatus: () => consult.status() })
+  // Doctor HERO final (migration 0033): the doctor's day, service orders (simulated provider only), patient documents and surgeries, handwritten notes.
+  registerDoctorDayRoutes(app, { db, config: deps.config, settings, limiter, clock: deps.clock })
+  registerServiceOrderRoutes(app, { db, config: deps.config, settings, limiter, clock: deps.clock })
+  registerDocumentRoutes(app, { db, config: deps.config, settings, limiter })
+  registerHandwritingRoutes(app, { db, config: deps.config, settings, limiter })
 
   // API responses carry patient data: never store them in any cache (browser,
   // proxy or the web app's service worker), and set basic security headers.

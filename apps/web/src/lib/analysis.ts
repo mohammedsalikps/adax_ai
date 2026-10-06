@@ -552,3 +552,236 @@ export function analyzedTitle(d: Pick<DraftFacts, 'status'>): string {
   if (d.status === 'generating') return 'Sent to the local model'
   return 'Sent to the local model before it stopped'
 }
+
+// --- Generate prescription (DESIGN §5.5): the bottom bar's one primary action -----------------------------------------------------------------
+
+export const GENERATE_LABEL = 'Generate prescription'
+
+/** Said when the local model cannot be asked: the prescription page opens without Mana's summary. */
+export const MANA_UNAVAILABLE = 'Mana is unavailable — you can write the prescription yourself'
+
+export interface GenerateControl {
+  label: typeof GENERATE_LABEL
+  /** For `data-state`: ready, running (a run or a draft is under way: a click shows its progress again), checking (the model's state is being read), blocked. */
+  state: 'ready' | 'running' | 'checking' | 'blocked'
+  disabled: boolean
+  busy: boolean
+  /** Why it is off (aria-describedby), else null. */
+  reason: string | null
+}
+
+/**
+ * "Generate prescription". Always there and on, because the prescription page opens whatever Mana can do (without the model the doctor writes
+ * it alone): only a note that cannot be saved at all (changed elsewhere, or refused for good) turns it off, with the reason. While a run or a
+ * draft is under way it is busy, and a click shows that run's progress again instead of starting another.
+ */
+export function generateControl({ ai, running = false, save }: { ai: AiFacts | null | undefined; running?: boolean; save: NoteSaveState }): GenerateControl {
+  const label = GENERATE_LABEL
+  if (save === 'conflict' || save === 'blocked') return { label, state: 'blocked', disabled: true, busy: false, reason: NOTE_LOCKED }
+  if (running || ai?.draft?.status === 'generating') return { label, state: 'running', disabled: false, busy: true, reason: null }
+  if (!ai) return { label, state: 'checking', disabled: false, busy: false, reason: null }
+  return { label, state: 'ready', disabled: false, busy: false, reason: null }
+}
+
+/**
+ * Why the local model is not asked at all, as the server already said it (no request is made for a draft the server would refuse): consent
+ * missing or old, the visit not in consultation, the model not there. Null when it may be asked, or while that is not known yet (the server
+ * then decides).
+ */
+export function modelRefusal(ai: AiFacts | null | undefined): string | null {
+  if (!ai || ai.canGenerate) return null
+  if (!ai.status.available) return MANA_UNAVAILABLE
+  return ai.blockedReason ?? 'The local model cannot be asked now.'
+}
+
+// --- "Mana reads: n of 5 inputs" -------------------------------------------------------------------------------------------------------------
+
+/** What the bottom bar knows of the five inputs (DESIGN §15), from the page's own observers and the draft: plain counts, nothing fetched. */
+export interface WorkspaceReadFacts {
+  /** Points the doctor confirmed in the conversation; null while they cannot be counted. */
+  confirmedPoints: number | null
+  staffVitals: number
+  /** Device readings that are not simulated (unverified). */
+  deviceReadings: number
+  /** Something is written in the typed note. Handwriting is never read by Mana. */
+  typedNote: boolean
+  /** The patient's approved thermal images that are not simulated. */
+  approvedThermal: number
+  thermalConsentWithdrawn?: boolean
+}
+
+export type ReadKey = 'transcription' | 'inputs' | 'stethoscope' | 'notes' | 'thermal'
+
+export interface ReadInput {
+  key: ReadKey
+  label: string
+  read: boolean
+  text: string
+}
+
+/**
+ * Which of the five inputs Mana reads when the doctor generates the prescription, as the server's input rules say (consult/inputs.ts): only the
+ * points the doctor confirmed, never the transcript or the audio; staff vital signs and device readings that are not simulated; never a
+ * stethoscope recording; the typed note, never the handwriting; approved thermal images that are not simulated. (The patient's record is read
+ * as well; it is not one of the five inputs.)
+ */
+export function manaReads(f: WorkspaceReadFacts): ReadInput[] {
+  const c = f.confirmedPoints
+  const transcription: ReadInput =
+    c !== null && c > 0
+      ? { key: 'transcription', label: 'Live transcription', read: true, text: `${c} ${c === 1 ? 'point' : 'points'} you confirmed` }
+      : { key: 'transcription', label: 'Live transcription', read: false, text: 'Only points you confirm are read, never the transcript' }
+  const staff = f.staffVitals > 0
+  const device = f.deviceReadings > 0
+  const inputs: ReadInput =
+    staff || device
+      ? { key: 'inputs', label: 'Clinical inputs', read: true, text: staff && device ? 'Staff vital signs and device readings (unverified)' : staff ? 'Staff vital signs' : 'Device readings (unverified)' }
+      : { key: 'inputs', label: 'Clinical inputs', read: false, text: 'No vital sign recorded (simulated values are never read)' }
+  const stethoscope: ReadInput = { key: 'stethoscope', label: 'Stethoscope', read: false, text: 'Recordings are not analysed' }
+  const notes: ReadInput = f.typedNote
+    ? { key: 'notes', label: 'Doctor notes', read: true, text: 'Your typed note (handwriting is never read)' }
+    : { key: 'notes', label: 'Doctor notes', read: false, text: 'No typed note (handwriting is never read)' }
+  const thermal: ReadInput = f.thermalConsentWithdrawn
+    ? { key: 'thermal', label: 'Thermal', read: false, text: 'The patient withdrew consent to thermal imaging' }
+    : f.approvedThermal > 0
+      ? { key: 'thermal', label: 'Thermal', read: true, text: `${f.approvedThermal} approved ${f.approvedThermal === 1 ? 'image' : 'images'}` }
+      : { key: 'thermal', label: 'Thermal', read: false, text: 'No approved thermal image' }
+  return [transcription, inputs, stethoscope, notes, thermal]
+}
+
+/** "Mana reads: 3 of 5 inputs". */
+export const manaReadsText = (inputs: readonly ReadInput[]): string => `Mana reads: ${inputs.filter((i) => i.read).length} of ${inputs.length} inputs`
+
+// --- "Preparing the consultation": the checklist, each line from a real state --------------------------------------------------------------
+
+/** waiting: not reached yet; running; done (✓); failed; skipped (not done, and said why). */
+export type CheckState = 'waiting' | 'running' | 'done' | 'failed' | 'skipped'
+export type CheckKey = 'save' | 'conversation' | 'history' | 'inputs' | 'notes' | 'thermal' | 'model'
+
+export interface CheckLine {
+  key: CheckKey
+  label: string
+  state: CheckState
+  /** After a dash ("3 confirmed points included"); null while there is nothing true to say yet. */
+  text: string | null
+  /** One more muted line (handwriting kept, the server's words when something failed), or null. */
+  note: string | null
+}
+
+/** What the sheet does next: wait; open the prescription page (the draft is ready, or the model cannot be asked); stay (the doctor decides). */
+export type PreparingNext = 'wait' | 'open' | 'stay'
+
+export interface PreparingFacts {
+  /** This page's run: the save and the request for the draft. Both null when the sheet shows a draft found under way (no click here). */
+  save: SaveRun | null
+  ask: ModelAsk | null
+  ai: AiFacts | null | undefined
+  /** Time since the doctor's click, on this page's clock (performance.now), or null. */
+  elapsedMs: number | null
+  /** Strokes of the handwritten notes as the pad last saved them (its query cache), or null when not known. */
+  handwritingStrokes: number | null
+}
+
+export interface Preparing {
+  lines: CheckLine[]
+  next: PreparingNext
+  /** The model's line in words without the clock, for a polite announcement (it changes only when the state does). */
+  announce: string
+}
+
+export const CONSOLIDATING = 'Mana is consolidating the consultation…'
+export const HANDWRITING_KEPT = 'Handwriting kept with the record; not read by Mana'
+export const NOT_SENT = 'Not sent to Mana'
+
+const nOf = (count: number, one: string, many: string) => `${fmtCount(count)} ${count === 1 ? one : many}`
+
+/** The five inputs' lines, from what the server counted as SENT to the model (ConsultDraft.inputsUsed), never predicted. */
+function inputLines(used: ConsultInputsUsed | null, closed: boolean, strokes: number | null): CheckLine[] {
+  const handwriting = strokes !== null && strokes > 0 ? HANDWRITING_KEPT : null
+  const line = (key: CheckKey, label: string, text: (u: ConsultInputsUsed) => string, note: string | null = null): CheckLine =>
+    used ? { key, label, state: 'done', text: text(used), note } : closed ? { key, label, state: 'skipped', text: NOT_SENT, note } : { key, label, state: 'waiting', text: null, note }
+  return [
+    line('conversation', 'Conversation', (u) =>
+      u.conversation.confirmedPoints > 0 ? `${nOf(u.conversation.confirmedPoints, 'confirmed point', 'confirmed points')} included` : 'No confirmed points — the transcript itself is not sent',
+    ),
+    line('history', 'Patient history', (u) => (u.history.items > 0 ? nOf(u.history.items, 'record item', 'record items') : 'Nothing from the record was sent')),
+    line('inputs', 'Clinical inputs', (u) => {
+      const parts = [u.vitals.staff > 0 ? nOf(u.vitals.staff, 'staff vital sign', 'staff vital signs') : null, u.vitals.device > 0 ? `${nOf(u.vitals.device, 'device reading', 'device readings')} (unverified)` : null].filter(Boolean)
+      return parts.length ? parts.join(', ') : 'No vital signs sent — simulated values never are'
+    }),
+    line('notes', 'Doctor notes', (u) => (u.note.sections > 0 ? 'Your typed note' : 'No typed note'), handwriting),
+    line('thermal', 'Thermal', (u) => (u.thermal.images > 0 ? `Approved measurements (${nOf(u.thermal.images, 'image', 'images')})` : 'No approved thermal image')),
+  ]
+}
+
+/**
+ * The checklist of "Preparing the consultation" (DESIGN §5.5), a state machine over what the page and the server actually hold. Each line ticks
+ * only on its own signal: "Your notes saved" when the save chain answered; the five inputs when the server says what it SENT to the model
+ * (inputsUsed, once the model's turn came); Mana's line from the draft's own state, with the tokens the model server counted and the time since
+ * the click (no percentage, no time left). The page opens by itself when the draft is ready (or partial), and when the model cannot be asked
+ * at all; on any other end (the save failed, the draft failed, was cancelled or had too little to draft from) the doctor decides.
+ */
+export function preparingChecklist({ save, ask, ai, elapsedMs, handwritingStrokes }: PreparingFacts): Preparing {
+  const lines: CheckLine[] = []
+  if (save) {
+    lines.push(
+      save.state === 'running'
+        ? { key: 'save', label: 'Saving your notes…', state: 'running', text: null, note: null }
+        : save.state === 'done'
+          ? { key: 'save', label: 'Your notes saved', state: 'done', text: null, note: null }
+          : save.state === 'failed'
+            ? { key: 'save', label: 'Your notes could not be saved', state: 'failed', text: null, note: NOT_SAVED }
+            : { key: 'save', label: 'Your notes', state: 'waiting', text: null, note: null },
+    )
+  }
+  const clock = elapsedMs === null ? null : fmtDuration(elapsedMs)
+  const withClock = (t: string) => (clock ? `${t} · ${clock}` : t)
+
+  let model: CheckLine
+  let next: PreparingNext = 'wait'
+  let used: ConsultInputsUsed | null = null
+  let closed = false
+  const end = (line: Omit<CheckLine, 'key' | 'note'> & { note?: string | null }, then: PreparingNext, inputsClosed = true): CheckLine => {
+    next = then
+    closed = inputsClosed
+    return { key: 'model', note: null, ...line }
+  }
+  if (save?.state === 'failed' || ask?.state === 'skipped') {
+    model = end({ label: 'Mana was not asked', state: 'skipped', text: null }, 'stay')
+  } else if (save && save.state !== 'done') {
+    model = { key: 'model', label: CONSOLIDATING, state: 'waiting', text: null, note: null }
+  } else if (ask?.state === 'idle') {
+    model = { key: 'model', label: CONSOLIDATING, state: 'waiting', text: null, note: null }
+  } else if (ask?.state === 'sending') {
+    model = { key: 'model', label: 'Asking Mana…', state: 'running', text: clock, note: null }
+  } else if (ask?.state === 'failed') {
+    model =
+      ai?.status.available === false || ask.message === MANA_UNAVAILABLE
+        ? end({ label: MANA_UNAVAILABLE, state: 'failed', text: null }, 'open')
+        : end({ label: 'Mana could not be asked — you can write the prescription yourself', state: 'failed', text: null, note: ask.message }, 'stay')
+  } else {
+    // Sent (or a draft found under way without a click here): the attempt as the server now tells it.
+    const d = attemptDraft(ask, ai)
+    used = d?.inputsUsed ?? null
+    const view = d ? draftView(d, true) : null
+    if (!d || view === 'generating') {
+      const p = d?.progress ?? null
+      model =
+        d?.phase === 'running'
+          ? { key: 'model', label: CONSOLIDATING, state: 'running', text: withClock(p && p.generatedTokens > 0 ? nOf(p.generatedTokens, 'token', 'tokens') : READING_SENT), note: null }
+          : { key: 'model', label: 'Waiting for the local model', state: 'running', text: clock, note: null }
+    } else if (view === 'ready' || view === 'partial' || view === 'stale') {
+      model = end({ label: view === 'partial' ? 'Mana’s summary is ready (part of it could not be made)' : 'Mana’s summary is ready', state: 'done', text: null }, 'open', false)
+    } else if (view === 'unavailable') {
+      model = end({ label: MANA_UNAVAILABLE, state: 'failed', text: null }, 'open')
+    } else if (view === 'insufficient') {
+      model = end({ label: 'Too little is recorded for Mana to summarise — you can write the prescription yourself', state: 'skipped', text: null }, 'stay')
+    } else if (view === 'cancelled') {
+      model = end({ label: 'The summary was cancelled', state: 'skipped', text: null }, 'stay')
+    } else {
+      model = end({ label: 'Mana could not finish the summary — you can write the prescription yourself', state: 'failed', text: null, note: d.errorMessage }, 'stay')
+    }
+  }
+  lines.push(...inputLines(used, closed, handwritingStrokes), model)
+  return { lines, next, announce: model.label }
+}

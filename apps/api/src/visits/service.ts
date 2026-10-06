@@ -1,15 +1,24 @@
 import { flagVital, type Observation, VITALS, type Visit, type VitalKind } from '@adaxai/contracts'
-import { and, asc, eq, inArray, lte, ne, or, sql, type SQL } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, lte, ne, or, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SessionUser } from '../auth/sessions.ts'
 import type { DbOrTx } from '../db/client.ts'
-import { allergies, appointments, dailyTokenCounters, departments, facilities, observations, patients, users, visits } from '../db/schema.ts'
+import { allergies, appointments, dailyTokenCounters, departments, encounters, facilities, observations, patients, users, visits } from '../db/schema.ts'
 import { SIMULATED } from '../devices/provenance.ts'
 import { deniedNotFound } from '../http/errors.ts'
 import { ageOn, fullName } from '../patients/service.ts'
 
 type ObservationRow = typeof observations.$inferSelect
 export type VisitRow = typeof visits.$inferSelect
+
+/**
+ * The doctor's own visits ("mine"): assigned to the doctor, or unassigned in the doctor's department (a doctor without a department: assigned
+ * only). The one definition behind GET /api/visits?mine=true and the doctor's day (Home, My consultations); appointments use the same rule on
+ * their own columns (doctor-day/queries.ts mineAppointments).
+ */
+export function mineVisits(me: Pick<SessionUser, 'id' | 'departmentId'>): SQL {
+  return me.departmentId ? or(eq(visits.assignedDoctorId, me.id), and(isNull(visits.assignedDoctorId), eq(visits.departmentId, me.departmentId)))! : eq(visits.assignedDoctorId, me.id)
+}
 
 /** A visit of the caller's facility; lookups of other facilities' visits are refused as not found, and audited. */
 export async function getVisitOr404(db: DbOrTx, me: SessionUser, id: string): Promise<VisitRow> {
@@ -122,9 +131,14 @@ export async function createVisit(tx: DbOrTx, me: SessionUser, v: NewVisit, toda
   return row!
 }
 
-/** Visits with patient summary, allergies and latest vitals, ordered for a queue. */
+/**
+ * Visits with patient summary, allergies and latest vitals, ordered for a queue. Each carries its triage note (with who wrote or cleared it and
+ * when) and the status of its consultation (a visit has at most one that is not discarded: encounters_one_active_per_visit_uq), so a queue can
+ * tell "Signed — to complete" from "In consultation".
+ */
 export async function loadVisits(db: DbOrTx, where: SQL, today: string, encounterIds: Map<string, string> = new Map()): Promise<Visit[]> {
   const doctor = alias(users, 'doctor')
+  const noter = alias(users, 'noter')
   const rows = await db
     .select({
       v: visits,
@@ -134,6 +148,10 @@ export async function loadVisits(db: DbOrTx, where: SQL, today: string, encounte
       apptId: appointments.id,
       apptAt: appointments.scheduledAt,
       apptLocalTime: sql<string | null>`to_char(${appointments.scheduledAt} at time zone ${facilities.timezone}, 'HH24:MI')`,
+      encounterIdJoined: encounters.id,
+      encounterStatus: encounters.status,
+      noterName: noter.fullName,
+      noterRole: noter.role,
     })
     .from(visits)
     .innerJoin(patients, eq(patients.id, visits.patientId))
@@ -141,6 +159,8 @@ export async function loadVisits(db: DbOrTx, where: SQL, today: string, encounte
     .innerJoin(facilities, eq(facilities.id, visits.facilityId))
     .leftJoin(doctor, eq(doctor.id, visits.assignedDoctorId))
     .leftJoin(appointments, eq(appointments.visitId, visits.id))
+    .leftJoin(encounters, and(eq(encounters.visitId, visits.id), ne(encounters.status, 'discarded')))
+    .leftJoin(noter, eq(noter.id, visits.triageNoteBy))
     .where(where)
     // Urgent first, then by token.
     .orderBy(sql`case when ${visits.priority} = 'urgent' then 0 else 1 end`, asc(visits.visitDate), asc(visits.tokenNumber))
@@ -157,7 +177,7 @@ export async function loadVisits(db: DbOrTx, where: SQL, today: string, encounte
         .from(allergies)
         .where(and(inArray(allergies.patientId, patientIds), eq(allergies.status, 'active')))
     : []
-  return rows.map(({ v, p, deptName, doctorName, apptId, apptAt, apptLocalTime }) => {
+  return rows.map(({ v, p, deptName, doctorName, apptId, apptAt, apptLocalTime, encounterIdJoined, encounterStatus, noterName, noterRole }) => {
     const latest = vitals.get(v.id) ?? []
     return {
       id: v.id,
@@ -172,7 +192,7 @@ export async function loadVisits(db: DbOrTx, where: SQL, today: string, encounte
       assignedDoctorName: doctorName,
       checkedInAt: v.checkedInAt.toISOString(),
       updatedAt: v.updatedAt.toISOString(),
-      encounterId: encounterIds.get(v.id) ?? null,
+      encounterId: encounterIds.get(v.id) ?? encounterIdJoined ?? null,
       appointment: apptId && apptAt && apptLocalTime ? { id: apptId, scheduledAt: apptAt.toISOString(), localTime: apptLocalTime } : null,
       patient: {
         id: p.id,
@@ -185,6 +205,10 @@ export async function loadVisits(db: DbOrTx, where: SQL, today: string, encounte
       },
       latestVitals: latest,
       abnormalVitalCount: latest.filter((o) => o.flag && o.flag !== 'normal').length,
+      triageNote: v.triageNote,
+      triageNoteBy: v.triageNoteBy ? { id: v.triageNoteBy, fullName: noterName ?? '', role: noterRole ?? null } : null,
+      triageNoteAt: v.triageNoteAt?.toISOString() ?? null,
+      encounterStatus: encounterStatus ?? null,
     }
   })
 }

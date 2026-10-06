@@ -4,7 +4,7 @@ import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SessionUser } from '../auth/sessions.ts'
 import type { DbOrTx } from '../db/client.ts'
-import { allergies, departments, diagnoses, encounterAmendments, encounters, facilities, observations, patients, prescriptionItems, users, visits } from '../db/schema.ts'
+import { allergies, departments, diagnoses, encounterAmendments, encounters, facilities, observations, patients, prescriptionItems, users, visits, visitStatusEvents } from '../db/schema.ts'
 import { conflict, deniedNotFound, forbidden, notFound } from '../http/errors.ts'
 import { ageOn, fullName } from '../patients/service.ts'
 import { standingWindow, toObservation } from '../visits/service.ts'
@@ -91,6 +91,7 @@ export async function loadEncounter(db: DbOrTx, me: SessionUser, e: EncounterRow
   ])
   const age = ageOn(p.dateOfBirth, v.visitDate)
   const ownDraft = e.status === 'in_progress' && e.doctorId === me.id
+  const completedAt = e.status === 'signed' && v.status === 'completed' ? ((await visitCompletedAt(db, [v.id])).get(v.id) ?? v.statusChangedAt.toISOString()) : null
   const note = {
     chiefComplaint: e.chiefComplaint,
     history: e.history,
@@ -120,7 +121,7 @@ export async function loadEncounter(db: DbOrTx, me: SessionUser, e: EncounterRow
     facilityName,
     note,
     diagnoses: dx.map((d) => ({ description: d.description, code: d.code, kind: d.kind })),
-    prescription: rx.map((r) => ({ drugName: r.drugName, strength: r.strength, form: r.form, dose: r.dose, route: r.route, frequency: r.frequency, duration: r.duration, instructions: r.instructions })),
+    prescription: rx.map(prescriptionOut),
     vitals: obs.map(({ o, by }) => toObservation(o, age, by)),
     amendments: am.map(({ a, by }) => ({ id: a.id, reason: a.reason, content: a.content, authorName: by, createdAt: a.createdAt.toISOString(), seq: a.seq, contentHash: a.contentHash })),
     aiInsertions: await loadInsertions(db, e.id, note),
@@ -133,7 +134,29 @@ export async function loadEncounter(db: DbOrTx, me: SessionUser, e: EncounterRow
     canEdit: ownDraft && v.status === 'in_consultation',
     canResume: ownDraft && ['waiting', 'in_triage', 'ready'].includes(v.status),
     canDiscard: ownDraft,
+    completedAt,
+    // Only the doctor who signed it, while its visit is still with the doctor (POST /api/encounters/:id/complete checks the same).
+    canComplete: e.status === 'signed' && e.doctorId === me.id && v.status === 'in_consultation',
   }
+}
+
+/** A medicine as the record has it: the eight written fields and the structured course (null when it has none). Also what scheme v3 signs. */
+export function prescriptionOut(r: typeof prescriptionItems.$inferSelect): Encounter['prescription'][number] & { durationDays: number | null; startDate: string | null } {
+  return { drugName: r.drugName, strength: r.strength, form: r.form, dose: r.dose, route: r.route, frequency: r.frequency, duration: r.duration, instructions: r.instructions, durationDays: r.durationDays, startDate: r.startDate }
+}
+
+/**
+ * When each completed visit was completed: the time of its move to completed in the status history (written by the database, append-only).
+ * A visit without such an entry (completed before the status history began, migration 0019) is left out; callers fall back to its status time.
+ */
+export async function visitCompletedAt(db: DbOrTx, visitIds: string[]): Promise<Map<string, string>> {
+  if (!visitIds.length) return new Map()
+  const rows = await db
+    .select({ visitId: visitStatusEvents.visitId, at: sql<string>`to_char(max(${visitStatusEvents.changedAt}) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')` })
+    .from(visitStatusEvents)
+    .where(and(inArray(visitStatusEvents.visitId, visitIds), eq(visitStatusEvents.toStatus, 'completed')))
+    .groupBy(visitStatusEvents.visitId)
+  return new Map(rows.map((r) => [r.visitId, r.at]))
 }
 
 /** Consultation id per visit id (for queue and history views); discarded drafts are left out. */

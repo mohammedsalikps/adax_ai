@@ -36,6 +36,7 @@ import { facilityToday, getPatientOr404 } from '../patients/service.ts'
 import type { AppSettings } from '../settings/schema.ts'
 import { assignmentAt, claimBatch, consentStillCovers, gatewayDevice, type GatewayDeps, ingestReadings, repeatIsNews, sha256Hex, simulatorAllowed, tokenHash, windowFor } from './gateway.ts'
 import { patientDeviceReadings } from './readings.ts'
+import { registerDeviceSimulationRoutes } from './simulation.ts'
 
 const IdParams = z.object({ id: z.uuid() })
 const AUDIO_EXT: Record<string, string> = { 'audio/wav': '.wav', 'audio/x-wav': '.wav', 'audio/wave': '.wav', 'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/x-m4a': '.m4a', 'audio/ogg': '.ogg', 'audio/webm': '.webm' }
@@ -447,4 +448,7 @@ export function registerDeviceRoutes(app: FastifyInstance, deps: { db: Db; confi
     await audit(db, req, { action: 'auscultation.list', entityType: 'patient', entityId: id, patientId: id })
     return { recordings: await listAuscultations(me.facilityId, id) }
   })
+
+  // ---- The simulator run from the consultation (HERO final; only where simulators are allowed) ----
+  registerDeviceSimulationRoutes(app, { db, config, settings, limiter, clock, gateway, listAuscultations })
 }

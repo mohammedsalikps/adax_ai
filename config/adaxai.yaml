@@ -70,10 +70,15 @@ ai:
     url: http://127.0.0.1:8002
     # Live recording is sent in chunks of this length and each chunk is
     # transcribed as it arrives (no interim, guessed words are ever shown).
-    liveChunkSeconds: 20
-    # A language code (for example en) makes the model skip language detection.
-    # null: it detects the language of each part and the transcript says which.
-    languageHint: null
+    # 10 s keeps the conversation close to live on this CPU (about 5 s per
+    # part with the hint below); 5 s parts would run at about real time and
+    # queue up. Measure on the real speech service before changing it.
+    liveChunkSeconds: 10
+    # A language code (for example en) makes the model skip language detection
+    # (about 2 s saved per part; the MVP and the important-point rules are
+    # English only). null: it detects the language of each part and the
+    # transcript says which.
+    languageHint: en
 
   # How the "important points" of a consultation are found: `rules` is a fixed,
   # versioned rule set that runs in this process (no data leaves it); `llm`
@@ -167,3 +172,29 @@ safety:
     pain_score: 2
     weight: 2
     height: 3
+
+# Service orders (Order service in the consultation). NO LABORATORY OR IMAGING SYSTEM IS CONNECTED: the only provider is `simulated`, a
+# deterministic simulator labelled SIMULATED wherever an order appears. It performs nothing: an order moves to "in progress"
+# `inProgressAfterMinutes` after it is requested and to "completed" `turnaroundMinutes` after it is requested, and a completed order says only
+# that no test was performed and no result exists. It never writes an investigation result. Codes: upper-case letters, digits, - and _.
+serviceOrders:
+  provider: simulated
+  inProgressAfterMinutes: 1
+  catalogue:
+    - { code: CBC, name: Complete blood count (CBC), category: lab, turnaroundMinutes: 30 }
+    - { code: CRP, name: C-reactive protein (CRP), category: lab, turnaroundMinutes: 45 }
+    - { code: RBS, name: Random blood sugar, category: lab, turnaroundMinutes: 20 }
+    - { code: FBS, name: Fasting blood sugar, category: lab, turnaroundMinutes: 20 }
+    - { code: HBA1C, name: HbA1c, category: lab, turnaroundMinutes: 60 }
+    - { code: LFT, name: Liver function tests, category: lab, turnaroundMinutes: 60 }
+    - { code: KFT, name: Kidney function tests, category: lab, turnaroundMinutes: 60 }
+    - { code: LIPID, name: Lipid profile, category: lab, turnaroundMinutes: 60 }
+    - { code: TSH, name: Thyroid stimulating hormone (TSH), category: lab, turnaroundMinutes: 90 }
+    - { code: URINE-RE, name: Urine routine and microscopy, category: lab, turnaroundMinutes: 30 }
+    - { code: DENGUE-NS1, name: Dengue NS1 antigen, category: lab, turnaroundMinutes: 45 }
+    - { code: MALARIA-AG, name: Malaria antigen test, category: lab, turnaroundMinutes: 30 }
+    - { code: XRAY-CHEST, name: Chest X-ray (PA view), category: imaging, turnaroundMinutes: 45 }
+    - { code: USG-ABDOMEN, name: Ultrasound abdomen, category: imaging, turnaroundMinutes: 90 }
+    - { code: CT-HEAD, name: CT head (plain), category: imaging, turnaroundMinutes: 120 }
+    - { code: MRI-BRAIN, name: MRI brain, category: imaging, turnaroundMinutes: 240 }
+    - { code: ECG, name: 12-lead ECG, category: other, turnaroundMinutes: 15 }

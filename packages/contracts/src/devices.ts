@@ -285,3 +285,55 @@ export const AuscultationRecording = z.object({
   createdByName: z.string().nullable(),
 })
 export type AuscultationRecording = z.infer<typeof AuscultationRecording>
+
+// ---------------------------------------------------------------------------
+// HERO final: the device simulator run from the consultation (session-authenticated; no device token ever reaches the browser). Only where
+// simulators are allowed, only in the caller's own consultation in progress, only with the patient's consent to device readings. Everything it
+// produces goes through a device record REGISTERED AS A SIMULATOR, so the server and the database store it as simulated.
+// ---------------------------------------------------------------------------
+
+/** What the consultation can simulate, and the kind of simulator record each needs. */
+export const SIMULATION_DEVICE_KINDS = { band: 'wearable_band', stethoscope: 'smart_stethoscope' } as const satisfies Record<string, DeviceKind>
+export type SimulationKind = keyof typeof SIMULATION_DEVICE_KINDS
+export const SimulationKind = z.enum(Object.keys(SIMULATION_DEVICE_KINDS) as [SimulationKind, ...SimulationKind[]])
+
+/** How often the consultation asks for one more batch of simulated band values while "Simulate band" is on (the device card polls as often). */
+export const SIMULATION_TICK_MS = 5000
+
+/** The simulator's scenarios (the same list as the simulator program's; the API test keeps the two equal). `steady` is the default. */
+export const SimulationScenario = z.enum(['steady', 'rising_heart_rate', 'low_spo2', 'fever', 'no_readings', 'dropout'])
+export type SimulationScenario = z.infer<typeof SimulationScenario>
+
+/** POST /api/encounters/:id/simulation/attach. */
+export const SimulationAttachRequest = z.object({ kind: SimulationKind })
+export type SimulationAttachRequest = z.input<typeof SimulationAttachRequest>
+export const SimulationAttachResult = z.object({
+  kind: SimulationKind,
+  deviceId: z.uuid(),
+  label: z.string(),
+  assignmentId: z.uuid(),
+  /** True when a simulator of this kind was already attached to the patient: nothing new was attached. */
+  alreadyAttached: z.boolean(),
+  simulated: z.literal(true),
+})
+export type SimulationAttachResult = z.infer<typeof SimulationAttachResult>
+
+/** POST /api/encounters/:id/simulation/band-tick. */
+export const SimulationBandTickRequest = z.object({ scenario: SimulationScenario.default('steady') })
+export type SimulationBandTickRequest = z.input<typeof SimulationBandTickRequest>
+export const SimulationBandTickResult = z.object({
+  /** What the scenario does at this tick: send readings, stay in contact without readings, or stay silent. */
+  sent: z.enum(['readings', 'heartbeat', 'nothing']),
+  stored: z.number().int(),
+  /** True when this tick's batch had been stored already (another tab asked within the same tick): nothing was stored twice. */
+  duplicate: z.boolean(),
+  validationStatus: z.literal('simulated'),
+  scenario: SimulationScenario,
+  measuredAt: z.string().nullable(),
+  kinds: z.array(VitalKind),
+})
+export type SimulationBandTickResult = z.infer<typeof SimulationBandTickResult>
+
+/** POST /api/encounters/:id/simulation/stethoscope: one generated-tones recording (SIMULATED AUDIO). The answer is the stored recording. */
+export const SimulationStethoscopeRequest = z.object({ site: AuscultationSite })
+export type SimulationStethoscopeRequest = z.input<typeof SimulationStethoscopeRequest>

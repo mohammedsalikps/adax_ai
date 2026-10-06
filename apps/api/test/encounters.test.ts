@@ -125,7 +125,7 @@ describe('signing', () => {
     expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: v } })).statusCode).toBe(400)
   })
 
-  it('freezes the record, stores a verifiable hash and completes the visit', async () => {
+  it('freezes the record, stores a verifiable hash and leaves the visit with the doctor until the consultation is completed', async () => {
     const v = await readyVisit()
     const e = Encounter.parse((await start(v.id)).json())
     const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body: fullDraft(1) })).json())
@@ -138,6 +138,10 @@ describe('signing', () => {
     expect(rows[0].content_hash).toBe(sha256(canonicalJson(rows[0].signed_snapshot)))
     expect(signed.contentHash).toBe(rows[0].content_hash)
     expect(rows[0].signed_snapshot.prescription[0].drugName).toBe('Paracetamol')
+    // HERO final (deliberate change): signing no longer completes the visit; it stays with the doctor until the doctor completes it.
+    expect(Visit.parse((await call(ctx.app, 'GET', `/api/visits/${v.id}`, { cookie: nurse })).json()).status).toBe('in_consultation')
+    expect(signed).toMatchObject({ visit: { status: 'in_consultation' }, canComplete: true, completedAt: null })
+    expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
     expect(Visit.parse((await call(ctx.app, 'GET', `/api/visits/${v.id}`, { cookie: nurse })).json()).status).toBe('completed')
 
     // The API refuses edits ...
@@ -157,8 +161,9 @@ describe('signing', () => {
     const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body: fullDraft(1) })).json())
     const res = await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })
     expect(res.statusCode).toBe(200)
-    expect(Encounter.parse(res.json()).visit).toMatchObject({ status: 'completed', priority: 'urgent' })
-    // The signed snapshot covers the same visit fields as before (scheme v2), so the priority is not part of what is hashed.
+    // HERO final (deliberate change): the signed record's visit is still with the doctor (signing no longer completes it).
+    expect(Encounter.parse(res.json()).visit).toMatchObject({ status: 'in_consultation', priority: 'urgent' })
+    // The signed snapshot covers the same visit fields as before (scheme v2, and v3 adds only the medicines' courses), so the priority is not part of what is hashed.
     const { rows } = await adminQuery('SELECT signed_snapshot, content_hash FROM encounters WHERE id = $1', [e.id])
     expect(Object.keys(rows[0].signed_snapshot.visit).sort()).toEqual(['id', 'reasonForVisit', 'tokenNumber', 'visitDate'])
     expect(rows[0].content_hash).toBe(sha256(canonicalJson(rows[0].signed_snapshot)))

@@ -1,11 +1,11 @@
 import { BODY_SITES, type BodySite, type Encounter, THERMAL_SIM_CASES, type ThermalCapture, type ThermalSimCase, type ThermalWorkspaceEventRequest } from '@adaxai/contracts'
 import { useQueryClient } from '@tanstack/react-query'
 import { Camera, CircleAlert, FileImage, Pause, Play, Plug, Unplug, X } from 'lucide-react'
-import { memo, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ApiError, errorMessage } from '../../lib/api.ts'
 import { useDevices } from '../../lib/devices.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
-import { cacheThermalCapture, fmtC, noReadingShade, paletteLut, patientThermalKey, sendThermalEvent, usePatientThermal, useThermal } from '../../lib/thermal.ts'
+import { cacheThermalCapture, fmtC, noReadingShade, paletteLut, patientThermalKey, sendThermalEvent, usePatientThermal } from '../../lib/thermal.ts'
 import {
   CAMERA_STATES,
   CameraReleasedError,
@@ -21,19 +21,16 @@ import {
   type ThermalCameraAdapter,
 } from '../../lib/thermalCamera.ts'
 import { nothingStored, submitCapture } from '../../lib/thermalCapture.ts'
-import { fmtDateTime, fmtTime } from '../../lib/format.ts'
+import { fmtTime } from '../../lib/format.ts'
 import { ageSex } from '../clinical/PatientBanner.tsx'
 import { SimulatedBadge } from '../clinical/DeviceReadingsCard.tsx'
 import { Button } from '../ui/Button.tsx'
-import { ConfirmationDialog } from '../ui/ConfirmationDialog.tsx'
 import { Alert, Badge } from '../ui/Feedback.tsx'
 import { SelectField, TextField } from '../ui/Form.tsx'
-import { PanelBoundary } from '../ui/PanelBoundary.tsx'
-import { ThermalModelStatus } from './ThermalModelStatus.tsx'
+import { DiscardRegionsDialog } from './DiscardRegions.tsx'
 import { ThermalSourceBadge } from './ThermalSourceBadge.tsx'
-import { ThermalSummaryCard } from './ThermalSummaryCard.tsx'
+import { ThermalStudy } from './ThermalStudy.tsx'
 import { ThermalUploadDialog } from './ThermalUploadDialog.tsx'
-import { ThermalViewer } from './ThermalViewer.tsx'
 
 /** The words and colour of a camera state on this screen. Colour repeats the word; it is never the only cue. */
 const STATE_TONE: Record<CameraState, 'ok' | 'warn' | 'down' | 'neutral' | 'brand'> = {
@@ -53,7 +50,7 @@ const START_WAIT_MS = 5000
 /** The camera's own words for a camera failure (the bridge or the simulator says what went wrong), the server's for a server refusal. */
 const failure = (e: unknown) => (e instanceof ApiError ? errorMessage(e) : e instanceof Error && e.message ? e.message : errorMessage(e))
 
-type ReportEvent = (e: ThermalWorkspaceEventRequest) => void
+export type ReportEvent = (e: ThermalWorkspaceEventRequest) => void
 
 /** What the workspace itself is doing after CAPTURE (on top of what the camera says). A failure says whether anything may have been stored. */
 type Step = { kind: 'idle' } | { kind: 'capturing' } | { kind: 'processing' } | { kind: 'failed'; message: string; stored: 'no' | 'unknown' }
@@ -138,17 +135,24 @@ function Preview({ frame, live, simulated, label }: { frame: PreviewFrame | null
 /**
  * The camera, its live view and CAPTURE. Kept apart from the analysis so that preview frames (about 8 a second) and the LIVE check re-render
  * only this part. The adapter is made and let go in one effect, so a re-run (React's development double run included) never leaves the screen
- * holding an adapter that was disposed. The workspace hears only when a capture is in flight and when one was stored.
+ * holding an adapter that was disposed. The screen around it hears only when a capture is in flight and when one was stored. Used by the
+ * consultation's thermal workspace and by the doctor's Thermal page; either way a capture goes into `encounterId`, the doctor's own
+ * consultation of `patient` in progress (the API refuses any other), and `where` says so in words.
  */
-const CameraPane = memo(function CameraPane({
-  encounter,
+export const CameraPane = memo(function CameraPane({
+  patient: p,
+  encounterId,
+  where = 'this consultation',
   bridge,
   event,
   guard,
   onBusyChange,
   onCaptured,
 }: {
-  encounter: Encounter
+  patient: { id: string; fullName: string; mrn: string }
+  encounterId: string
+  /** Which consultation the image goes into, in words ("this consultation", "your consultation in progress"). */
+  where?: string
   bridge: NativeThermalBridge | null
   event: ReportEvent
   /** Runs `go` now, or after the doctor agrees to discard regions drawn but not saved. */
@@ -157,7 +161,6 @@ const CameraPane = memo(function CameraPane({
   onCaptured: (c: ThermalCapture) => void
 }) {
   const qc = useQueryClient()
-  const p = encounter.patient
   const devices = useDevices()
   const simulatorAllowed = devices.data?.simulatorAllowed === true
   // The camera: the FLIR ONE bridge when the tablet app provides one; the simulator only when chosen, and only where it is allowed. The
@@ -243,7 +246,7 @@ const CameraPane = memo(function CameraPane({
       const shot = await a.capture()
       stage = 'server'
       setStep({ kind: 'processing' })
-      const saved = await submitCapture(p.id, encounter.id, shot, { bodyRegion: detail.trim() || BODY_SITES[site], bodySite: site, view: 'other' })
+      const saved = await submitCapture(p.id, encounterId, shot, { bodyRegion: detail.trim() || BODY_SITES[site], bodySite: site, view: 'other' })
       cacheThermalCapture(qc, saved)
       setStep({ kind: 'idle' })
       onCaptured(saved)
@@ -359,7 +362,7 @@ const CameraPane = memo(function CameraPane({
           <TextField label="Description (optional)" placeholder="Right knee, anterior" value={detail} maxLength={80} onChange={(e) => setDetail(e.target.value)} disabled={busy} />
         </div>
         <p className="mt-2 text-xs text-ink-muted">
-          For {p.fullName} (MRN {p.mrn}), this consultation. The region is a label for the image: nothing is inferred from it.
+          For {p.fullName} (MRN {p.mrn}), {where}. The region is a label for the image: nothing is inferred from it.
         </p>
         <Button className="mt-3 min-h-14 w-full text-base" icon={<Camera aria-hidden="true" className="size-5" />} onClick={() => guard(() => void capture())} disabled={!canCapture} loading={busy} data-testid="thermal-capture">
           {step.kind === 'processing' ? 'Processing…' : step.kind === 'capturing' ? 'Capturing…' : 'CAPTURE'}
@@ -373,7 +376,7 @@ const CameraPane = memo(function CameraPane({
               // The server's own refusals already end with it; it is said once.
               failedMessage.endsWith('Nothing was stored.') ? failedMessage : `${failedMessage} Nothing was stored.`
             ) : (
-              <>{failedMessage} The image may or may not have been stored: check the list of this consultation&apos;s images.</>
+              <>{failedMessage} The image may or may not have been stored: check the patient&apos;s thermal images before capturing again.</>
             )}
           </Alert>
         )}
@@ -382,64 +385,17 @@ const CameraPane = memo(function CameraPane({
   )
 })
 
-/** The analysis of one capture: the measurements at a glance, the image with its regions, the model's status and the summary to review. */
+/**
+ * The analysis of one capture: the doctor's thermal study (ThermalStudy, the same as on the Thermal page): the image with its regions, the
+ * whole image's numbers, the review, the summary to review and add to the note, and the engineering detail behind "Details".
+ */
 const Analysis = memo(function Analysis({ captureId, encounter, inserter, canEdit, onDirtyChange }: { captureId: string; encounter: Encounter; inserter: NoteInserter; canEdit: boolean; onDirtyChange: (dirty: boolean) => void }) {
-  const q = useThermal(captureId)
-  if (q.isPending) return <p className="text-sm text-ink-muted">Processing: measuring the temperatures…</p>
-  if (q.isError) return <Alert tone="error">{errorMessage(q.error)}</Alert>
-  const c = q.data
   return (
-    <div className="space-y-6" data-testid="thermal-analysis">
-      <Dashboard c={c} patientName={encounter.patient.fullName} />
-      <PanelBoundary label="The thermal image">
-        <ThermalViewer capture={c} embedded allowPolygon showProvenance onDirtyChange={onDirtyChange} />
-      </PanelBoundary>
-      <PanelBoundary label="The thermal summary">
-        <ThermalSummaryCard captureId={c.id} captureStatus={c.status} encounter={encounter} inserter={inserter} canEdit={canEdit} />
-      </PanelBoundary>
+    <div data-testid="thermal-analysis">
+      <ThermalStudy captureId={captureId} encounter={encounter} inserter={inserter} canEdit={canEdit} onDirtyChange={onDirtyChange} level={3} />
     </div>
   )
 })
-
-/** THERMAL ANALYSIS: every field from the stored capture; nothing estimated, nothing scored. Generated numbers are never called a measurement. */
-function Dashboard({ c, patientName }: { c: ThermalCapture; patientName: string }) {
-  const site = c.protocol.bodySite ? BODY_SITES[c.protocol.bodySite] : null
-  const simulated = !!c.simulated || c.captureSource === 'simulator'
-  const rows: [string, ReactNode][] = [
-    ['Patient', patientName],
-    ['Region', [site, c.protocol.bodyRegion].filter((v, i, a) => v && a.indexOf(v) === i).join(' · ')],
-    ['Captured', fmtDateTime(c.capturedAt ?? c.createdAt)],
-    ['Min', fmtC(c.minC)],
-    ['Max', fmtC(c.maxC)],
-    ['Mean', fmtC(c.meanC)],
-    ['Std dev', c.stdC === null ? 'Not stored for this image' : fmtC(c.stdC)],
-    ['Regions', c.rois.length ? `${c.rois.length} measured` : 'None yet: draw one on the image'],
-  ]
-  return (
-    <section aria-labelledby="thermal-dashboard-title" className="rounded-xl border border-line bg-surface p-4" data-testid="thermal-dashboard">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 id="thermal-dashboard-title" className="text-sm font-semibold tracking-wide uppercase">
-          Thermal analysis
-        </h3>
-        <ThermalSourceBadge capture={c} />
-      </div>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm @lg:grid-cols-4">
-        {rows.map(([k, v]) => (
-          <div key={k} className="min-w-0">
-            <dt className="text-xs text-ink-muted">{k}</dt>
-            <dd className="font-medium break-words tabular-nums">{v}</dd>
-          </div>
-        ))}
-      </dl>
-      <p className="mt-3 text-xs text-ink-muted" data-testid="thermal-dashboard-basis">
-        {simulated ? 'SIMULATED: generated numbers, not a measurement.' : 'Measured from the radiometric data of this image (skin-surface temperature). Not clinically validated.'}
-      </p>
-      <div className="mt-3">
-        <ThermalModelStatus variant="inline" />
-      </div>
-    </section>
-  )
-}
 
 /**
  * THERMAL IMAGING (V6): capturing a thermal image for the consultation's patient and encounter, and reading it. Opened from the consultation's
@@ -535,7 +491,7 @@ export function ThermalWorkspace({ encounter, inserter, canEdit, initialCaptureI
       </header>
       <div className="grid grid-cols-1 gap-6 p-4 sm:p-6 lg:grid-cols-[minmax(20rem,30rem)_minmax(0,1fr)]">
         <section aria-label="Camera and capture" className="min-w-0 space-y-4">
-          <CameraPane encounter={encounter} bridge={bridge} event={event} guard={guard} onBusyChange={onBusyChange} onCaptured={onCaptured} />
+          <CameraPane patient={p} encounterId={encounter.id} bridge={bridge} event={event} guard={guard} onBusyChange={onBusyChange} onCaptured={onCaptured} />
           <div className="rounded-xl border border-dashed border-line p-4 text-sm">
             <p className="font-medium">Earlier images</p>
             <p className="mt-1 text-xs text-ink-muted">An earlier radiometric FLIR image from this device can be imported for this consultation. It is labelled IMPORTED.</p>
@@ -583,6 +539,8 @@ export function ThermalWorkspace({ encounter, inserter, canEdit, initialCaptureI
           patientId={p.id}
           encounterId={encounter.id}
           source="gallery_import"
+          variant="simple"
+          context={`For ${p.fullName} (MRN ${p.mrn}), this consultation.`}
           onClose={() => setImporting(false)}
           onUploaded={(c) => {
             // The dialog has cached the capture and refreshed the lists it appears in.
@@ -592,19 +550,14 @@ export function ThermalWorkspace({ encounter, inserter, canEdit, initialCaptureI
         />
       )}
       {ask && (
-        <ConfirmationDialog
-          title="Discard the unsaved regions?"
-          keepLabel="Keep editing"
-          confirmLabel="Discard the regions"
-          onClose={() => setAsk(null)}
-          onConfirm={() => {
+        <DiscardRegionsDialog
+          onKeep={() => setAsk(null)}
+          onDiscard={() => {
             const { go } = ask
             setAsk(null)
             go()
           }}
-        >
-          <p>The regions drawn on this image have not been saved, and continuing discards them. To keep them, choose “Keep editing” and press “Save regions”.</p>
-        </ConfirmationDialog>
+        />
       )}
     </dialog>
   )

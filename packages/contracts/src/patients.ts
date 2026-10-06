@@ -116,6 +116,8 @@ export const PatientSummary = z.object({
   lastVisitDate: z.string().nullable(),
   /** synthetic, clinical, or unspecified for records made before the origin was kept. */
   dataOrigin: z.enum(['synthetic', 'clinical', 'unspecified']),
+  /** HERO final (optional; the patient search returns it): the names of the active allergies, for the list's allergy chip. */
+  activeAllergies: z.array(z.string()).optional(),
 })
 export type PatientSummary = z.infer<typeof PatientSummary>
 

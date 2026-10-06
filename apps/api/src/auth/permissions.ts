@@ -32,6 +32,13 @@ export const PERMISSIONS = {
   'encounters:read': ['doctor', 'nurse'],
   'encounters:write': ['doctor'],
   'encounters:sign': ['doctor'],
+  /** HERO final: the doctor's own day (Home counts, trend and today's patients). */
+  'doctor_day:read': ['doctor'],
+  /** HERO final: service orders. Nurses see them (and the catalogue); the doctor of the consultation orders and cancels. */
+  'orders:read': ['doctor', 'nurse'],
+  'orders:write': ['doctor'],
+  /** HERO final: uploading a patient's documents (reports, imaging) and marking one as entered in error. Reading them is patients:read. */
+  'documents:write': ['doctor', 'nurse'],
   'ai:use': ['doctor'],
   /** Aggregate AI operations and review metrics (no patient-level content). */
   'ai:oversight': ['admin', 'doctor'],

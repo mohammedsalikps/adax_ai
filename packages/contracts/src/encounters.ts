@@ -53,6 +53,9 @@ export const DiagnosisInput = z.object({
 })
 export type DiagnosisInput = z.input<typeof DiagnosisInput>
 
+/** HERO final: the longest structured course, in days (the database checks the same bound, migration 0033). */
+export const PRESCRIPTION_DURATION_DAYS_MAX = 3650
+
 export const PrescriptionItemInput = z.object({
   drugName: draftText(160),
   strength: draftText(60),
@@ -60,8 +63,19 @@ export const PrescriptionItemInput = z.object({
   dose: draftText(60),
   route: draftText(40),
   frequency: draftText(60),
+  /** The duration as written ("5 days", "Until review", "When needed"); kept for every medicine. */
   duration: draftText(60),
   instructions: draftText(300),
+  /**
+   * HERO final: the course length in days when it has one (null or absent: no fixed length, e.g. when needed or until review, or a medicine
+   * prescribed before this existed). Stored with the medicine; the patient app's "Day 3 of 7" is derived from it and `startDate`.
+   */
+  durationDays: z.number().int().min(1, 'At least 1 day').max(PRESCRIPTION_DURATION_DAYS_MAX, `At most ${PRESCRIPTION_DURATION_DAYS_MAX} days`).nullable().optional(),
+  /**
+   * HERO final: the first day of the course (YYYY-MM-DD). Absent with a duration in days: the consultation's date, which the server stores
+   * when the draft is saved (the course is part of what is signed, scheme v3, and cannot change afterwards).
+   */
+  startDate: z.iso.date().nullable().optional(),
 })
 export type PrescriptionItemInput = z.input<typeof PrescriptionItemInput>
 export type PrescriptionItem = z.output<typeof PrescriptionItemInput>
@@ -153,7 +167,8 @@ export const Encounter = z.object({
   facilityName: z.string(),
   note: NoteFields,
   diagnoses: z.array(z.object({ description: z.string(), code: z.string().nullable(), kind: DiagnosisKind })),
-  prescription: z.array(PrescriptionItemInput.required()),
+  // The structured duration (HERO final) stays optional here until every producer returns it (null for medicines without one).
+  prescription: z.array(PrescriptionItemInput.required().extend({ durationDays: z.number().int().nullable().optional(), startDate: z.string().nullable().optional() })),
   vitals: z.array(Observation),
   amendments: z.array(Amendment),
   /** AI-produced text the doctor inserted into the note, with a reference to its source. */
@@ -173,8 +188,29 @@ export const Encounter = z.object({
   canResume: z.boolean(),
   /** Their own unsigned draft, which they may discard. */
   canDiscard: z.boolean(),
+  // --- HERO final (optional until the encounters routes return them). The visit's status is `visit.status`. ---
+  /** When the doctor completed the consultation (the visit became completed); null while it is not completed. */
+  completedAt: z.string().nullable().optional(),
+  /** The current user may complete it now: they signed it, and its visit is still with the doctor (POST /api/encounters/:id/complete). */
+  canComplete: z.boolean().optional(),
 })
 export type Encounter = z.infer<typeof Encounter>
+
+/**
+ * POST /api/encounters/:id/complete: the signing doctor completes the consultation (signing no longer does): the visit becomes completed
+ * (with its appointment), the record and its prescription become visible to the patient, and the queue counts the patient as seen. Only for a
+ * signed consultation whose visit is still with the doctor; a second call is refused (409 `already_completed`).
+ */
+export const CompleteEncounterRequest = z.object({ version: z.number().int().positive().optional() })
+export type CompleteEncounterRequest = z.input<typeof CompleteEncounterRequest>
+export const CompleteEncounterResult = z.object({
+  encounterId: z.uuid(),
+  visitId: z.uuid(),
+  completedAt: z.string(),
+  /** The patient can see the record and today's prescription in the patient app (an active portal account with portal consent). */
+  patientPortalAccess: z.boolean(),
+})
+export type CompleteEncounterResult = z.infer<typeof CompleteEncounterResult>
 
 export const TimelineEntry = z.object({
   kind: z.enum(['encounter', 'visit']),
@@ -236,6 +272,7 @@ export const STATUS_SOURCE_LABELS: Record<string, string> = {
   consultation_start: 'Consultation started',
   consultation_resume: 'Consultation continued',
   consultation_signed: 'Consultation signed',
+  consultation_completed: 'Consultation completed',
   consultation_discarded: 'Draft discarded',
   unspecified: 'Changed outside the app',
 }
@@ -263,9 +300,14 @@ export type StatusHistory = z.infer<typeof StatusHistory>
  * scheme marker and are v1. v2 (current): the snapshot names its scheme and
  * also covers the facility, visit id, reason for visit and the attestation;
  * serialisation is strict (no undefined values, dates or non-finite numbers).
+ * v3 (HERO final, current): v2 plus each medicine's structured duration
+ * (durationDays, startDate; null when the medicine has none). Records signed
+ * under v1 and v2 keep verifying under their own scheme (encounters/verify.ts).
  */
-export const ENCOUNTER_HASH_SCHEMES = ['adaxai.encounter.v1', 'adaxai.encounter.v2'] as const
-export const CURRENT_ENCOUNTER_HASH_SCHEME = 'adaxai.encounter.v2'
+export const ENCOUNTER_HASH_SCHEME_V2 = 'adaxai.encounter.v2'
+export const ENCOUNTER_HASH_SCHEME_V3 = 'adaxai.encounter.v3'
+export const ENCOUNTER_HASH_SCHEMES = ['adaxai.encounter.v1', ENCOUNTER_HASH_SCHEME_V2, ENCOUNTER_HASH_SCHEME_V3] as const
+export const CURRENT_ENCOUNTER_HASH_SCHEME = ENCOUNTER_HASH_SCHEME_V3
 
 export const VerificationStatus = z.enum(['valid', 'invalid', 'unsupported_version', 'unverifiable'])
 export type VerificationStatus = z.infer<typeof VerificationStatus>

@@ -2,7 +2,6 @@ import type { Role } from '@adaxai/contracts'
 import {
   CalendarDays,
   ClipboardList,
-  FileSignature,
   FileClock,
   FileText,
   HeartPulse,
@@ -26,6 +25,8 @@ export interface NavItem {
   label: string
   icon: LucideIcon
   end?: boolean
+  /** Other pages that belong to this item: it is shown as the current section there too (the link itself is not "the current page"). */
+  also?: string[]
 }
 
 export const NAV: Record<Role, NavItem[]> = {
@@ -39,14 +40,13 @@ export const NAV: Record<Role, NavItem[]> = {
     { to: '/admin/ai', label: 'AI operations', icon: BrainCircuit },
     { to: '/admin/audit', label: 'Audit log', icon: ScrollText },
   ],
+  // Doctor HERO (DESIGN §4): exactly four places. Appointments, the drafts list (/doctor/consultations), AI review and registration are no
+  // longer in the doctor's navigation; their routes stay (direct links, the queue's "Drafts and signed records" link, e2e).
   doctor: [
     { to: '/doctor', label: 'Home', icon: LayoutDashboard, end: true },
-    { to: '/doctor/queue', label: 'Today’s patients', icon: Stethoscope },
-    { to: '/doctor/appointments', label: 'Appointments', icon: CalendarDays },
-    { to: '/doctor/consultations', label: 'My consultations', icon: FileSignature },
+    { to: '/doctor/queue', label: 'My consultations', icon: Stethoscope, also: ['/doctor/consultations', '/doctor/encounters'] },
     { to: '/doctor/patients', label: 'Patients', icon: Users },
     { to: '/doctor/thermal', label: 'Thermal', icon: ScanLine },
-    { to: '/doctor/ai-review', label: 'AI review', icon: BrainCircuit },
   ],
   nurse: [
     { to: '/nurse', label: 'OPD queue', icon: ClipboardList, end: true },

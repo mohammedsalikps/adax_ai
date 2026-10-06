@@ -66,6 +66,8 @@ async function scenario(ctx: TestContext, { name = 'Lakshmi', phone = '98400 123
   const e1 = Encounter.parse((await call(ctx.app, 'POST', `/api/visits/${v1.id}/encounter`, { cookie: doctor })).json())
   const s1 = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e1.id}/draft`, { cookie: doctor, body: { version: e1.version, note: note(), diagnoses: [{ description: 'Type 2 diabetes mellitus', code: 'E11.9', kind: 'primary' }], prescription: [rx('Metformin')] } })).json())
   expect((await call(ctx.app, 'POST', `/api/encounters/${e1.id}/sign`, { cookie: doctor, body: { version: s1.version, attestation: true } })).statusCode).toBe(200)
+  // HERO final (deliberate change): signing no longer closes the visit; the doctor completes the earlier consultation, as signing used to.
+  expect((await call(ctx.app, 'POST', `/api/encounters/${e1.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
   // The earlier consultation happened 200 days ago (bypassing the freeze triggers as the test superuser).
   await adminQuery(`SET session_replication_role = replica;
     UPDATE encounters SET signed_at = now() - interval '200 days', started_at = now() - interval '200 days' WHERE id = '${e1.id}';

@@ -26,7 +26,12 @@ async function patientWithSignedRecord(baseURL: string, given: string) {
       },
     })
   ).json()
-  expect((await doctor.post(`/api/encounters/${e.id}/sign`, { data: { version: saved.version, attestation: true } })).ok()).toBe(true)
+  const signed = await doctor.post(`/api/encounters/${e.id}/sign`, { data: { version: saved.version, attestation: true } })
+  expect(signed.ok()).toBe(true)
+  // Signing no longer completes the visit, and the patient app shows a record only once its consultation is completed (DESIGN §5.6, §6):
+  // the doctor's separate Complete act.
+  const completed = await doctor.post(`/api/encounters/${e.id}/complete`, { data: { version: (await signed.json()).version } })
+  expect(completed.ok(), await completed.text()).toBe(true)
   const code = (await (await nurse.post(`/api/patients/${patient.id}/portal-activation`)).json()).activationCode as string
   await nurse.dispose()
   await doctor.dispose()

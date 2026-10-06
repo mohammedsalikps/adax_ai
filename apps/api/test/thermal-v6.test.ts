@@ -9,6 +9,7 @@ import { hashPassword } from '../src/auth/password.ts'
 import { consents, departments, facilities, users } from '../src/db/schema.ts'
 import { loadAppSettings } from '../src/settings/load.ts'
 import { httpThermalService, type ThermalService } from '../src/thermal/client.ts'
+import { FILE_INTO_CLOSED_CONSULTATION } from '../src/thermal/routes.ts'
 import { adminQuery, call, closedPort, createFixture, createTestApp, type Fixture, login, resetDatabase, samplePatient, TEST_PASSWORD, testConfig, type TestContext } from './helpers.ts'
 import { haveThermal, multipart, SAMPLES, sampleProtocol, startThermalService } from './thermal-support.ts'
 
@@ -314,6 +315,8 @@ describe.skipIf(!haveThermal)('V6 thermal capture: what changes while the image 
   async function sign(e: Encounter) {
     const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body: draft(e) })).json())
     expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })).statusCode).toBe(200)
+    // HERO final (deliberate change): signing no longer closes the visit; completed, the patient's next consultation (next loop turn) can open.
+    expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
   }
   async function discard(e: Encounter) {
     expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/discard`, { cookie: doctor, body: { version: e.version, reason: 'Opened for the wrong patient' } })).statusCode).toBe(200)
@@ -342,10 +345,66 @@ describe.skipIf(!haveThermal)('V6 thermal capture: what changes while the image 
       ['denied', 'live_capture', false, 'encounter_not_in_progress', true],
       ['denied', 'gallery_import', false, 'encounter_not_in_progress', true],
     ])
-    // A file upload is not taken in a consultation: it may still name a signed one, as before.
+    // HERO final (deliberate change): a file upload is no longer filed under a signed consultation either: refused (409), nothing stored.
     const signed = (await adminQuery("SELECT id FROM encounters WHERE status = 'signed'")).rows[0].id as string
+    const filesBefore = storedFiles()
     const res = await upload(p.id, { captureSource: 'file_upload', encounterId: signed })
-    expect(res.statusCode, res.body).toBe(201)
+    expect([res.statusCode, res.json().error], res.body).toEqual([409, 'encounter_not_in_progress'])
+    expect(await count('thermal_captures')).toBe(0)
+    expect(await count('files')).toBe(0)
+    expect(storedFiles()).toEqual(filesBefore)
+  })
+
+  it('a file upload is filed only under a consultation in progress: a signed or discarded one is refused (409), also when it closes while the image is processed; nothing is stored, and the refusal is audited', async () => {
+    const p = await patient()
+    const before = storedFiles()
+    // A signed (and completed) consultation.
+    const a = await consultation(p.id)
+    await sign(a)
+    // A consultation in progress takes a file upload from the nurse as well as the doctor, filed under it.
+    const c = await consultation(p.id)
+    const filed = ThermalCapture.parse((await upload(p.id, { captureSource: 'file_upload', encounterId: c.id }, nurse)).json())
+    expect(filed).toMatchObject({ captureSource: 'file_upload', encounterId: c.id, simulated: false })
+    // Signed while the image is processed: the store-time look refuses it, and its bytes are removed.
+    const afterFiled = storedFiles()
+    whileProcessing = () => sign(c)
+    const closing = await upload(p.id, { captureSource: 'file_upload', encounterId: c.id }, nurse)
+    whileProcessing = null
+    expect([closing.statusCode, closing.json().error]).toEqual([409, 'encounter_not_in_progress'])
+    expect(closing.json().message).toBe('This consultation was signed or discarded while the image was being processed. Nothing was stored.')
+    expect(storedFiles()).toEqual(afterFiled)
+    // A discarded draft.
+    const b = await consultation(p.id)
+    await discard(b)
+    // Refused before the image is processed, for the doctor and the nurse, for a file upload and an import.
+    for (const [source, encounterId, cookie] of [
+      ['file_upload', a.id, doctor],
+      ['file_upload', a.id, nurse],
+      ['file_upload', b.id, doctor],
+      ['gallery_import', a.id, doctor],
+      ['gallery_import', b.id, doctor],
+    ] as const) {
+      const res = await upload(p.id, { captureSource: source, encounterId }, cookie)
+      expect([res.statusCode, res.json().error], `${source} ${encounterId === a.id ? 'signed' : 'discarded'}`).toEqual([409, 'encounter_not_in_progress'])
+      if (source === 'file_upload') expect(res.json().message).toBe(FILE_INTO_CLOSED_CONSULTATION)
+    }
+    expect(storedFiles()).toEqual(afterFiled)
+    expect((await adminQuery('SELECT encounter_id FROM thermal_captures')).rows).toEqual([{ encounter_id: c.id }])
+    expect(before.length).toBeLessThan(afterFiled.length)
+    // Without a consultation, a file upload is still the patient's.
+    const loose = ThermalCapture.parse((await upload(p.id)).json())
+    expect(loose).toMatchObject({ captureSource: 'file_upload', encounterId: null })
+    expect((await audits('thermal.upload')).map((x) => [x.details.captureSource, x.details.encounterId])).toEqual([
+      ['file_upload', c.id],
+      ['file_upload', null],
+    ])
+    // Every file-upload refusal is audited (ids and reasons only); the import's pre-check refusal is the existing 409 of the consultation rule.
+    expect((await audits('thermal.capture_refused')).map((x) => [x.outcome, x.details.captureSource, x.details.encounterId, x.details.reason, x.details.atStore ?? false])).toEqual([
+      ['denied', 'file_upload', c.id, 'encounter_not_in_progress', true],
+      ['denied', 'file_upload', a.id, 'encounter_not_in_progress', false],
+      ['denied', 'file_upload', a.id, 'encounter_not_in_progress', false],
+      ['denied', 'file_upload', b.id, 'encounter_not_in_progress', false],
+    ])
   })
 
   it('a consent withdrawn while the image is processed: nothing is stored, the bytes are removed, and consent.blocked is audited at store time', async () => {

@@ -1,12 +1,12 @@
 import { type ClinicalFact, type Encounter, type EncounterAi, FACT_CATEGORIES, FACT_FLAGS, FACT_SECTION, FACT_STATE_LABELS, type FactFlag, factState, type Transcript } from '@adaxai/contracts'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronDown, FileAudio, ListChecks, Mic, ShieldCheck, Sparkles, X } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Check, ChevronDown, FileAudio, ListChecks, Mic, Sparkles, X } from 'lucide-react'
+import { useCallback, useState } from 'react'
 import { type AiResponse, aiKey, useAiMutation } from '../../lib/ai.ts'
 import { api, errorMessage } from '../../lib/api.ts'
 import { useStillSamePerson } from '../../lib/auth.tsx'
 import { clinicianReason, fmtOffset, languageName, useAssignSpeakers, useExtractPoints } from '../../lib/capture.ts'
-import { isDemoTranscript, newLineIds, pointProvenance, revealMs, revealText, transcriptSourceLabel } from '../../lib/demoConsultation.ts'
+import { isDemoTranscript, pointProvenance, transcriptSourceLabel } from '../../lib/demoConsultation.ts'
 import { focusLines, useFocusedLines } from '../../lib/focusLines.ts'
 import { fmtDateTime, fmtTime } from '../../lib/format.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
@@ -18,9 +18,11 @@ import { Alert, Badge, Spinner } from '../ui/Feedback.tsx'
 import { TextAreaField } from '../ui/Form.tsx'
 import { Card } from '../ui/Layout.tsx'
 import { useToast } from '../ui/Toast.tsx'
-import { DemoAudioMark, DemoConsultation, useReducedMotion } from './DemoConsultation.tsx'
+import { RecordingConsent } from './Consent.tsx'
+import { DemoAudioMark, DemoConsultation } from './DemoConsultation.tsx'
 import { Recorder } from './Recorder.tsx'
 import { TranscriptView } from './TranscriptView.tsx'
+import { useWordReveal } from './useWordReveal.ts'
 
 const ATTRIBUTION: Record<string, string> = { patient_reported: 'Patient said', clinician_stated: 'Doctor said', other_speaker: 'Speaker not identified' }
 
@@ -62,39 +64,7 @@ export function CapturePanel({ encounter, inserter }: { encounter: Encounter; in
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
 
-function ConsentLine({ encounter, ai }: { encounter: Encounter; ai: EncounterAi }) {
-  const toast = useToast()
-  const consent = useAiMutation<{ method: 'verbal' | 'written' }>(encounter.id, (body) => api(`/encounters/${encounter.id}/ai-consent`, { method: 'POST', body }))
-  if (ai.consent.granted) {
-    return (
-      <p className="flex items-start gap-1.5 text-xs text-ok" data-testid="recording-consent">
-        <ShieldCheck aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-        <span>
-          Recording consent {ai.consent.scope === 'encounter' ? 'recorded for this consultation' : 'recorded (ongoing)'} · {fmtDateTime(ai.consent.recordedAt)}
-        </span>
-      </p>
-    )
-  }
-  return (
-    <div className="rounded-lg border border-line p-3 text-sm" data-testid="recording-consent">
-      <p className="font-medium">The patient’s consent to recording is needed</p>
-      <p className="mt-1 text-ink-muted">
-        Ask the patient whether this consultation may be recorded. The audio is turned into text by a speech model that runs on {ai.status.stt.local ? 'this computer; it is not sent to any other service' : `${ai.status.stt.host ?? 'another computer'}, which is not this one (the clinic’s own setting); it is not sent to a hosted service`}, and it is stored with the consultation.
-        {ai.status.egress.destination ? ` Hosted AI is switched on for this server: text from the consultation (without name or contact details) may also go to ${ai.status.egress.destination}, which is not on this computer, for the AI steps the doctor chooses. The audio never does.` : ''} Declining does not affect their care.
-      </p>
-      {consent.isError && (
-        <Alert tone="error" className="mt-2">
-          {errorMessage(consent.error)}
-        </Alert>
-      )}
-      <div className="mt-3">
-        <Button size="sm" loading={consent.isPending} onClick={() => consent.mutate({ method: 'verbal' }, { onSuccess: () => toast('success', 'Consent recorded for this consultation') })}>
-          Patient agrees (verbal)
-        </Button>
-      </div>
-    </div>
-  )
-}
+const ConsentLine = ({ encounter, ai }: { encounter: Encounter; ai: EncounterAi }) => <RecordingConsent encounter={encounter} ai={ai} />
 
 function LiveTranscriptionCard({ encounter, ai, highlight }: { encounter: Encounter; ai: EncounterAi; highlight: ReadonlySet<string> }) {
   const toast = useToast()
@@ -259,54 +229,6 @@ function LiveTranscriptionCard({ encounter, ai, highlight }: { encounter: Encoun
       {ai.transcripts.length === 0 && !live && <p className="text-sm text-ink-muted">Nothing has been recorded or typed yet. What is heard appears here as raw transcript, line by line, with its time.</p>}
     </Card>
   )
-}
-
-/**
- * A transcript as it is drawn. A line that arrives while the transcript is live (a recording, or the demo consultation) appears word by word,
- * in at most 600 ms (lines that arrived together, together): only the words that arrived, never others, and only on the screen (the transcript
- * is not changed). With reduced motion, and for the lines already there when the transcript is first shown, at once.
- */
-function useWordReveal(t: Transcript): Transcript {
-  const reduced = useReducedMotion()
-  const live = t.status === 'live'
-  const known = useRef<{ tid: string; ids: Set<string> } | null>(null)
-  const [starts, setStarts] = useState<ReadonlyMap<string, number>>(() => new Map())
-  const [now, setNow] = useState(0)
-  // Before the browser paints the new line, so that it never shows whole and then starts again.
-  useLayoutEffect(() => {
-    const ids = t.segments.map((s) => s.id)
-    const k = known.current
-    if (!k || k.tid !== t.id) {
-      known.current = { tid: t.id, ids: new Set(ids) }
-      setStarts((m) => (m.size ? new Map() : m))
-      return
-    }
-    const fresh = newLineIds(k.ids, ids)
-    for (const x of fresh) k.ids.add(x)
-    if (!fresh.length || !live || reduced) return
-    const at = performance.now()
-    setStarts((m) => new Map([...m, ...fresh.map((x) => [x, at] as const)]))
-    setNow(at)
-  }, [t.id, t.segments, live, reduced])
-  // About 25 frames a second while words are appearing; nothing otherwise.
-  useEffect(() => {
-    if (!starts.size) return
-    const timer = setInterval(() => setNow(performance.now()), 40)
-    return () => clearInterval(timer)
-  }, [starts])
-  useEffect(() => {
-    if (starts.size && [...starts].every(([x, at]) => now - at >= revealMs(t.segments.find((s) => s.id === x)?.text ?? ''))) setStarts(new Map())
-  }, [now, starts, t.segments])
-  return useMemo(() => {
-    if (!starts.size || reduced) return t
-    return {
-      ...t,
-      segments: t.segments.map((s) => {
-        const at = starts.get(s.id)
-        return at === undefined ? s : { ...s, text: revealText(s.text, now - at) }
-      }),
-    }
-  }, [t, starts, now, reduced])
 }
 
 function TranscriptSection({

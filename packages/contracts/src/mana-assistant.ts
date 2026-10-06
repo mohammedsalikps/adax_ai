@@ -198,6 +198,93 @@ export const ManaToolSummary = z.object({
 })
 export type ManaToolSummary = z.infer<typeof ManaToolSummary>
 
+// --- HERO final: answers from fixed rules, voice input, and actions the doctor approves ---------------------------------------------------
+
+/**
+ * What wrote an answer: `rules` (a deterministic answer composed by the server from structured queries, no model: "From the records (fixed
+ * rules)") or `model` (the local language model, checked as before). Absent on answers made before it was recorded: those are the model's.
+ */
+export const ManaAnswerEngine = z.enum(['rules', 'model'])
+export type ManaAnswerEngine = z.infer<typeof ManaAnswerEngine>
+export const MANA_RULES_ANSWER_LABEL = 'From the records (fixed rules)'
+
+/** A medicine Mana proposes to add, built only from the doctor's own fully specified words (drug, dose, frequency and duration). */
+export const ManaProposedPrescriptionItem = z.object({
+  drugName: z.string().min(1).max(160),
+  strength: z.string().max(60),
+  form: z.string().max(40),
+  dose: z.string().min(1).max(60),
+  route: z.string().max(40),
+  frequency: z.string().min(1).max(60),
+  duration: z.string().min(1).max(60),
+  durationDays: z.number().int().min(1).max(3650).nullable(),
+  instructions: z.string().max(300),
+})
+export type ManaProposedPrescriptionItem = z.infer<typeof ManaProposedPrescriptionItem>
+
+/** What the fixed checks found about a proposal (an allergy on record in the same group, the same medicine already on the prescription). */
+export const ManaActionWarning = z.object({ kind: z.enum(['allergy_conflict', 'duplicate_medicine', 'other']), text: z.string() })
+export type ManaActionWarning = z.infer<typeof ManaActionWarning>
+
+/**
+ * A consequential action Mana proposes and never carries out: the doctor approves or declines it. Approving records the decision; the medicine
+ * is then added to the consultation's unsigned prescription by the doctor's screen (the server never writes the prescription). Ambiguous words
+ * never make a proposal: Mana asks for what is missing instead.
+ */
+export const ManaActionProposal = z.object({
+  kind: z.literal('add_prescription_item'),
+  encounterId: z.uuid(),
+  item: ManaProposedPrescriptionItem,
+  /** One line for the card: "Add to the prescription: Amoxicillin 500 mg · three times a day · 5 days". */
+  summary: z.string(),
+  warnings: z.array(ManaActionWarning),
+})
+export type ManaActionProposal = z.infer<typeof ManaActionProposal>
+
+export const ManaActionDecision = z.enum(['approved', 'declined'])
+export type ManaActionDecision = z.infer<typeof ManaActionDecision>
+/** POST /api/mana-assistant/messages/:messageId/decision */
+export const ManaActionDecisionRequest = z.object({ decision: ManaActionDecision })
+export type ManaActionDecisionRequest = z.infer<typeof ManaActionDecisionRequest>
+export const ManaActionDecisionResult = z.object({ messageId: z.uuid(), decision: ManaActionDecision, decidedAt: z.string() })
+export type ManaActionDecisionResult = z.infer<typeof ManaActionDecisionResult>
+
+/** POST /api/mana-assistant/voice: one short clip (multipart, one audio file), transcribed in memory by the local speech model and never stored. */
+export const MANA_VOICE_MAX_SECONDS = 30
+export const MANA_VOICE_MAX_BYTES = 5 * 1024 * 1024
+/** The answer: the words heard (the screen puts them in the question box and sends them as a question). */
+export const ManaVoiceTranscript = z.object({
+  text: z.string(),
+  /** Nothing was heard (silence, or no speech the model could read). */
+  empty: z.boolean(),
+  durationMs: z.number().int().nullable(),
+  language: z.string().nullable(),
+})
+export type ManaVoiceTranscript = z.infer<typeof ManaVoiceTranscript>
+/**
+ * The text fields of the voice upload (sent before the file). `conversationId`: the conversation the question is for (a consultation's needs the
+ * patient's recording consent, as any recording in a consultation does); `durationMs`: how long the browser recorded, refused above the limit.
+ */
+export const ManaVoiceFields = z.object({
+  conversationId: z.uuid().optional(),
+  durationMs: z.coerce.number().int().min(0).max(3_600_000).optional(),
+})
+export type ManaVoiceFields = z.infer<typeof ManaVoiceFields>
+
+/**
+ * The questions Mana answers from the records by fixed rules (no model): the words the screen's buttons ask, which the server recognises as it
+ * recognises a doctor who types or says them. `needsPatient`: offered only in a conversation about one patient (a consultation or a patient's page).
+ */
+export const MANA_RULES_QUESTIONS = {
+  next_patient: { chip: 'Next patient', text: 'Who is my next patient?', needsPatient: false },
+  seen_today: { chip: 'Seen today', text: 'How many patients have I seen today?', needsPatient: false },
+  waiting_longest: { chip: 'Waiting longest', text: 'Which of my patients has been waiting longest?', needsPatient: false },
+  nurse_triage: { chip: 'Nurse triage', text: 'What did the nurse record at triage?', needsPatient: true },
+  orders_status: { chip: 'Lab / orders status', text: 'Which orders are pending?', needsPatient: false },
+  allergies: { chip: 'Allergies', text: 'What allergies does this patient have?', needsPatient: true },
+} as const
+export type ManaRulesQuestion = keyof typeof MANA_RULES_QUESTIONS
+
 export const MANA_OUTCOMES = ['answered', 'not_established', 'ambiguous', 'clarify', 'refused'] as const
 export const ManaAnswerBody = z.object({
   outcome: z.enum(MANA_OUTCOMES),
@@ -216,6 +303,10 @@ export const ManaAnswerBody = z.object({
   entities: z.array(ManaEntity),
   /** Statements of the model's answer that the checks could not verify and removed. */
   removed: z.number().int(),
+  /** HERO final: what wrote the answer (absent: the model, as before). */
+  engine: ManaAnswerEngine.optional(),
+  /** HERO final: an action the doctor may approve or decline (absent or null: none). */
+  action: ManaActionProposal.nullable().optional(),
 })
 export type ManaAnswerBody = z.infer<typeof ManaAnswerBody>
 
@@ -247,6 +338,8 @@ export const ManaMessage = z.object({
     .nullable(),
   createdAt: z.string(),
   completedAt: z.string().nullable(),
+  /** HERO final: the doctor's decision on this answer's proposed action, once made (absent or null: not decided). */
+  actionDecision: z.object({ decision: ManaActionDecision, decidedAt: z.string() }).nullable().optional(),
 })
 export type ManaMessage = z.infer<typeof ManaMessage>
 

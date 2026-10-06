@@ -30,7 +30,7 @@ afterAll(() => ctx.close())
 const tamper = (sql: string, params: unknown[] = []) => adminQuery(`SET session_replication_role = replica; ${sql}`.replace(/\$(\d)/g, (_m, i) => `'${String(params[Number(i) - 1]).replace(/'/g, "''")}'`))
 
 let n = 0
-async function signedRecord(opts: { insertAi?: boolean } = {}) {
+async function signedRecord(opts: { insertAi?: boolean; course?: boolean } = {}) {
   n++
   const p = PatientDetail.parse((await call(ctx.app, 'POST', '/api/patients', { cookie: nurse, body: samplePatient({ givenName: `Integ${n}`, phone: `93000${String(n).padStart(5, '0')}` }) })).json())
   await call(ctx.app, 'POST', `/api/patients/${p.id}/allergies`, { cookie: nurse, body: { substance: 'Penicillin', reaction: 'Rash', severity: 'moderate' } })
@@ -49,25 +49,40 @@ async function signedRecord(opts: { insertAi?: boolean } = {}) {
           version: e.version,
           note: { ...e.note, chiefComplaint: 'Sore throat for 2 days', examination: 'Tonsils inflamed.', assessment: 'Acute pharyngitis.', plan: 'Warm saline gargles.' },
           diagnoses: [{ description: 'Acute pharyngitis', code: 'J02.9', kind: 'primary' }],
-          prescription: [{ drugName: 'Paracetamol', strength: '500 mg', form: 'Tablet', dose: '1 tablet', route: 'Oral', frequency: 'TDS', duration: '3 days', instructions: '' }],
+          prescription: [{ drugName: 'Paracetamol', strength: '500 mg', form: 'Tablet', dose: '1 tablet', route: 'Oral', frequency: 'TDS', duration: '3 days', instructions: '', ...(opts.course && { durationDays: 3 }) }],
         },
       })
     ).json(),
   )
   const signed = await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })
   expect(signed.statusCode).toBe(200)
+  // HERO final (deliberate change): signing no longer closes the visit, so the doctor completes it, as before signing did; some tests open a
+  // second visit for the same patient the same day. Completing changes the visit, not the signed record.
+  expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
   return Encounter.parse(signed.json())
 }
 const verify = async (id: string, cookie = doctor) => EncounterVerification.parse((await call(ctx.app, 'GET', `/api/encounters/${id}/verification`, { cookie })).json())
 const amend = (id: string, reason: string, content: string) => call(ctx.app, 'POST', `/api/encounters/${id}/amendments`, { cookie: doctor, body: { reason, content } })
+/** A v3 snapshot's medicines as v1 and v2 signed them: without the structured course (durationDays, startDate), which v3 added. */
+const writtenOnly = (rx: unknown) => (rx as Record<string, unknown>[]).map(({ durationDays: _d, startDate: _s, ...rest }) => rest)
 /** Turns a record signed now into one as signed before migration 0019 (scheme v1, no scheme anywhere). */
 async function makeLegacy(e: Encounter) {
   const snap = { ...((await row(e.id)).signedSnapshot as Record<string, unknown>) }
   for (const k of ['scheme', 'facilityId', 'attestation']) delete snap[k]
   snap.visit = { visitDate: e.visit.visitDate, tokenNumber: e.visit.tokenNumber }
+  // HERO final: records are now signed under v3, whose medicines also carry their course; a v1 record never had it.
+  snap.prescription = writtenOnly(snap.prescription)
   const hash = sha256(canonicalJson(snap))
   await tamper('UPDATE encounters SET hash_scheme = NULL, signed_snapshot = $2::jsonb, content_hash = $3 WHERE id = $1', [e.id, JSON.stringify(snap), hash])
   await tamper(`UPDATE audit_events SET details = jsonb_build_object('contentHash', $2::text) WHERE action = 'encounter.sign' AND entity_id = $1`, [e.id, hash])
+}
+/** Turns a record signed now into one as signed under scheme v2 (before HERO final): the same content without the medicines' course. */
+async function makeV2(e: Encounter) {
+  const signed = (await row(e.id)).signedSnapshot as Record<string, unknown>
+  const snap = { ...signed, scheme: 'adaxai.encounter.v2', prescription: writtenOnly(signed.prescription) }
+  const hash = sha256(canonicalJsonStrict(snap))
+  await tamper(`UPDATE encounters SET hash_scheme = 'adaxai.encounter.v2', signed_snapshot = $2::jsonb, content_hash = $3 WHERE id = $1`, [e.id, JSON.stringify(snap), hash])
+  await tamper(`UPDATE audit_events SET details = details || jsonb_build_object('contentHash', $2::text, 'hashScheme', 'adaxai.encounter.v2') WHERE action = 'encounter.sign' AND entity_id = $1`, [e.id, hash])
 }
 const failed = (r: EncounterVerification) => r.checks.filter((c) => c.result === 'fail').map((c) => c.key)
 const row = async (id: string) => (await ctx.db.query.encounters.findFirst({ where: (t, { eq }) => eq(t.id, id) }))!
@@ -88,19 +103,22 @@ describe('canonical serialisation', () => {
 describe('signed-record verification', () => {
   it('a newly signed record verifies: current scheme, content, record rows, audit copy; nurses can check it too, and checks are audited', async () => {
     const e = await signedRecord()
-    expect(e.hashScheme).toBe('adaxai.encounter.v2')
+    // HERO final (deliberate change): the current scheme is v3 (v2 plus each medicine's course); v2 records are checked in the next tests.
+    expect(e.hashScheme).toBe('adaxai.encounter.v3')
     const r = await verify(e.id)
-    expect(r).toMatchObject({ status: 'valid', scheme: 'adaxai.encounter.v2', schemeRecorded: true, contentHash: e.contentHash, recomputedHash: e.contentHash, amendments: { total: 0 } })
+    expect(r).toMatchObject({ status: 'valid', scheme: 'adaxai.encounter.v3', schemeRecorded: true, contentHash: e.contentHash, recomputedHash: e.contentHash, amendments: { total: 0 } })
     expect(r.checks.map((c) => `${c.key}:${c.result}`)).toEqual(['scheme:pass', 'content_hash:pass', 'record_matches:pass', 'sign_audit:pass', 'amendments:pass'])
+    expect(r.notes).toEqual([])
     expect((await verify(e.id, nurse)).status).toBe('valid')
-    // What is signed names its scheme and the attestation, and covers the visit and facility.
+    // What is signed names its scheme and the attestation, and covers the visit and facility, and each medicine's course (none given here: null).
     const snap = (await row(e.id)).signedSnapshot as Record<string, unknown>
-    expect(snap).toMatchObject({ scheme: 'adaxai.encounter.v2', facilityId: fx.facilityId, visit: { id: e.visit.id }, attestation: expect.stringMatching(/^I have reviewed this record/) })
+    expect(snap).toMatchObject({ scheme: 'adaxai.encounter.v3', facilityId: fx.facilityId, visit: { id: e.visit.id }, attestation: expect.stringMatching(/^I have reviewed this record/) })
+    expect(snap.prescription).toEqual([expect.objectContaining({ drugName: 'Paracetamol', duration: '3 days', durationDays: null, startDate: null })])
     expect(sha256(canonicalJsonStrict(snap))).toBe(e.contentHash)
     const { rows } = await adminQuery("SELECT details FROM audit_events WHERE action = 'encounter.verify' ORDER BY id")
     expect(rows.map((x) => x.details)).toEqual([
-      { status: 'valid', scheme: 'adaxai.encounter.v2', failed: [] },
-      { status: 'valid', scheme: 'adaxai.encounter.v2', failed: [] },
+      { status: 'valid', scheme: 'adaxai.encounter.v3', failed: [] },
+      { status: 'valid', scheme: 'adaxai.encounter.v3', failed: [] },
     ])
     // Patients and other facilities cannot check records this way.
     expect((await call(ctx.app, 'GET', `/api/encounters/${e.id}/verification`, { cookie: await login(ctx.app, 't.admin') })).statusCode).toBe(403)
@@ -149,6 +167,53 @@ describe('signed-record verification', () => {
     const r = await verify(e.id)
     expect(r).toMatchObject({ status: 'valid', scheme: 'adaxai.encounter.v1', schemeRecorded: false })
     expect(r.checks[0]!.detail).toMatch(/checked as version 1/)
+  })
+
+  it('v3 signs each medicine’s course (days and start date); a change to it afterwards, in the rows or in the signed content, is detected', async () => {
+    const e = await signedRecord({ course: true })
+    // The draft gave 3 days without a start date: the course starts on the consultation's date, stored before signing.
+    expect(e.prescription[0]).toMatchObject({ duration: '3 days', durationDays: 3, startDate: e.visit.visitDate })
+    const snap = (await row(e.id)).signedSnapshot as { prescription: Record<string, unknown>[] }
+    expect(snap.prescription[0]).toMatchObject({ durationDays: 3, startDate: e.visit.visitDate })
+    expect((await verify(e.id)).status).toBe('valid')
+    // The database refuses the change for the application role ...
+    await expect(ctx.pool.query('UPDATE prescription_items SET duration_days = 30 WHERE encounter_id = $1', [e.id])).rejects.toMatchObject({ code: '42501' })
+    // ... and a change made behind its back is found: the course length,
+    await tamper('UPDATE prescription_items SET duration_days = 30 WHERE encounter_id = $1', [e.id])
+    let r = await verify(e.id)
+    expect([r.status, failed(r)]).toEqual(['invalid', ['record_matches']])
+    expect(r.checks.find((c) => c.key === 'record_matches')!.detail).toMatch(/prescription/)
+    // the start date,
+    const e2 = await signedRecord({ course: true })
+    await tamper("UPDATE prescription_items SET start_date = start_date + 1 WHERE encounter_id = $1", [e2.id])
+    expect(failed(await verify(e2.id))).toEqual(['record_matches'])
+    // or the signed content itself.
+    const e3 = await signedRecord({ course: true })
+    await tamper(`UPDATE encounters SET signed_snapshot = jsonb_set(signed_snapshot, '{prescription,0,durationDays}', '30') WHERE id = $1`, [e3.id])
+    r = await verify(e3.id)
+    expect([r.status, failed(r)]).toEqual(['invalid', ['content_hash', 'record_matches']])
+  })
+
+  it('a record signed under v2 (before courses were signed) still verifies; a course appearing on it later is said, and the rest is still checked', async () => {
+    const e = await signedRecord()
+    await makeV2(e)
+    let r = await verify(e.id)
+    expect(r).toMatchObject({ status: 'valid', scheme: 'adaxai.encounter.v2', schemeRecorded: true, recomputedHash: (await row(e.id)).contentHash })
+    expect(r.checks.map((c) => `${c.key}:${c.result}`)).toEqual(['scheme:pass', 'content_hash:pass', 'record_matches:pass', 'sign_audit:pass', 'amendments:pass'])
+    expect(r.notes).toEqual([])
+    // v2 did not sign a course, so one on its rows is not a mismatch with what was signed; the reader is told, never left to assume it was signed.
+    await tamper("UPDATE prescription_items SET duration_days = 3, start_date = '2026-01-01' WHERE encounter_id = $1", [e.id])
+    r = await verify(e.id)
+    expect(r.status).toBe('valid')
+    expect(r.notes).toEqual([expect.stringMatching(/course length or start date, which fingerprint version v2 does not cover/)])
+    // What v2 did sign is still checked.
+    await tamper(`UPDATE prescription_items SET dose = '2 tablets' WHERE encounter_id = $1`, [e.id])
+    r = await verify(e.id)
+    expect([r.status, failed(r)]).toEqual(['invalid', ['record_matches']])
+    // Relabelling a v3 record as v2 (to escape the course check) is a changed fingerprint version.
+    const e2 = await signedRecord({ course: true })
+    await tamper(`UPDATE encounters SET hash_scheme = 'adaxai.encounter.v2' WHERE id = $1`, [e2.id])
+    expect(failed(await verify(e2.id))).toEqual(['scheme'])
   })
 
   it('changing the fingerprint version, the visit, the facility or the signing time afterwards is detected', async () => {

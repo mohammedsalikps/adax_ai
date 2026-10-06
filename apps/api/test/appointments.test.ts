@@ -484,7 +484,7 @@ describe('check-in and the visit', () => {
     expect((await audits('appointment.check_in')).map((e) => e.details.code)).toEqual(['appointment_wrong_day', 'appointment_wrong_day', 'appointment_closed'])
   })
 
-  it('a checked-in appointment follows its visit: completed when the consultation is signed, cancelled or no-show with the visit; never changed by hand', async () => {
+  it('a checked-in appointment follows its visit: completed when the consultation is completed, cancelled or no-show with the visit; never changed by hand', async () => {
     const [a, b, c] = [await newPatient(), await newPatient(), await newPatient()]
     const [ia, ib, ic] = [await todaysAppointment(a.id, { time: '10:00' }, '09:00'), await todaysAppointment(b.id, { time: '10:15' }, '09:15'), await todaysAppointment(c.id, { time: '10:30' }, '09:30')]
     const visits = await Promise.all([ia, ib, ic].map(async (x) => CheckInResult.parse((await act(x.id, 'check-in')).json()).visit.id))
@@ -507,6 +507,9 @@ describe('check-in and the visit', () => {
     expect((await detail(ia.id)).appointment.status).toBe('checked_in')
     const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body: { version: e.version, note: { ...e.note, chiefComplaint: 'Sore throat', assessment: 'Viral', plan: 'Fluids' }, diagnoses: [{ description: 'Viral pharyngitis', kind: 'provisional' }], prescription: [] } })).json())
     expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })).statusCode).toBe(200)
+    // HERO final (deliberate change): signing leaves the visit, and so the appointment, open; the doctor's Complete closes both.
+    expect((await detail(ia.id)).appointment).toMatchObject({ status: 'checked_in', visit: { status: 'in_consultation' } })
+    expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
     const done = await detail(ia.id)
     expect(done.appointment).toMatchObject({ status: 'completed', visit: { status: 'completed' } })
     expect(done.history.at(-1)).toMatchObject({ from: 'checked_in', to: 'completed', source: 'visit_status', actorName: 'Test t.doctor' })

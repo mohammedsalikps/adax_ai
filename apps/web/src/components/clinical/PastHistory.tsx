@@ -13,6 +13,7 @@ import { Menu, type MenuItem } from '../ui/Menu.tsx'
 import { TabPanel, Tabs } from '../ui/Tabs.tsx'
 import { useToast } from '../ui/Toast.tsx'
 import { AddAllergyDialog, AddConditionDialog, AddMedicationDialog, AddResultDialog, ReasonDialog } from './HistoryDialogs.tsx'
+import { SurgeriesSection } from '../patients/SurgeriesSection.tsx'
 
 type TabId = 'summary' | 'consultations' | 'medications' | 'allergies' | 'investigations'
 
@@ -329,6 +330,8 @@ export function PastHistoryPanel({ patientId, bare = false, onTabChange, idScope
                 </details>
               )}
             </section>
+            {/* HERO final: surgeries (doctors add and correct them; nurses read). */}
+            <SurgeriesSection h={h} patientId={patientId} canWrite={canWrite} />
             <section aria-label="Allergies">
               <Heading title="Allergies" action={<button type="button" className="text-sm font-medium text-brand-strong hover:underline" onClick={() => setTab('allergies')}>View all</button>} />
               <AllergyList h={h} limit={3} />

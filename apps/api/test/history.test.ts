@@ -51,6 +51,8 @@ async function signedConsultation(patientId: string, over: { complaint?: string;
   expect(saved.statusCode).toBe(200)
   const signed = await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.json().version, attestation: true } })
   expect(signed.statusCode).toBe(200)
+  // HERO final (deliberate change): signing no longer closes the visit; the doctor completes it, so the patient can come back the same day.
+  expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
   return { encounterId: e.id, visitId: v.id }
 }
 

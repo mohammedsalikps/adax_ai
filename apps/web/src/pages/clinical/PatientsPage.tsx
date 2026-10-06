@@ -9,8 +9,16 @@ import { errorMessage } from '../../lib/api.ts'
 import { usePatientSearch, usePortalBase } from '../../lib/clinical.ts'
 import { ageFrom, fmtDate } from '../../lib/format.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
+import { useMe } from '../../lib/auth.tsx'
+import { DoctorPatientsPage } from '../../components/patients/DoctorPatientsList.tsx'
 
+/** The patients list: the doctor's own variant (DESIGN §5.3, no registration), the nurse's unchanged. */
 export function PatientsPage() {
+  const { data: me } = useMe()
+  return me?.role === 'doctor' ? <DoctorPatientsPage /> : <StaffPatientsPage />
+}
+
+function StaffPatientsPage() {
   useDocumentTitle('Patients')
   const base = usePortalBase()
   // A search started from the top bar arrives in the router state (never in the address). It is taken once and then cleared from the

@@ -18,9 +18,9 @@ import { SimulatedBadge } from './DeviceReadingsCard.tsx'
 /** The patient's recordings (this card reads them; the stethoscope module's summary observes the same query and never fetches it). */
 export const auscultationsKey = (patientId: string) => ['patient', patientId, 'auscultations'] as const
 /** A recording is stopped by itself after this long, so that a forgotten one does not grow without end. */
-const MAX_RECORDING_SECONDS = 120
+export const MAX_RECORDING_SECONDS = 120
 /** Speech clean-up (echo cancelling, noise suppression, automatic gain) is made for voices and changes other sounds: it is switched off. */
-const RAW_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false } as const
+export const RAW_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false } as const
 
 const SiteOptions = () =>
   Object.entries(AUSCULTATION_SITES).map(([k, v]) => (
@@ -30,7 +30,7 @@ const SiteOptions = () =>
   ))
 
 /** How a recording got here, in words. None of these is a verified stethoscope connection, and the list says which it was. */
-function captureLine(r: AuscultationRecording): string {
+export function captureLine(r: AuscultationRecording): string {
   const parts: string[] = [AUSCULTATION_CAPTURE[r.captureMethod]]
   if (r.captureMethod === 'browser_recording') parts.push(r.inputLabel ? `audio input “${r.inputLabel}” (as named by the browser)` : 'audio input not named by the browser')
   if (r.device) parts.push(r.device.label)
@@ -40,20 +40,20 @@ function captureLine(r: AuscultationRecording): string {
 }
 
 /** Where a recording came from, as a mark beside its site: a simulator's is SIMULATED AUDIO (dashed), drawn by the caller. */
-const PROVENANCE: Record<AuscultationRecording['captureMethod'], string> = { browser_recording: 'BROWSER', gateway: 'DEVICE GATEWAY', file_upload: 'UPLOADED FILE' }
+export const PROVENANCE: Record<AuscultationRecording['captureMethod'], string> = { browser_recording: 'BROWSER', gateway: 'DEVICE GATEWAY', file_upload: 'UPLOADED FILE' }
 
 /**
  * Which device, if any, a recording came through, and what is known of it: no stethoscope has been connected to or tested with this system, so
  * a gateway's device is unverified, a browser recording is from whatever audio input the computer has, and a simulator is not a device.
  */
-function deviceLine(r: AuscultationRecording): string {
+export function deviceLine(r: AuscultationRecording): string {
   if (r.simulated) return `Simulator${r.device ? ` “${r.device.label}”` : ''}: generated tones, not a stethoscope.`
   if (r.captureMethod === 'gateway') return `Device: ${r.device ? `“${r.device.label}”` : 'not named'}, through its gateway. Unverified: no stethoscope has been tested with this system.`
   if (r.captureMethod === 'browser_recording') return 'Device: none connected. Recorded from an audio input of this computer.'
   return 'Device: none connected. A file added by staff.'
 }
 
-function microphoneProblem(e: unknown): string {
+export function microphoneProblem(e: unknown): string {
   const name = (e as { name?: string }).name
   if (name === 'NotAllowedError' || name === 'SecurityError') return 'The browser did not allow the audio input. Allow the microphone for this site, then try again. Nothing was recorded.'
   if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'No audio input was found on this computer. Nothing was recorded.'
@@ -287,7 +287,8 @@ function RecordDialog({ patientId, encounterId, onClose }: { patientId: string; 
   )
 }
 
-function UploadDialog({ patientId, encounterId, onClose }: { patientId: string; encounterId?: string | undefined; onClose: () => void }) {
+/** Adds a recording from a file (for example exported from a digital stethoscope's own app). Also used by the consultation's stethoscope section. */
+export function UploadDialog({ patientId, encounterId, onClose }: { patientId: string; encounterId?: string | undefined; onClose: () => void }) {
   const qc = useQueryClient()
   const toast = useToast()
   const [file, setFile] = useState<File | null>(null)

@@ -36,7 +36,7 @@ const MAX_FACTS_PER_TOOL = 24
 /** How many signed consultations a lookup by date searches (the most the settings allow): a date older than that is said to be out of reach, not "not recorded". */
 const DATE_LOOKUP_ENCOUNTERS = 50
 
-const STATUS_WORDS: Record<string, string> = {
+export const STATUS_WORDS: Record<string, string> = {
   waiting: 'waiting',
   in_triage: 'in triage',
   ready: 'ready for the doctor',
@@ -50,13 +50,13 @@ const STATUS_WORDS: Record<string, string> = {
 }
 
 /** Ten-year age band and sex, the most a handle tells the model about a patient. */
-function band(dob: string, sex: string, today: string): string {
+export function band(dob: string, sex: string, today: string): string {
   const y = ageOn(String(dob), today)
   return `${sex}, ${y >= 90 ? '90+' : `${Math.floor(y / 10) * 10}-${Math.floor(y / 10) * 10 + 9}`} years`
 }
 
 type Scrub = (t: string) => string
-interface PatientIdentity {
+export interface PatientIdentity {
   givenName: string
   familyName: string | null
   mrn: string
@@ -65,7 +65,7 @@ interface PatientIdentity {
   emergencyContactPhone: string | null
 }
 /** The replacement for one patient's free text: the patient's own identifiers, then any telephone or record number. */
-const scrubberFor = (p: PatientIdentity): Scrub => {
+export const scrubberFor = (p: PatientIdentity): Scrub => {
   const own = makeScrubber(p)
   return (t) => scrubGeneric(own(t))
 }
@@ -74,7 +74,7 @@ const scrubberFor = (p: PatientIdentity): Scrub => {
  * Patients whose reasons and notes Mana does not show: those whose latest decision about AI help with their record is a withdrawal (also when the model
  * is on this computer); and, with a model that is NOT on this computer, every patient whose consent is not granted in its current wording.
  */
-async function hiddenFor(ctx: ManaCtx, patientIds: string[]): Promise<Set<string>> {
+export async function hiddenFor(ctx: ManaCtx, patientIds: string[]): Promise<Set<string>> {
   const ids = [...new Set(patientIds)]
   if (!ids.length) return new Set()
   if (ctx.modelIsLocal) {
@@ -91,7 +91,7 @@ async function hiddenFor(ctx: ManaCtx, patientIds: string[]): Promise<Set<string
   return hidden
 }
 
-const NOT_SHOWN = '; reason not shown (the patient’s consent to AI help does not allow it)'
+export const NOT_SHOWN = '; reason not shown (the patient’s consent to AI help does not allow it)'
 
 /** Reading one patient's record: a withdrawn consent stops it (also when the model is local); a hosted model needs the consent to be granted. */
 export async function consentRefusal(ctx: Pick<ManaCtx, 'modelIsLocal'>, db: DbOrTx, patientId: string, lock = false): Promise<string | null> {
@@ -300,7 +300,7 @@ interface ListedPatient extends PatientIdentity {
   sex: string
 }
 /** The columns of a patient that a list needs: the handle's age band, and the identifiers to take out of the free text of that patient's rows. */
-const listedPatient = {
+export const listedPatient = {
   id: patients.id,
   dob: patients.dateOfBirth,
   sex: patients.sex,
@@ -334,7 +334,7 @@ async function visitFacts(ctx: ManaCtx, rows: VisitRowOut[], when: (v: typeof vi
 const visitSelect = (ctx: ManaCtx) => ctx.db.select({ v: visits, p: listedPatient, dept: departments.name, doctor: users.fullName }).from(visits).innerJoin(patients, eq(patients.id, visits.patientId)).innerJoin(departments, eq(departments.id, visits.departmentId)).leftJoin(users, eq(users.id, visits.assignedDoctorId))
 
 /** The same meaning of "mine" as the queue page: assigned to me, or unassigned in my department. */
-const mine = (ctx: ManaCtx) => (ctx.me.departmentId ? or(eq(visits.assignedDoctorId, ctx.me.id), and(isNull(visits.assignedDoctorId), eq(visits.departmentId, ctx.me.departmentId))) : eq(visits.assignedDoctorId, ctx.me.id))
+export const mine = (ctx: ManaCtx) => (ctx.me.departmentId ? or(eq(visits.assignedDoctorId, ctx.me.id), and(isNull(visits.assignedDoctorId), eq(visits.departmentId, ctx.me.departmentId))) : eq(visits.assignedDoctorId, ctx.me.id))
 
 const getTodayQueue: ToolDef = {
   name: 'get_today_queue',

@@ -238,6 +238,8 @@ describe('visit status changes', () => {
     const e = Encounter.parse((await start(v.id)).json())
     await save(e.id, e.version)
     await sign(e.id, e.version + 1)
+    // HERO final (deliberate change): signing leaves the visit with the doctor; the doctor's Complete closes it, recorded as its own source.
+    expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
     const h = StatusHistory.parse((await call(ctx.app, 'GET', `/api/encounters/${e.id}/history`, { cookie: nurse })).json())
     expect(h.events.map((x) => `${x.subject}:${x.from ?? '-'}>${x.to}:${x.source}:${x.actorName}${x.reason ? `:${x.reason}` : ''}`)).toEqual([
       'visit:->waiting:check_in:Test t.nurse',
@@ -246,7 +248,7 @@ describe('visit status changes', () => {
       'consultation:->in_progress:consultation_start:Test t.doctor',
       'visit:ready>in_consultation:consultation_start:Test t.doctor',
       'consultation:in_progress>signed:consultation_signed:Test t.doctor',
-      'visit:in_consultation>completed:consultation_signed:Test t.doctor',
+      'visit:in_consultation>completed:consultation_completed:Test t.doctor',
     ])
     await expect(ctx.pool.query('UPDATE visit_status_events SET reason = $1', ['rewritten'])).rejects.toMatchObject({ code: '42501' })
     await expect(ctx.pool.query('DELETE FROM encounter_status_events')).rejects.toMatchObject({ code: '42501' })
@@ -298,7 +300,8 @@ describe('discarding an unsigned draft', () => {
     expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409])
     const final = await getEnc(e.id)
     expect(final.status).toBe(a.statusCode === 200 ? 'signed' : 'discarded')
-    expect((await getVisit(v.id)).status).toBe(a.statusCode === 200 ? 'completed' : 'ready')
+    // HERO final (deliberate change): a signed record leaves its visit with the doctor (completing is a separate step); a discard returns it to the queue.
+    expect((await getVisit(v.id)).status).toBe(a.statusCode === 200 ? 'in_consultation' : 'ready')
   })
 })
 

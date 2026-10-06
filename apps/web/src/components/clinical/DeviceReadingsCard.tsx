@@ -24,7 +24,7 @@ const CHIP_TONE: Record<ReadingState, string> = {
 
 /**
  * The state in words, always: colour is never the only thing that says a value is old. `compact` is the chip inside a reading tile, sized so
- * that the longest word (DISCONNECTED) fits the narrowest tile (two to a row in a 20rem column).
+ * that the longest word (DISCONNECTED) fits the narrowest tile (two to a row from a 17rem list, else one; see DeviceBlock).
  */
 export function ReadingStateBadge({ state, compact = false }: { state: ReadingState; compact?: boolean }) {
   if (compact) {
@@ -123,7 +123,9 @@ function DeviceBlock({ d, now, onEnd, ending, variant }: { d: AttachedDevice; no
   // A kind the gate no longer allows but that was stored earlier is still shown: nothing received is hidden.
   const kinds = [...new Set<VitalKind>([...d.kinds, ...d.readings.map((r) => r.kind)])]
   return (
-    <li className={`rounded-lg border p-3 ${d.simulated ? 'border-dashed border-ink/50' : 'border-line'}`} data-testid="attached-device" data-state={d.state} data-simulated={d.simulated}>
+    // A container (its readings go two to a row only where two tiles each fit the longest state word; one to a row in a narrow column, such as
+    // the consultation's clinical inputs at 1280px).
+    <li className={`@container rounded-lg border p-3 ${d.simulated ? 'border-dashed border-ink/50' : 'border-line'}`} data-testid="attached-device" data-state={d.state} data-simulated={d.simulated}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="font-medium break-words">{d.label}</p>
@@ -153,7 +155,7 @@ function DeviceBlock({ d, now, onEnd, ending, variant }: { d: AttachedDevice; no
         </p>
       )}
       {kinds.length > 0 ? (
-        <ul className="mt-2 grid grid-cols-2 gap-2" aria-label={`Readings from ${d.label}`}>
+        <ul className="mt-2 grid grid-cols-1 gap-2 @min-[17rem]:grid-cols-2" aria-label={`Readings from ${d.label}`}>
           {kinds.map((k) => (
             <ReadingTile key={k} kind={k} reading={byKind.get(k)} simulated={d.simulated} now={now} />
           ))}

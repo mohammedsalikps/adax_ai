@@ -308,7 +308,7 @@ export async function aiStatus(p: AiProviders): Promise<AiStatus> {
     qa: providerStatus(p.qa, p.reasons.qa ?? p.reasons.llm),
     reasoning: await reasoningStatus({ mode: p.reasoning?.mode ?? 'none', model: p.reasoner ?? null, reason: p.reasoning?.reason ?? null }),
     features: p.features ?? ALL_FEATURES,
-    liveChunkSeconds: p.liveChunkSeconds ?? 20,
+    liveChunkSeconds: p.liveChunkSeconds ?? 10,
     egress: { hosted: p.egress?.hosted ?? false, destination: p.egress?.destination ?? null },
   }
 }

@@ -50,6 +50,9 @@ const PUBLIC_SAMPLE_SHA256 = new Set([
   'c2ae58509119695cea72c27a344569e6e53196e968e5e091671e8f7d1813a74f',
 ])
 
+/** A file upload that names a signed or discarded consultation (409 encounter_not_in_progress). */
+export const FILE_INTO_CLOSED_CONSULTATION = 'This consultation is signed or discarded, so no image can be added to it. Upload the image to the patient without a consultation, or into a consultation in progress.'
+
 /**
  * A live capture's time, as the camera reported it, is taken only near the moment it arrives: at most this far ahead of the server's clock (a
  * tablet or camera clock a little fast) and at most this long before it. A time outside that is a wrong clock, not a live capture: refused.
@@ -236,6 +239,20 @@ export function registerThermalRoutes(app: FastifyInstance, deps: { db: Db; conf
     if (!open) throw conflict('This consultation was signed or discarded while the image was being processed. Nothing was stored.', 'encounter_not_in_progress')
   }
 
+  /**
+   * The last look at the consultation a file upload is filed under, inside the transaction that stores it and holding its row: still in
+   * progress (whoever's it is). A sign or a discard that commits while the image is processed either comes first, and nothing is stored, or
+   * waits until the image has been stored.
+   */
+  async function consultationStillInProgress(tx: DbOrTx, me: SessionUser, encounterId: string) {
+    const [open] = await tx
+      .select({ id: encounters.id })
+      .from(encounters)
+      .where(and(eq(encounters.id, encounterId), eq(encounters.facilityId, me.facilityId), eq(encounters.status, 'in_progress')))
+      .for('share')
+    if (!open) throw conflict('This consultation was signed or discarded while the image was being processed. Nothing was stored.', 'encounter_not_in_progress')
+  }
+
   /** A capture that was not stored, for the audit log (why, and how it arrived; never the image). */
   const refused = (req: FastifyRequest, patientId: string, details: Record<string, unknown>, outcome: 'failure' | 'denied' = 'failure') =>
     audit(db, req, { action: 'thermal.capture_refused', outcome, entityType: 'patient', entityId: patientId, patientId, details })
@@ -253,6 +270,8 @@ export function registerThermalRoutes(app: FastifyInstance, deps: { db: Db; conf
       encounterId: string | null
       /** A live capture, an import or a simulated capture: taken into the caller's own consultation in progress, which is checked again here. */
       openConsultation: boolean
+      /** A file upload filed under a consultation: that consultation (whoever's it is) must still be in progress, checked again here. */
+      inProgressConsultation?: boolean
       /** How the capture arrived (source, simulated, case and seed), for the audit of a refusal. */
       arrival: Record<string, unknown>
       raw: { data: Buffer; ext: string; originalName: string; mimeType: string }
@@ -273,6 +292,7 @@ export function registerThermalRoutes(app: FastifyInstance, deps: { db: Db; conf
       return await db.transaction(async (tx) => {
         await consentStillCovers(tx, o.patientId, o.encounterId)
         if (o.openConsultation) await consultationStillOpen(tx, me, o.encounterId!)
+        else if (o.inProgressConsultation) await consultationStillInProgress(tx, me, o.encounterId!)
         const base = { facilityId: me.facilityId, patientId: o.patientId, encounterId: o.encounterId, uploadedBy: me.id }
         const [rawFile] = await tx.insert(files).values({ ...base, kind: 'thermal_raw', storageKey: raw.storageKey, originalName: o.raw.originalName, mimeType: o.raw.mimeType, sizeBytes: raw.sizeBytes, sha256: raw.sha256 }).returning({ id: files.id })
         const [matrixFile] = await tx.insert(files).values({ ...base, kind: 'thermal_matrix', storageKey: matrix.storageKey, originalName: 'matrix.f32', mimeType: 'application/octet-stream', sizeBytes: matrix.sizeBytes, sha256: matrix.sha256 }).returning({ id: files.id })
@@ -338,6 +358,12 @@ export function registerThermalRoutes(app: FastifyInstance, deps: { db: Db; conf
       if (f.encounterId) {
         const e = await db.query.encounters.findFirst({ where: and(eq(encounters.id, f.encounterId), eq(encounters.patientId, id), eq(encounters.facilityId, me.facilityId)) })
         if (!e) throw badRequest('Some fields are invalid', [{ path: 'encounterId', message: 'Not a consultation of this patient' }])
+        // Doctor HERO final: a file is filed under a consultation only while it is in progress. A signed record is frozen and a discarded
+        // draft is not part of the record, so an image added to either afterwards would change what was signed or attach to nothing.
+        if (e.status !== 'in_progress') {
+          await refused(req, id, { captureSource: f.captureSource, simulated: false, encounterId: e.id, reason: 'encounter_not_in_progress' }, 'denied')
+          throw conflict(FILE_INTO_CLOSED_CONSULTATION, 'encounter_not_in_progress')
+        }
         encounterId = e.id
       }
     } else {
@@ -384,6 +410,8 @@ export function registerThermalRoutes(app: FastifyInstance, deps: { db: Db; conf
       patientId: id,
       encounterId,
       openConsultation: f.captureSource !== 'file_upload',
+      // A file filed under a consultation: that consultation must still be in progress when the image is stored (any doctor's or nurse's upload).
+      inProgressConsultation: f.captureSource === 'file_upload' && encounterId !== null,
       arrival: { captureSource: f.captureSource, simulated: false },
       raw: { data, ext: '.jpg', originalName: (up.filename || 'thermal.jpg').slice(0, 120), mimeType: 'image/jpeg' },
       matrix: ex.matrix,

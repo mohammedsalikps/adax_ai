@@ -42,6 +42,54 @@ export type ModulePart = (typeof MODULES)[number]['part']
 
 export const isModulePart = (id: string): id is ModulePart => MODULES.some((m) => m.part === id)
 
+/**
+ * The final workspace (DESIGN §5.4): its five panels in the five-input order, as Alt+1 to Alt+5 go to them (lib/shortcuts.ts PANEL_NAMES).
+ * Each keeps the part id its input already had, so the overview's evidence and every other jump still land on it: the live transcription is
+ * `tools-conversation`, the clinical inputs `tools-devices`, the stethoscope (inside the clinical inputs) `tools-stethoscope`, the doctor
+ * notes `consultation-note`, the thermal context `tools-thermal`. The patient history keeps `tools-history`. The Mana result and the
+ * prescription (`mana-result`, `mana-review`, `rx`) are on the prescription page now, and Ask Mana (`mana-chat`) is the global Mana.
+ */
+export const WORKSPACE_PANELS = [
+  { n: 1, key: 'transcription', part: 'tools-conversation' },
+  { n: 2, key: 'inputs', part: 'tools-devices' },
+  { n: 3, key: 'stethoscope', part: 'tools-stethoscope' },
+  { n: 4, key: 'notes', part: 'consultation-note' },
+  { n: 5, key: 'thermal', part: 'tools-thermal' },
+] as const satisfies readonly { n: number; key: string; part: PartId }[]
+
+/** The parts the workspace page no longer holds: where a jump to one goes instead (the prescription page, or the global Mana); null when on the page. */
+export function elsewhereOf(id: PartId): 'prescription' | 'mana' | null {
+  if (id === 'mana-chat') return 'mana'
+  if (id === 'mana-result' || id === 'mana-review' || id === 'rx') return 'prescription'
+  return null
+}
+
+/**
+ * Parts that are a panel's own element, found by its test id rather than an id of the page's: the stethoscope is a group inside the clinical
+ * inputs panel (another unit's component), which has no element id of its own.
+ */
+export const PART_SELECTORS: Partial<Record<PartId, string>> = { 'tools-stethoscope': '[data-testid="stethoscope-panel"]' }
+
+/**
+ * The page as `showPart` reads it, with PART_SELECTORS standing in for the parts that have no element id. Such a panel element is not focusable
+ * by itself, so it is made a focus target (tabIndex -1: focus can be moved there, it is not a tab stop) and a jump moves focus to it.
+ */
+export function workspaceDocument(doc: Pick<Document, 'getElementById' | 'querySelector' | 'defaultView'> = document): PartDocument {
+  return {
+    getElementById: (id: string) => {
+      const own = doc.getElementById(id)
+      if (own) return own
+      const sel = isPartId(id) ? PART_SELECTORS[id] : undefined
+      const panel = sel ? doc.querySelector<HTMLElement>(sel) : null
+      if (panel && !panel.hasAttribute('tabindex')) panel.tabIndex = -1
+      return panel
+    },
+    get defaultView() {
+      return doc.defaultView
+    },
+  }
+}
+
 // --- expand requests ------------------------------------------------------------------------------------------------------------------------
 
 type ExpandListener = (id: PartId) => void

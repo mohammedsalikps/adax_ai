@@ -19,6 +19,7 @@ import { departments, diagnoses, encounterAmendments, encounters, investigationR
 import { ageOn, facilityToday, listAllergies, type PatientRow } from '../patients/service.ts'
 import { SIMULATED } from '../devices/provenance.ts'
 import { STAFF_FIRST, toObservation } from '../visits/service.ts'
+import { documentsSummary, listProcedures } from '../documents/service.ts'
 
 /** What an entry's origin is: its patient's when that is known, otherwise the deployment's (never one that disagrees with the patient). */
 export const entryOrigin = (patientOrigin: string, deployment: RecordOrigin): RecordOrigin => (patientOrigin === 'synthetic' || patientOrigin === 'clinical' ? patientOrigin : deployment)
@@ -94,7 +95,7 @@ const clean = (v: string | null | undefined) => (v == null || v.trim() === '' ? 
 /** Records a creation or a status change of one entry. Call inside the transaction that makes the change. */
 export async function recordHistoryEvent(
   tx: DbOrTx,
-  e: { patientId: string; entityType: 'condition' | 'medication' | 'investigation'; entityId: string; action: 'created' | 'status_changed'; fromStatus?: string | null; toStatus: string; reason?: string | null; actorUserId: string },
+  e: { patientId: string; entityType: 'condition' | 'medication' | 'investigation' | 'procedure' | 'document'; entityId: string; action: 'created' | 'status_changed'; fromStatus?: string | null; toStatus: string; reason?: string | null; actorUserId: string },
 ): Promise<void> {
   await tx.insert(patientHistoryEvents).values({ patientId: e.patientId, entityType: e.entityType, entityId: e.entityId, action: e.action, fromStatus: e.fromStatus ?? null, toStatus: e.toStatus, reason: e.reason ?? null, actorUserId: e.actorUserId })
 }
@@ -196,12 +197,17 @@ export async function loadHistory(db: DbOrTx, p: PatientRow): Promise<PatientHis
   ])
 
   // The newest result of every test, so a long run of one test cannot push the others off the screen; with the most recent ones overall.
-  const latestPerTest = await db
-    .selectDistinctOn([sql`lower(${investigationResults.testName})`], { r: investigationResults, by: enteredBy.fullName })
-    .from(investigationResults)
-    .leftJoin(enteredBy, eq(enteredBy.id, investigationResults.enteredBy))
-    .where(and(eq(investigationResults.patientId, p.id), ne(investigationResults.status, 'entered_in_error')))
-    .orderBy(sql`lower(${investigationResults.testName})`, desc(investigationResults.collectedOn), desc(investigationResults.enteredAt))
+  // HERO final: surgeries and the documents line (counts and the latest few titles) come in the same read.
+  const [latestPerTest, procedures, documents] = await Promise.all([
+    db
+      .selectDistinctOn([sql`lower(${investigationResults.testName})`], { r: investigationResults, by: enteredBy.fullName })
+      .from(investigationResults)
+      .leftJoin(enteredBy, eq(enteredBy.id, investigationResults.enteredBy))
+      .where(and(eq(investigationResults.patientId, p.id), ne(investigationResults.status, 'entered_in_error')))
+      .orderBy(sql`lower(${investigationResults.testName})`, desc(investigationResults.collectedOn), desc(investigationResults.enteredAt)),
+    listProcedures(db, p.id),
+    documentsSummary(db, p.id),
+  ])
   const shownIds = new Set(investigationRows.map(({ r }) => r.id))
   const results = [...investigationRows, ...latestPerTest.filter(({ r }) => !shownIds.has(r.id))].sort((a, b) => b.r.collectedOn.localeCompare(a.r.collectedOn) || b.r.enteredAt.getTime() - a.r.enteredAt.getTime() || a.r.testName.localeCompare(b.r.testName))
 
@@ -225,7 +231,8 @@ export async function loadHistory(db: DbOrTx, p: PatientRow): Promise<PatientHis
     diagnoses: dx.filter((d) => d.encounterId === e.id).map((d) => ({ description: d.description, code: d.code, kind: d.kind })),
     prescription: rx
       .filter((r) => r.encounterId === e.id)
-      .map((r) => ({ drugName: r.drugName, strength: r.strength, form: r.form, dose: r.dose, route: r.route, frequency: r.frequency, duration: r.duration, instructions: r.instructions })),
+      // HERO final: the structured course (number of days and start date), null for medicines prescribed without one.
+      .map((r) => ({ drugName: r.drugName, strength: r.strength, form: r.form, dose: r.dose, route: r.route, frequency: r.frequency, duration: r.duration, instructions: r.instructions, durationDays: r.durationDays ?? null, startDate: r.startDate ?? null })),
     amendmentCount: am.find((a) => a.encounterId === e.id)?.n ?? 0,
   }))
 
@@ -244,5 +251,7 @@ export async function loadHistory(db: DbOrTx, p: PatientRow): Promise<PatientHis
     consultations,
     latestVitals: vitalRows.map(({ o, by }) => toObservation(o, age, by)).sort((a, b) => b.measuredAt.localeCompare(a.measuredAt)),
     more: { consultations: Math.max(0, (consultationCount?.n ?? 0) - consultations.length), investigations: Math.max(0, (investigationCount?.n ?? 0) - results.length) },
+    procedures,
+    documents,
   }
 }

@@ -30,12 +30,15 @@ test('a doctor finds an unsigned draft in their worklist and discards it with a 
   await page.getByRole('listitem').filter({ hasText: p.name }).getByRole('button', { name: 'Start consultation' }).click()
   await expect(page).toHaveURL(/\/doctor\/encounters\//)
   const draftUrl = page.url()
+  // Doctor HERO final (DESIGN §5.4): the typed note is the Keyboard tab of Doctor notes (the pen is the default tab).
+  await page.getByTestId('doctor-notes').getByRole('tab', { name: 'Keyboard' }).click()
   await page.getByLabel('History of present illness').fill('Started on the wrong patient by mistake.')
   await expect(page.getByTestId('save-state')).toContainText('Saved')
 
   // The worklist shows the draft with its visit and progress.
   await page.goto('/doctor/consultations')
-  await expect(page.getByRole('heading', { name: 'My consultations' })).toBeVisible()
+  // Doctor HERO final (DESIGN §4): "My consultations" is today's queue (/doctor/queue); this page is now "Drafts and signed records".
+  await expect(page.getByRole('heading', { level: 1, name: 'Drafts and signed records' })).toBeVisible()
   const drafts = page.getByRole('list', { name: 'Unsigned drafts' })
   const item = drafts.getByRole('listitem').filter({ hasText: p.name })
   await expect(item).toContainText('Draft, not signed')
@@ -86,7 +89,11 @@ test('a signed record is listed, checked against its fingerprints, and shows its
   await expect(page).toHaveURL(new RegExp(`/doctor/encounters/${p.encounterId}$`))
   // The address changes before the record's page has replaced the list (which has a "Signed …" line per record): wait for the record itself.
   await expect(page.getByRole('heading', { level: 1, name: /^Consultation/ })).toBeVisible()
-  await expect(page.getByText(/^Signed /)).toBeVisible()
+  // Doctor HERO final (DESIGN §5.6): signing no longer completes the visit, so the record also carries the status "Signed — to complete"
+  // beside its signed badge ("Signed <date>"); these two are the only texts starting with "Signed".
+  await expect(page.getByText(/^Signed \d/)).toBeVisible()
+  await expect(page.getByText('Signed — to complete', { exact: true })).toBeVisible()
+  await expect(page.getByText(/^Signed /)).toHaveCount(2)
 
   // Nothing is claimed until the check has run.
   const card = page.getByRole('region', { name: 'Record verification' })
@@ -96,8 +103,9 @@ test('a signed record is listed, checked against its fingerprints, and shows its
   await expect(result).toContainText('Matches its fingerprint')
   await expect(result.getByRole('list', { name: 'Verification checks' })).toContainText('Content matches its fingerprint')
   await expect(result).toContainText('It is not a digital signature')
-  // The signed badge is still the only text starting with "Signed".
-  await expect(page.getByText(/^Signed /)).toBeVisible()
+  // The signed badge and the status are still the only texts starting with "Signed" (Doctor HERO final: the status pill is the second).
+  await expect(page.getByText(/^Signed \d/)).toBeVisible()
+  await expect(page.getByText(/^Signed /)).toHaveCount(2)
 
   const history = page.getByRole('region', { name: 'Status history' })
   await history.getByRole('button', { name: 'Show' }).click()

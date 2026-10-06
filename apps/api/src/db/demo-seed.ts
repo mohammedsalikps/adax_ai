@@ -69,6 +69,8 @@ try {
       prescription: [{ drugName: 'Metformin', strength: '500 mg', form: 'Tablet', dose: '1 tablet', route: 'Oral', frequency: 'Twice daily (BD)', duration: '90 days', instructions: 'After food' }],
     })
     await doctor('POST', `/api/encounters/${e1.id}/sign`, { version: saved.version, attestation: true })
+    // Signing no longer completes the visit (HERO final): the doctor completes the consultation, so today's visit below can be made.
+    await doctor('POST', `/api/encounters/${e1.id}/complete`, {})
 
     // Today's visit, ready for the doctor: fever, cough and chest pain on coughing.
     const v2 = await nurse('POST', '/api/visits', { patientId: p.id, departmentId: gen, chiefComplaint: 'Fever and cough for 3 days, chest pain when coughing' })

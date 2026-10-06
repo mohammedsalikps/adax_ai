@@ -232,6 +232,13 @@
       "when": 1791271259657,
       "tag": "0032_transcript_audio_origin",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791287681960,
+      "tag": "0033_doctor_hero_final",
+      "breakpoints": true
     }
   ]
 }

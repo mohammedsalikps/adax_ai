@@ -711,6 +711,8 @@ test('edits still waiting to be saved are not sent as a different person who sig
     drafts.push(r.request().method())
     return r.abort('connectionrefused')
   })
+  // Doctor HERO final (DESIGN §5.4): the typed note is the Keyboard tab of Doctor notes (the pen is the default tab).
+  await a.getByTestId('doctor-notes').getByRole('tab', { name: 'Keyboard' }).click()
   await a.getByLabel('Assessment').fill('Written by Xavier, not yet saved')
 
   await b.goto('/doctor')

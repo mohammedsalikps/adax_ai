@@ -1,4 +1,4 @@
-import { CONSENT_LABELS, CONSENT_VERSIONS, CONSENT_WITHDRAWAL_EFFECTS_FOR_PATIENT, type ConsentType, consentWording, type NotificationPayload, type PortalAppointmentList, type PortalConsent, type PortalNotifications, WithdrawConsentRequest, type PortalHome, type PortalProfile, type PortalRecord, type PortalRecordSummary, type PortalThermalReport, type PortalVisit, type PortalVital } from '@adaxai/contracts'
+import { CONSENT_LABELS, CONSENT_VERSIONS, CONSENT_WITHDRAWAL_EFFECTS_FOR_PATIENT, type ConsentType, consentWording, medicineCourse, type NotificationPayload, type PortalAppointmentList, type PortalConsent, type PortalCurrentPrescriptionItem, type PortalCurrentPrescriptionResponse, type PortalNotifications, WithdrawConsentRequest, type PortalHome, type PortalProfile, type PortalRecord, type PortalRecordSummary, type PortalThermalReport, type PortalVisit, type PortalVital } from '@adaxai/contracts'
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
 import { SIMULATED } from '../devices/provenance.ts'
 import { alias } from 'drizzle-orm/pg-core'
@@ -10,14 +10,17 @@ import { SESSION_COOKIE } from '../auth/sessions.ts'
 import { consentState, withdrawConsentType } from '../consents/service.ts'
 import type { Db } from '../db/client.ts'
 import { allergies, appointments, consents, departments, diagnoses, encounterAmendments, encounters, facilities, notifications, observations, patients, prescriptionItems, thermalCaptures, users, visits } from '../db/schema.ts'
+import { visitCompletedAt } from '../encounters/service.ts'
 import { forbidden, HttpError, notFound } from '../http/errors.ts'
 import { parse } from '../http/validate.ts'
+import { facilityToday } from '../patients/service.ts'
 
 /**
  * Patient portal API. Every query is scoped to the patient linked to the
  * signed-in account (session.patientId); no route accepts a patient id.
  * Only finalised information is shown: signed consultation records (with
- * amendments), measured vital signs, doctor-approved thermal measurements.
+ * amendments) once the doctor has completed the consultation, measured vital
+ * signs, doctor-approved thermal measurements.
  * Drafts, unreviewed AI output, transcripts, audio and photographs are not
  * part of the portal.
  */
@@ -44,15 +47,19 @@ export function registerPortalRoutes(app: FastifyInstance, deps: { db: Db }) {
 
   const read = (req: FastifyRequest, patientId: string, what: string, entityId?: string) => audit(db, req, { action: 'portal.read', entityType: what, entityId: entityId ?? patientId, patientId, details: { what } })
 
-  async function signedRecords(patientId: string) {
+  /**
+   * The patient's consultation records: signed AND completed by the doctor (HERO final: signing alone does not show a record; the doctor's
+   * explicit Complete does). Newest signing first. Every record signed before Complete existed has a completed visit.
+   */
+  async function completedRecords(patientId: string) {
     const doctor = alias(users, 'doctor')
     const rows = await db
-      .select({ e: encounters, doctorName: doctor.fullName, reg: doctor.registrationNumber, dept: departments.name })
+      .select({ e: encounters, doctorName: doctor.fullName, reg: doctor.registrationNumber, dept: departments.name, visitDate: visits.visitDate, visitStatusChangedAt: visits.statusChangedAt })
       .from(encounters)
       .innerJoin(doctor, eq(doctor.id, encounters.doctorId))
       .innerJoin(visits, eq(visits.id, encounters.visitId))
       .innerJoin(departments, eq(departments.id, visits.departmentId))
-      .where(and(eq(encounters.patientId, patientId), eq(encounters.status, 'signed')))
+      .where(and(eq(encounters.patientId, patientId), eq(encounters.status, 'signed'), eq(visits.status, 'completed')))
       .orderBy(desc(encounters.signedAt))
     const ids = rows.map((r) => r.e.id)
     const dx = ids.length ? await db.select().from(diagnoses).where(inArray(diagnoses.encounterId, ids)).orderBy(asc(diagnoses.sortOrder)) : []
@@ -60,7 +67,12 @@ export function registerPortalRoutes(app: FastifyInstance, deps: { db: Db }) {
     return { rows, dx, rx }
   }
 
-  const summary = (r: Awaited<ReturnType<typeof signedRecords>>['rows'][number], dx: (typeof diagnoses.$inferSelect)[], rx: (typeof prescriptionItems.$inferSelect)[]): PortalRecordSummary => ({
+  /** A medicine as signed (the eight written fields). */
+  const written = (p: typeof prescriptionItems.$inferSelect) => ({ drugName: p.drugName, strength: p.strength, form: p.form, dose: p.dose, route: p.route, frequency: p.frequency, duration: p.duration, instructions: p.instructions })
+  /** ... with its structured course on the facility's calendar day `today` ("Duration not recorded" when it has none, never "Completed"). */
+  const withCourse = (p: typeof prescriptionItems.$inferSelect, today: string): PortalCurrentPrescriptionItem => ({ ...written(p), durationDays: p.durationDays, startDate: p.startDate, course: medicineCourse(p, today) })
+
+  const summary = (r: Awaited<ReturnType<typeof completedRecords>>['rows'][number], dx: (typeof diagnoses.$inferSelect)[], rx: (typeof prescriptionItems.$inferSelect)[]): PortalRecordSummary => ({
     id: r.e.id,
     signedAt: r.e.signedAt!.toISOString(),
     doctorName: r.doctorName,
@@ -89,14 +101,15 @@ export function registerPortalRoutes(app: FastifyInstance, deps: { db: Db }) {
       doctorName,
       status: v.status,
       reasonForVisit: v.chiefComplaint,
-      recordId: encStatus === 'signed' ? encId : null,
+      // A record is the patient's to open once the doctor has completed the consultation (as in completedRecords).
+      recordId: encStatus === 'signed' && v.status === 'completed' ? encId : null,
     }))
   }
 
   app.get('/api/portal/home', perm, async (req): Promise<PortalHome> => {
     const { patientId } = await self(req)
     const p = (await db.query.patients.findFirst({ where: eq(patients.id, patientId) }))!
-    const { rows } = await signedRecords(patientId)
+    const { rows } = await completedRecords(patientId)
     const visitsOut = await visitList(patientId)
     await read(req, patientId, 'home')
     return {
@@ -142,24 +155,56 @@ export function registerPortalRoutes(app: FastifyInstance, deps: { db: Db }) {
 
   app.get('/api/portal/records', perm, async (req) => {
     const { patientId } = await self(req)
-    const { rows, dx, rx } = await signedRecords(patientId)
+    const { rows, dx, rx } = await completedRecords(patientId)
     await read(req, patientId, 'records')
     return { records: rows.map((r) => summary(r, dx, rx)) }
   })
 
-  /** One signed record. Another patient's record, or an unsigned draft, is "not found". */
+  /**
+   * "Today's prescription": the prescription of the patient's newest completed consultation (newest signing), from the same signed rows as
+   * the record (no copy), with each medicine's course on the facility's calendar day (Day 3 of 7, Completed, Duration not recorded), the
+   * advice (the note's plan) and the follow-up. `prescription` is null until a consultation of the patient has been completed.
+   */
+  app.get('/api/portal/prescriptions/current', perm, async (req): Promise<PortalCurrentPrescriptionResponse> => {
+    const { me, patientId } = await self(req)
+    const today = await facilityToday(db, me.facilityId)
+    const { rows, dx, rx } = await completedRecords(patientId)
+    const r = rows[0]
+    await read(req, patientId, 'current_prescription', r?.e.id)
+    if (!r) return { today, prescription: null }
+    const completedAt = (await visitCompletedAt(db, [r.e.visitId])).get(r.e.visitId) ?? r.visitStatusChangedAt.toISOString()
+    return {
+      today,
+      prescription: {
+        recordId: r.e.id,
+        date: String(r.visitDate),
+        signedAt: r.e.signedAt!.toISOString(),
+        completedAt,
+        doctorName: r.doctorName,
+        doctorRegistrationNumber: r.reg,
+        departmentName: r.dept,
+        diagnoses: dx.filter((d) => d.encounterId === r.e.id).map((d) => ({ description: d.description, code: d.code })),
+        items: rx.filter((p) => p.encounterId === r.e.id).map((p) => withCourse(p, today)),
+        advice: r.e.plan,
+        followUp: r.e.followUp,
+      },
+    }
+  })
+
+  /** One completed consultation's record. Another patient's record, an unsigned draft, or a record not completed yet is "not found". */
   app.get('/api/portal/records/:id', perm, async (req): Promise<PortalRecord> => {
-    const { patientId } = await self(req)
+    const { me, patientId } = await self(req)
     const { id } = parse(z.object({ id: z.uuid() }), req.params)
-    const { rows, dx, rx } = await signedRecords(patientId)
+    const { rows, dx, rx } = await completedRecords(patientId)
     const r = rows.find((x) => x.e.id === id)
     if (!r) {
-      // Another patient's record, a draft or a wrong id: one answer for all, and the attempt is recorded.
+      // Another patient's record, a draft, one not completed yet or a wrong id: one answer for all, and the attempt is recorded.
       await audit(db, req, { action: 'portal.read', outcome: 'denied', entityType: 'record', entityId: id, patientId, details: { what: 'record', reason: 'not_found_or_not_owned' } })
       throw notFound('Record')
     }
     const author = alias(users, 'author')
     const am = await db.select({ a: encounterAmendments, name: author.fullName }).from(encounterAmendments).innerJoin(author, eq(author.id, encounterAmendments.authorId)).where(eq(encounterAmendments.encounterId, id)).orderBy(asc(encounterAmendments.createdAt))
+    const today = await facilityToday(db, me.facilityId)
     await read(req, patientId, 'record', id)
     return {
       ...summary(r, dx, rx),
@@ -168,11 +213,10 @@ export function registerPortalRoutes(app: FastifyInstance, deps: { db: Db }) {
       examination: r.e.examination,
       assessment: r.e.assessment,
       plan: r.e.plan,
-      prescription: rx
-        .filter((p) => p.encounterId === id)
-        .map((p) => ({ drugName: p.drugName, strength: p.strength, form: p.form, dose: p.dose, route: p.route, frequency: p.frequency, duration: p.duration, instructions: p.instructions })),
+      prescription: rx.filter((p) => p.encounterId === id).map((p) => withCourse(p, today)),
       amendments: am.map(({ a, name }) => ({ createdAt: a.createdAt.toISOString(), authorName: name, reason: a.reason, content: a.content })),
       contentHash: r.e.contentHash ?? '',
+      today,
     }
   })
 

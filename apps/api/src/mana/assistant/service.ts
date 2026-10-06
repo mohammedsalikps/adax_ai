@@ -6,6 +6,11 @@ import {
   MANA_PHASES,
   MANA_READ_ONLY,
   MANA_UNAVAILABLE,
+  MANA_VOICE_MAX_BYTES,
+  MANA_VOICE_MAX_SECONDS,
+  type ManaActionDecisionRequest,
+  type ManaActionDecisionResult,
+  type ManaActionProposal,
   type ManaAnswerBlock,
   type ManaAnswerBody,
   type ManaAnswerSource,
@@ -18,6 +23,8 @@ import {
   ManaPlan,
   type ManaSourceKind,
   type ManaToolName,
+  ManaVoiceFields,
+  type ManaVoiceTranscript,
   type OpenManaConversationRequest,
   type PlannedCall,
   type SelectManaCandidateRequest,
@@ -25,19 +32,24 @@ import {
 import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { FastifyRequest } from 'fastify'
 import type { z } from 'zod'
+import { CONTAINER_OF_MIME, sniffAudio } from '../../ai/audio-sniff.ts'
 import { sha256 } from '../../ai/jobs.ts'
 import type { JobService } from '../../ai/jobs.ts'
 import type { Gate } from '../../ai/llm/gate.ts'
 import { reasoningStatus } from '../../ai/llm/status.ts'
 import type { ReasoningModel, StructuredRequest, StructuredResult } from '../../ai/llm/types.ts'
 import type { PromptDef } from '../../ai/prompts.ts'
-import { AiProviderError } from '../../ai/providers.ts'
+import { AiProviderError, type Transcriber } from '../../ai/providers.ts'
+import { isLikelyNonSpeech } from '../../ai/stt.ts'
 import { audit } from '../../audit/audit.ts'
 import { can } from '../../auth/permissions.ts'
 import { SESSION_IDLE_MS, type SessionUser } from '../../auth/sessions.ts'
 import type { Config } from '../../config.ts'
+import { requireConsent } from '../../consents/service.ts'
 import { type Db, type DbOrTx, pgCode } from '../../db/client.ts'
-import { aiModels, aiRuns, manaConversations, manaMessages, manaMessageSources, manaToolCalls, sessions, users } from '../../db/schema.ts'
+import { aiModels, aiRuns, encounters, manaActionDecisions, manaConversations, manaMessages, manaMessageSources, manaToolCalls, sessions, users } from '../../db/schema.ts'
+import { readUpload } from '../../files/upload.ts'
+import { parse } from '../../http/validate.ts'
 import { getEncounterOr404 } from '../../encounters/service.ts'
 import { conflict, HttpError } from '../../http/errors.ts'
 import { facilityToday, fullName, getPatientOr404 } from '../../patients/service.ts'
@@ -48,6 +60,9 @@ import { describePatients, type EntityRef, EntityBook, modelDescriptions, resolv
 import { blank, coversRun, MAX_PATIENTS_PER_QUESTION, nameRunsIn, nameTokens, NUDGES, PATIENT_TOOLS, PLAN_CHECKS_VERSION, PLAN_PROMPT, type PlanCheck, patientsNamedIn, renderPlanMessage, suggestionLabel, suggestionPlan, suspectPlan, validatePlan } from './plan.ts'
 import { consentRefusal, runTool, TOOLS_VERSION } from './tools.ts'
 import { timeLabel } from './format.ts'
+import { matchRulesIntent, orderWordsOf, RULES_VERSION, type RulesIntent, withChosenPatient } from './intents.ts'
+import { answerByRules, type RulesAnswer } from './rules.ts'
+import { CONSULTATION_CLOSED, NOT_THE_AUTHOR } from './actions.ts'
 import type { ManaCtx, ToolOutcome } from './types.ts'
 
 type ConvRow = typeof manaConversations.$inferSelect
@@ -64,7 +79,13 @@ const ANSWER_MAX_CHARS = 9000
 /** How many earlier questions the planner is shown (so "and her blood pressure?" means something). */
 const EARLIER_QUESTIONS = 3
 
-export const MANA_CONTRACT_VERSION = 'mana-assistant-v1'
+// v2 (HERO final): answers made by fixed rules (engine "rules", no model), and an action the doctor may approve or decline (a medicine to add).
+export const MANA_CONTRACT_VERSION = 'mana-assistant-v2'
+
+/** The audio the voice route accepts (the encounter audio routes' own list: the browser records WebM or Ogg, Safari MP4). */
+const VOICE_EXT: Record<string, string> = { 'audio/webm': '.webm', 'audio/ogg': '.ogg', 'audio/mpeg': '.mp3', 'audio/mp3': '.mp3', 'audio/mp4': '.m4a', 'audio/x-m4a': '.m4a', 'audio/wav': '.wav', 'audio/x-wav': '.wav', 'audio/wave': '.wav' }
+/** What the speech model may report beyond what the browser recorded (the container's own rounding): a clip longer than this is refused. */
+const VOICE_SLACK_MS = 1500
 
 export interface ManaServiceDeps {
   db: Db
@@ -94,15 +115,27 @@ interface StoredAnswer {
   /** Handles of the patients the tools looked up for this answer (so the screen says whom it is about, also when there is nothing to show). */
   patients?: string[]
   removed: number
+  /** HERO final: `rules` when the server composed it by fixed rules (no model). Absent: the model's. */
+  engine?: 'rules'
+  /** HERO final: an action the doctor may approve or decline (never carried out by the server). */
+  action?: ManaActionProposal | null
 }
 
 /** What a stored plan holds: the plan, the question it answers, and (when a patient must be chosen) which calls the choice settles. */
-interface StoredPlan {
+interface ModelPlan {
   type: 'plan'
   plan: ManaPlan
   question: string
   resolution: { callIndexes: number[] } | null
 }
+/** A fixed-rule question: what it was, and (when a patient must be chosen) that the choice runs it again for that patient. */
+interface RulesPlan {
+  type: 'rules'
+  intent: RulesIntent
+  question: string
+  resolution: { callIndexes: number[] } | null
+}
+type StoredPlan = ModelPlan | RulesPlan
 
 interface ToolRun {
   call: PlannedCall
@@ -214,9 +247,11 @@ export class ManaAssistantService {
     const answerIds = rows.filter((r) => r.role === 'mana').map((r) => r.id)
     const tools = answerIds.length ? await db.select().from(manaToolCalls).where(inArray(manaToolCalls.messageId, answerIds)).orderBy(asc(manaToolCalls.position)) : []
     const sources = answerIds.length ? await db.select().from(manaMessageSources).where(inArray(manaMessageSources.messageId, answerIds)).orderBy(asc(manaMessageSources.createdAt), asc(manaMessageSources.ref)) : []
+    const proposing = rows.filter((r) => r.role === 'mana' && (r.answer as StoredAnswer | null)?.action).map((r) => r.id)
+    const decisions = proposing.length ? await db.select().from(manaActionDecisions).where(inArray(manaActionDecisions.messageId, proposing)) : []
     const book = new EntityBook(conv.entities as EntityRef[])
     const entities = await describePatients(db, me.facilityId, clock.today, book, book.all().map((r) => r.patientId))
-    const messages = rows.map((r) => this.toMessage(r, tools, sources, entities, book))
+    const messages = rows.map((r) => this.toMessage(r, tools, sources, entities, book, decisions))
     return {
       conversation: { id: conv.id, scope: { encounterId: conv.encounterId, patient: conv.patientId ? book.aliasOf(conv.patientId) : null }, createdAt: conv.createdAt.toISOString(), updatedAt: conv.updatedAt.toISOString() },
       messages,
@@ -225,7 +260,7 @@ export class ManaAssistantService {
     }
   }
 
-  private toMessage(r: MsgRow, tools: (typeof manaToolCalls.$inferSelect)[], sources: (typeof manaMessageSources.$inferSelect)[], entities: ManaEntity[], book: EntityBook): ManaMessage {
+  private toMessage(r: MsgRow, tools: (typeof manaToolCalls.$inferSelect)[], sources: (typeof manaMessageSources.$inferSelect)[], entities: ManaEntity[], book: EntityBook, decisions: (typeof manaActionDecisions.$inferSelect)[] = []): ManaMessage {
     const stored = r.answer as StoredAnswer | null
     let answer: ManaMessage['answer'] = null
     if (r.role === 'mana' && stored) {
@@ -247,9 +282,13 @@ export class ManaAssistantService {
         candidates: stored.candidates.flatMap((a) => (aliasOfPatient.get(a) ? [aliasOfPatient.get(a)!] : [])),
         entities: entities.filter((e) => mentioned.has(e.alias)),
         removed: stored.removed,
+        ...(stored.engine ? { engine: stored.engine } : {}),
+        ...(stored.action ? { action: stored.action } : {}),
       }
     }
+    const decided = stored?.action ? decisions.find((d) => d.messageId === r.id) : undefined
     return {
+      ...(stored?.action ? { actionDecision: decided ? { decision: decided.decision as 'approved' | 'declined', decidedAt: decided.decidedAt.toISOString() } : null } : {}),
       id: r.id,
       seq: r.seq,
       role: r.role as 'doctor' | 'mana',
@@ -283,6 +322,10 @@ export class ManaAssistantService {
     if (body.suggestion && body.text !== suggestionLabel(body.suggestion)) throw new HttpError(422, 'suggestion_mismatch', 'That is not the question this button asks.')
     const [{ n }] = (await db.select({ n: sql<number>`count(*)::int` }).from(manaMessages).where(and(eq(manaMessages.conversationId, conv.id), eq(manaMessages.role, 'doctor')))) as [{ n: number }]
     if (n >= MAX_QUESTIONS) throw new HttpError(409, 'conversation_full', 'This conversation is long enough: start a new one.')
+    // HERO final: a question that fixed rules answer exactly (who is next, how many seen, an order's status ...) is answered from the records by the server
+    // itself: no model is asked or needed, so it is answered also while the model is down or busy (and nothing about the model is looked at).
+    const rules = body.suggestion ? null : matchRulesIntent(body.text, orderWordsOf(this.d.settings.serviceOrders.catalogue))
+    if (rules) return this.askByRules(req, me, conv, body, rules)
     await this.requireModel(req, conv)
     const preplan = body.suggestion ? suggestionPlan(body.suggestion) : undefined
     const { q, a } = await this.insertTurn(me, conv, body.text, { idempotencyKey: body.idempotencyKey, parentId: null, plan: null })
@@ -314,6 +357,8 @@ export class ManaAssistantService {
     // A choice is a question like any other: a long conversation is not continued by choosing.
     const [{ n }] = (await db.select({ n: sql<number>`count(*)::int` }).from(manaMessages).where(and(eq(manaMessages.conversationId, conv.id), eq(manaMessages.role, 'doctor')))) as [{ n: number }]
     if (n >= MAX_QUESTIONS) throw new HttpError(409, 'conversation_full', 'This conversation is long enough: start a new one.')
+    // A fixed-rule question that asked the doctor to choose a patient is run again, by the same rules, for the patient chosen: still no model.
+    if (sp.type === 'rules') return this.selectByRules(req, me, conv, last, sp, body)
     await this.requireModel(req, conv)
     const book = new EntityBook(conv.entities as EntityRef[])
     const chosenId = book.patientIdOf(body.alias)
@@ -330,6 +375,192 @@ export class ManaAssistantService {
     // The doctor chose this patient: the check that the plan is about the patient the question names does not overrule the choice.
     void this.run(req, me, conv, q, a, { question: sp.question, preplan: plan, resolution: null, confirmed: new Set([chosenId]) }, ac)
     return { state: await this.state(me, conv), created: true }
+  }
+
+  // --- answers by fixed rules (HERO final) ---------------------------------------------------------------------------------------------------
+
+  /**
+   * A question the fixed rules answer (intents.ts): stored and audited like any question, answered at once by the server from the records (rules.ts), with
+   * no model asked, no model gate and no model health check. The consent checks, the audit of what was read and shown, and the immutability of the
+   * finished answer are those of every answer.
+   */
+  private async askByRules(req: FastifyRequest, me: SessionUser, conv: ConvRow, body: AskManaAssistantRequest, intent: RulesIntent): Promise<{ state: ManaConversationState; created: boolean }> {
+    const { db } = this.d
+    const { q, a } = await this.insertTurn(me, conv, body.text, { idempotencyKey: body.idempotencyKey, parentId: null, plan: null, rules: true })
+    await this.auditTurn(req, conv, a, () => audit(db, req, { action: 'mana.question_asked', entityType: 'mana_message', entityId: q.id, patientId: conv.patientId, details: { conversationId: conv.id, answerId: a.id, encounterId: conv.encounterId, length: body.text.length, suggestion: null, mode: 'rules', intent: intent.kind } }))
+    await this.runRules(req, me, conv, a, { question: body.text, intent })
+    return { state: await this.state(me, conv), created: true }
+  }
+
+  /** The doctor chose one of the patients a fixed-rule answer offered: the same question, by the same rules, for that patient. */
+  private async selectByRules(req: FastifyRequest, me: SessionUser, conv: ConvRow, last: MsgRow, sp: RulesPlan, body: SelectManaCandidateRequest): Promise<{ state: ManaConversationState; created: boolean }> {
+    const { db } = this.d
+    const book = new EntityBook(conv.entities as EntityRef[])
+    const chosenId = book.patientIdOf(body.alias)
+    const clock = await this.clock(me.facilityId)
+    const [chosen] = chosenId ? await describePatients(db, me.facilityId, clock.today, book, [chosenId]) : []
+    if (!chosen || !chosenId) throw new HttpError(422, 'not_a_candidate', 'That patient is not available.')
+    const intent = withChosenPatient(sp.intent, body.alias)
+    if (!intent) throw new HttpError(409, 'nothing_to_select', 'There is no choice to make just now.')
+    const { q, a } = await this.insertTurn(me, conv, `Selected ${chosen.displayName} (${chosen.mrn})`, { idempotencyKey: body.idempotencyKey, parentId: last.id, plan: { type: 'selection', alias: body.alias }, rules: true })
+    await this.auditTurn(req, conv, a, () => audit(db, req, { action: 'mana.candidate_selected', entityType: 'mana_message', entityId: q.id, patientId: chosenId, details: { conversationId: conv.id, answerId: a.id, alias: body.alias } }))
+    await this.runRules(req, me, conv, a, { question: sp.question, intent })
+    return { state: await this.state(me, conv), created: true }
+  }
+
+  /** Composes, records and keeps a fixed-rule answer. Every outcome is recorded here; it never throws. */
+  private async runRules(req: FastifyRequest, me: SessionUser, conv: ConvRow, a: MsgRow, o: { question: string; intent: RulesIntent }): Promise<void> {
+    const { db, settings } = this.d
+    const t0 = Date.now()
+    try {
+      await this.requireStillAllowed(me)
+      const clock = await this.clock(me.facilityId)
+      const book = new EntityBook(conv.entities as EntityRef[])
+      // No model is involved: the consent rule is the one every answer follows (a patient who withdrew consent to AI help is not read, nor their free text shown).
+      const ctx: ManaCtx = { db, me, settings, scope: { encounterId: conv.encounterId, patientId: conv.patientId }, book, today: clock.today, timeZone: clock.timeZone, now: new Date(), modelIsLocal: true, disclosed: new Set(), textShown: new Set(), denials: [], config: this.d.config }
+      const r = await answerByRules(ctx, o.intent)
+      await this.recordRulesRead(req, conv, a, o.intent, r, ctx)
+      const facts: AnswerFact[] = r.facts.map((x, i) => ({ ref: `S${i + 1}`, text: x.text, patient: x.patient, items: x.items }))
+      const blocks: ManaAnswerBlock[] = r.blocks.map((b) => ({ text: b.text, refs: [...new Set(b.facts.map((i) => `S${i + 1}`))], flags: [] }))
+      const findings: ManaFinding[] = r.findings.map((x, i) => ({ ref: `F${i + 1}`, kind: x.kind, text: x.text, items: x.items }))
+      const action = r.action
+      await this.finish(req, conv, a, {
+        stored: { outcome: r.outcome, notice: r.notice, blocks, findings, candidates: r.candidates, removed: 0, engine: 'rules', ...(action ? { action } : {}) },
+        plan: { type: 'rules', intent: o.intent, question: o.question, resolution: r.candidates.length ? { callIndexes: [] } : null },
+        facts,
+        toolRuns: [],
+        meta: { model: '', runtime: null, weights: null, planRunId: null, answerRunId: null },
+        ctx,
+        readPatients: r.read,
+        startedAt: t0,
+        planned: false,
+        validation: {},
+        rules: {
+          intent: o.intent.kind,
+          subjects: r.subjects,
+          ...(action && {
+            // What Mana proposed is on the audit log as ids and counts: never the medicine, the dose or the doctor's words.
+            extra: (tx: DbOrTx) => audit(tx, req, { action: 'mana.action_proposed', entityType: 'mana_message', entityId: a.id, patientId: conv.patientId, details: { conversationId: conv.id, encounterId: action.encounterId, kind: action.kind, warnings: action.warnings.length } }),
+          }),
+        },
+      })
+    } catch (err) {
+      await this.markFailed(req, conv, a, err)
+      const expected = err instanceof Ended || err instanceof TooManyPatients || (err instanceof HttpError && err.statusCode < 500)
+      if (!expected) req.log.error({ err, messageId: a.id }, 'Mana fixed-rule answer failed unexpectedly')
+    }
+  }
+
+  /** What a fixed-rule answer read, and for whom, and which patients it showed, on the audit log in one transaction (counts and ids, no clinical text). */
+  private async recordRulesRead(req: FastifyRequest, conv: ConvRow, a: MsgRow, intent: RulesIntent, r: RulesAnswer, ctx: ManaCtx): Promise<void> {
+    const status = { answered: 'ok', not_established: 'empty', refused: 'refused', ambiguous: 'ambiguous', clarify: 'clarify' }[r.outcome]
+    await this.d.db.transaction(async (tx) => {
+      const read = [...r.read]
+      for (const patientId of read.length ? read : [null]) {
+        await audit(tx, req, {
+          action: r.outcome === 'refused' ? 'mana.access_refused' : 'mana.tool_run',
+          outcome: r.outcome === 'refused' ? 'denied' : 'success',
+          entityType: 'mana_message',
+          entityId: a.id,
+          patientId,
+          details: { conversationId: conv.id, tool: `rules:${intent.kind}`, engine: 'rules', status, facts: r.facts.length, findings: r.findings.length },
+        })
+      }
+      await this.auditShown(tx, req, conv, a, ctx, r.read)
+    })
+  }
+
+  // --- the doctor's decision on a proposed action (HERO final) --------------------------------------------------------------------------------
+
+  /**
+   * Records the doctor's Approve or Cancel on an answer's proposed action, once (a repeat of the same decision returns it; the other decision is refused).
+   * Nothing clinical is written: an approved medicine is added to the unsigned draft by the doctor's screen, and saved by its own autosave as the doctor's
+   * act. Approving needs the consultation to be the doctor's own and still a draft.
+   */
+  async decide(req: FastifyRequest, me: SessionUser, messageId: string, body: ManaActionDecisionRequest): Promise<{ result: ManaActionDecisionResult; created: boolean }> {
+    const { db } = this.d
+    const [row] = await db.select().from(manaMessages).where(eq(manaMessages.id, messageId))
+    if (!row) throw new HttpError(404, 'not_found', 'Message not found')
+    const conv = await this.convOr404(me, row.conversationId)
+    const action = (row.answer as StoredAnswer | null)?.action
+    if (row.role !== 'mana' || row.status !== 'ready' || !action) throw conflict('That answer has nothing to approve or cancel.', 'no_action')
+    const decided = async () => (await db.select().from(manaActionDecisions).where(eq(manaActionDecisions.messageId, row.id)))[0]
+    const result = (d: typeof manaActionDecisions.$inferSelect): ManaActionDecisionResult => ({ messageId: d.messageId, decision: d.decision as ManaActionDecisionResult['decision'], decidedAt: d.decidedAt.toISOString() })
+    const prior = await decided()
+    if (prior) {
+      if (prior.decision !== body.decision) throw conflict(`That proposal was already ${prior.decision === 'approved' ? 'approved' : 'cancelled'}.`, 'already_decided')
+      return { result: result(prior), created: false }
+    }
+    if (body.decision === 'approved') {
+      const [e] = await db.select({ status: encounters.status, doctorId: encounters.doctorId }).from(encounters).where(and(eq(encounters.id, action.encounterId), eq(encounters.facilityId, me.facilityId)))
+      if (!e || e.status !== 'in_progress') throw conflict(CONSULTATION_CLOSED, 'encounter_not_editable')
+      if (e.doctorId !== me.id) throw new HttpError(403, 'forbidden', NOT_THE_AUTHOR)
+    }
+    try {
+      const d = await db.transaction(async (tx) => {
+        const [ins] = await tx.insert(manaActionDecisions).values({ messageId: row.id, encounterId: action.encounterId, kind: action.kind, decision: body.decision, decidedBy: me.id }).returning()
+        await audit(tx, req, { action: body.decision === 'approved' ? 'mana.action_approved' : 'mana.action_declined', entityType: 'mana_message', entityId: row.id, patientId: conv.patientId, details: { conversationId: conv.id, encounterId: action.encounterId, kind: action.kind } })
+        return ins!
+      })
+      return { result: result(d), created: true }
+    } catch (e) {
+      if (pgCode(e) !== '23505') throw e
+      // Two decisions at once: the first stands.
+      const won = await decided()
+      if (won && won.decision === body.decision) return { result: result(won), created: false }
+      throw conflict('That proposal was already decided.', 'already_decided')
+    }
+  }
+
+  // --- a spoken question (HERO final) -------------------------------------------------------------------------------------------------------
+
+  /**
+   * One short spoken question, transcribed IN MEMORY by the local speech model and returned as text: the audio is never stored (no file, no transcript, no
+   * row), and the audit log has counts only (bytes, duration, how many characters were heard), never the words. In a conversation opened in a consultation
+   * the patient's recording consent is required, as for any recording made in a consultation (the patient may be heard).
+   */
+  async voice(req: FastifyRequest, me: SessionUser, transcriber: Transcriber | null): Promise<ManaVoiceTranscript> {
+    const { db, settings } = this.d
+    if (!transcriber) {
+      await audit(db, req, { action: 'mana.voice_transcribed', outcome: 'failure', details: { code: 'no_speech_service' } })
+      throw new HttpError(503, 'stt_unavailable', 'The local speech service is not set up on this computer, so Mana cannot hear a question. Type it instead.')
+    }
+    const up = await readUpload(req, 'a voice recording')
+    const fields = parse(ManaVoiceFields, up.fields)
+    const mime = up.mimetype
+    const ext = VOICE_EXT[mime]
+    const tooLong = `A spoken question is at most ${MANA_VOICE_MAX_SECONDS} seconds. Nothing was kept.`
+    if (!ext || !settings.uploads.audio.types.includes(mime)) throw new HttpError(400, 'bad_request', 'Unsupported audio format', [{ path: 'file', message: 'Use WebM, OGG, MP3, M4A or WAV audio' }])
+    if (up.data.length > MANA_VOICE_MAX_BYTES) throw new HttpError(413, 'too_large', tooLong)
+    if (fields.durationMs !== undefined && fields.durationMs > MANA_VOICE_MAX_SECONDS * 1000 + VOICE_SLACK_MS) throw new HttpError(413, 'too_long', tooLong)
+    // What the bytes are, not what the browser said they are (the encounter audio routes' own rule).
+    if (sniffAudio(up.data) !== CONTAINER_OF_MIME[mime]) throw new HttpError(415, 'unsupported_media', 'The file is not audio of the kind it says it is. Use a WebM, OGG, MP3, M4A or WAV recording.')
+    const conv = fields.conversationId ? await this.convOr404(me, fields.conversationId) : null
+    if (conv?.encounterId && conv.patientId) await requireConsent(db, req, { patientId: conv.patientId, type: 'ai_recording', encounterId: conv.encounterId, purpose: 'a spoken question to Mana in a consultation', acceptOlderWording: true })
+    const base = { conversationId: conv?.id ?? null, encounterId: conv?.encounterId ?? null, bytes: up.data.length }
+    const fail = (code: string, extra: Record<string, unknown> = {}) => audit(db, req, { action: 'mana.voice_transcribed', outcome: 'failure', entityType: conv ? 'mana_conversation' : undefined, entityId: conv?.id ?? null, patientId: conv?.patientId ?? null, details: { ...base, code, ...extra } })
+    let out: Awaited<ReturnType<Transcriber['transcribe']>>
+    try {
+      out = await transcriber.transcribe(up.data, mime, `mana-question${ext}`, { language: settings.ai.stt.languageHint })
+    } catch (err) {
+      await fail(err instanceof AiProviderError ? err.code : 'internal_error')
+      if (!(err instanceof AiProviderError)) throw err
+      const down = ['unreachable', 'stt_unavailable', 'busy', 'timeout'].includes(err.code)
+      throw new HttpError(down ? 503 : 422, down ? 'stt_unavailable' : err.code, err.message)
+    }
+    if (out.durationMs > MANA_VOICE_MAX_SECONDS * 1000 + VOICE_SLACK_MS) {
+      await fail('too_long', { durationMs: out.durationMs })
+      throw new HttpError(413, 'too_long', tooLong)
+    }
+    const heard = out.segments
+      .filter((s) => !isLikelyNonSpeech(s))
+      .map((s) => s.text)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 500)
+    await audit(db, req, { action: 'mana.voice_transcribed', entityType: conv ? 'mana_conversation' : undefined, entityId: conv?.id ?? null, patientId: conv?.patientId ?? null, details: { ...base, durationMs: out.durationMs, segments: out.segments.length, chars: heard.length, empty: !heard, local: transcriber.local } })
+    return { text: heard, empty: !heard, durationMs: out.durationMs, language: out.language }
   }
 
   /** The model must be there before a question is stored: a question with no model to answer it is not kept, and is said so ("Mana is currently unavailable."). */
@@ -380,9 +611,10 @@ export class ManaAssistantService {
     }
   }
 
-  private async insertTurn(me: SessionUser, conv: ConvRow, text: string, o: { idempotencyKey: string; parentId: string | null; plan: unknown }): Promise<{ q: MsgRow; a: MsgRow }> {
+  private async insertTurn(me: SessionUser, conv: ConvRow, text: string, o: { idempotencyKey: string; parentId: string | null; plan: unknown; rules?: boolean }): Promise<{ q: MsgRow; a: MsgRow }> {
     const { db, reasoning } = this.d
-    const model = reasoning.model
+    // An answer by fixed rules names no model: none is asked.
+    const model = o.rules ? null : reasoning.model
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         return await db.transaction(async (tx) => {
@@ -849,14 +1081,21 @@ export class ManaAssistantService {
       planned: boolean
       validation: Record<string, number>
       unverified?: string | null
+      /**
+       * HERO final: an answer composed by fixed rules: no model was asked (none is named on it), `subjects` are the patients it is about, and `extra` writes
+       * further audit events (a proposed action) in the same transaction.
+       */
+      rules?: { intent: RulesIntent['kind']; subjects: string[]; extra?: (tx: DbOrTx) => Promise<void> }
     },
   ): Promise<void> {
     const { db, reasoning } = this.d
-    const model = reasoning.model!
+    const model = f.rules ? null : reasoning.model!
     // The doctor must still be who they were when the answer is kept (the answer can take minutes).
     await this.requireStillAllowed(f.ctx.me)
     const status: ManaMessageStatus = f.unverified ? 'unverified' : f.stored.outcome === 'refused' ? 'refused' : 'ready'
-    const patients = [...new Set(f.toolRuns.flatMap((t) => (t.o.patientId ? [f.ctx.book.aliasOf(t.o.patientId)] : [])).filter((a): a is string => !!a))]
+    const fromTools = f.toolRuns.flatMap((t) => (t.o.patientId ? [f.ctx.book.aliasOf(t.o.patientId)] : []))
+    const fromRules = (f.rules?.subjects ?? []).map((id) => f.ctx.book.aliasOf(id))
+    const patients = [...new Set([...fromTools, ...fromRules].filter((a): a is string => !!a))]
     const stored: StoredAnswer = { ...f.stored, patients }
     await db.transaction(async (tx) => {
       // Fixed answers and choices read nothing; an answer that read a patient's record is checked against the patient's consent as it stands NOW, in the same
@@ -873,16 +1112,16 @@ export class ManaAssistantService {
           phase: null,
           plan: f.plan,
           answer: stored,
-          provider: model.provider,
-          model: f.meta.model,
-          runtime: f.meta.runtime,
-          weightsSha256: f.meta.weights,
-          locality: model.local ? 'local' : 'external',
+          provider: model?.provider ?? null,
+          model: model ? f.meta.model : null,
+          runtime: model ? f.meta.runtime : null,
+          weightsSha256: model ? f.meta.weights : null,
+          locality: model ? (model.local ? 'local' : 'external') : null,
           planPromptId: f.planned ? PLAN_PROMPT.id : null,
-          answerPromptId: f.facts.length ? ANSWER_PROMPT.id : null,
+          answerPromptId: model && f.facts.length ? ANSWER_PROMPT.id : null,
           schemaVersion: MANA_CONTRACT_VERSION,
-          checksVersion: `${PLAN_CHECKS_VERSION}+${ANSWER_CHECKS_VERSION}`,
-          toolsVersion: TOOLS_VERSION,
+          checksVersion: model ? `${PLAN_CHECKS_VERSION}+${ANSWER_CHECKS_VERSION}` : RULES_VERSION,
+          toolsVersion: model ? TOOLS_VERSION : RULES_VERSION,
           validation: f.validation,
           planRunId: f.meta.planRunId,
           answerRunId: f.meta.answerRunId,
@@ -905,7 +1144,8 @@ export class ManaAssistantService {
         )
       }
       const focusRun = [...f.toolRuns].reverse().find((t) => t.o.status === 'ok' && t.o.patientId)
-      const focus = focusRun?.o.patientId ? f.ctx.book.aliasOf(focusRun.o.patientId) : conv.focus
+      const ruleSubject = f.rules?.subjects.length === 1 ? f.ctx.book.aliasOf(f.rules.subjects[0]!) : null
+      const focus = focusRun?.o.patientId ? f.ctx.book.aliasOf(focusRun.o.patientId) : (ruleSubject ?? conv.focus)
       await tx.update(manaConversations).set({ entities: f.ctx.book.all(), focus, updatedAt: new Date() }).where(eq(manaConversations.id, conv.id))
       const cited = new Set(f.stored.blocks.flatMap((b) => b.refs))
       await audit(tx, req, {
@@ -927,10 +1167,11 @@ export class ManaAssistantService {
           disclosed: [...f.ctx.disclosed].length,
           validation: f.validation,
           ...(f.unverified ? { unverifiedBecause: f.unverified } : {}),
-          model: { provider: model.provider, model: f.meta.model, local: model.local },
+          ...(model ? { model: { provider: model.provider, model: f.meta.model, local: model.local } } : { engine: 'rules', intent: f.rules?.intent ?? null, action: stored.action ? stored.action.kind : null }),
           latencyMs: Date.now() - f.startedAt,
         },
       })
+      await f.rules?.extra?.(tx)
     })
   }
 

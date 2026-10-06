@@ -102,6 +102,13 @@ test('nurse uploads and measures; doctor approves, runs experimental rules and l
   await expect(doc.getByText('Approved', { exact: true })).toBeVisible()
   await expect(doc.getByRole('button', { name: 'Save regions' })).toHaveCount(0)
   await expect(doc.getByTestId('roi-Left knee').getByLabel('Label')).toBeDisabled()
+  // Doctor HERO final (DESIGN §5.7): the doctor's thermal study keeps the data origin, the clinician labels and the experimental flags behind one
+  // "Details" disclosure, closed by default; the doctor opens it.
+  const details = doc.getByTestId('thermal-details')
+  await expect(details).not.toHaveAttribute('open')
+  await expect(doc.getByText('Public sample file')).toBeHidden()
+  await details.locator('summary').click()
+  await expect(details).toHaveAttribute('open', '')
   await expect(doc.getByText('Public sample file')).toBeVisible()
 
   // Clinician label from the doctor's own assessment.

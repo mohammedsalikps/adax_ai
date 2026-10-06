@@ -206,10 +206,25 @@ export async function claimBatch(tx: DbOrTx, b: BatchInput): Promise<{ id: strin
 export const repeatIsNews = (deps: GatewayDeps, batchId: string) => deps.limiter.hit(`device-batch-repeat:${batchId}`, AUDIT_ONCE).allowed
 
 /**
+ * Who stores a batch. `gateway` (the default): a device token, no user; every stored batch is audited as the device. `simulation`: the doctor's
+ * in-app simulator (src/devices/simulation.ts), a signed-in user behind a session, storing through a SIMULATOR record only: audited as that
+ * user, and a stored batch is told to the audit log once per window per assignment, not every few seconds (the device batch itself records
+ * each one). Everything else is the same path: the gate, the assignment window, the consent, idempotency, the database guards.
+ */
+export interface IngestOptions {
+  via?: 'gateway' | 'simulation'
+}
+
+/**
  * Stores one batch of readings from a gateway. The kinds a device may send are gated (blood pressure is in no list); the batch is stored once;
  * every reading is `device_unverified`, or `simulated` when the device record is a simulator (decided here from the record, never from the request).
  */
-export async function ingestReadings(deps: GatewayDeps, req: FastifyRequest, device: DeviceRow, refuse: Refuse, body: z.output<typeof DeviceReadingsRequest>): Promise<{ status: 200 | 201; response: DeviceIngestResponse }> {
+export async function ingestReadings(deps: GatewayDeps, req: FastifyRequest, device: DeviceRow, refuse: Refuse, body: z.output<typeof DeviceReadingsRequest>, opts: IngestOptions = {}): Promise<{ status: 200 | 201; response: DeviceIngestResponse }> {
+  const simulation = opts.via === 'simulation'
+  if (simulation && device.integration !== 'simulator') throw new Error('Only a simulator record stores through the in-app simulation')
+  // As the device (no user), or as the signed-in user who runs the simulator.
+  const actor = simulation ? {} : { actorUserId: null, actorRole: 'device' }
+  const via = simulation ? { via: 'simulation' } : {}
   const refused = body.readings.filter((r) => !kindAllowedFrom(device.kind as DeviceKind, r.kind))
   if (refused.length) {
     await refuse(`kind_not_allowed:${refused.map((r) => r.kind).join(',')}`)
@@ -227,7 +242,8 @@ export async function ingestReadings(deps: GatewayDeps, req: FastifyRequest, dev
       await consentStillCovers(tx, a.patientId, at, 'readings')
       const batch = await claimBatch(tx, { device, assignment: a, kind: 'readings', idempotencyKey: body.idempotencyKey, canonical, measuredAt: at, itemCount: body.readings.length })
       if (batch.duplicate) {
-        if (repeatIsNews(deps, batch.id)) await audit(tx, req, { action: 'device.ingest', actorUserId: null, actorRole: 'device', entityType: 'device', entityId: device.id, patientId: a.patientId, facilityId: device.facilityId, details: { duplicate: true, batchId: batch.id, assignmentId: a.id } })
+        // A repeat stores nothing. From the simulation it is another tab asking for the same tick: not news at all.
+        if (!simulation && repeatIsNews(deps, batch.id)) await audit(tx, req, { action: 'device.ingest', ...actor, entityType: 'device', entityId: device.id, patientId: a.patientId, facilityId: device.facilityId, details: { duplicate: true, batchId: batch.id, assignmentId: a.id, ...via } })
         return { status: 200 as const, response: { stored: 0, duplicate: true, validationStatus, batchId: batch.id } }
       }
       const visitId = await visitForReading(tx, a.patientId, device.facilityId, at)
@@ -235,7 +251,8 @@ export async function ingestReadings(deps: GatewayDeps, req: FastifyRequest, dev
         .insert(observations)
         .values(body.readings.map((r) => ({ patientId: a.patientId, visitId, kind: r.kind, value: r.value, unit: VITALS[r.kind].unit, measuredAt: at, source: 'device' as const, validationStatus, deviceId: device.id, deviceBatchId: batch.id })))
         .returning({ id: observations.id })
-      await audit(tx, req, { action: 'device.ingest', actorUserId: null, actorRole: 'device', entityType: 'device', entityId: device.id, patientId: a.patientId, facilityId: device.facilityId, details: { readings: body.readings.map((r) => r.kind), assignmentId: a.id, batchId: batch.id, simulated, visitId } })
+      const told = !simulation || deps.limiter.hit(`device-simulation-ingest-audit:${a.id}`, AUDIT_ONCE).allowed
+      if (told) await audit(tx, req, { action: 'device.ingest', ...actor, entityType: 'device', entityId: device.id, patientId: a.patientId, facilityId: device.facilityId, details: { readings: body.readings.map((r) => r.kind), assignmentId: a.id, batchId: batch.id, simulated, visitId, ...via, ...(simulation && { repeatsNotLoggedForSeconds: AUDIT_ONCE.windowSeconds }) } })
       return { status: 201 as const, response: { stored: rows.length, duplicate: false, validationStatus, batchId: batch.id } }
     })
   } catch (e) {

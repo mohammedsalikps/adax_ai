@@ -203,7 +203,13 @@ export async function seedHospital(
       plan: c.plan ?? '',
       followUp: c.followUp ?? '',
     })
-    const rx = (items: PastConsultation['prescription']) => items.map((i) => ({ drugName: i.drugName, strength: i.strength, form: i.form, dose: i.dose, route: i.route ?? 'Oral', frequency: i.frequency, duration: i.duration, instructions: i.instructions ?? '' }))
+    // A course written as "N days" is also given as a number of days (HERO final), as the prescription page writes both; it starts on the
+    // consultation's date (the API stores that), so the patient app can say "Day 3 of 5".
+    const courseDays = (duration: string) => {
+      const m = /^(\d{1,4}) days?$/i.exec(duration.trim())
+      return m && Number(m[1]) >= 1 && Number(m[1]) <= 3650 ? Number(m[1]) : null
+    }
+    const rx = (items: PastConsultation['prescription']) => items.map((i) => ({ drugName: i.drugName, strength: i.strength, form: i.form, dose: i.dose, route: i.route ?? 'Oral', frequency: i.frequency, duration: i.duration, durationDays: courseDays(i.duration), instructions: i.instructions ?? '' }))
     const dx = (items: PastConsultation['diagnoses']) => items.map((d, i) => ({ description: d.description, code: d.code, kind: d.kind ?? (i === 0 ? 'primary' : 'secondary') }))
 
     /** An earlier, signed consultation with a historical date. */
@@ -225,6 +231,9 @@ export async function seedHospital(
       })
       const saved = await doctor('PUT', `/api/encounters/${e.id}/draft`, { version: e.version, note: noteOf(c.complaint, c), diagnoses: dx(c.diagnoses), prescription: rx(c.prescription) })
       await withClockAt(at, () => doctor('POST', `/api/encounters/${e.id}/sign`, { version: saved.version, attestation: true }))
+      // Signing no longer completes the visit (HERO final): the doctor completes the consultation, as in the app, so the visit is closed and
+      // the patient app shows the record.
+      await withClockAt(at, () => doctor('POST', `/api/encounters/${e.id}/complete`, {}))
     }
 
     /** Moves today's visit through the queue to `state`; for in_consultation and completed the doctor's work too. */
@@ -242,7 +251,11 @@ export async function seedHospital(
         diagnoses: dx(t.state === 'completed' ? (t.diagnoses ?? []) : []),
         prescription: rx(t.state === 'completed' ? (t.prescription ?? []) : []),
       })
-      if (t.state === 'completed') await doctor('POST', `/api/encounters/${e.id}/sign`, { version: saved.version, attestation: true })
+      if (t.state === 'completed') {
+        await doctor('POST', `/api/encounters/${e.id}/sign`, { version: saved.version, attestation: true })
+        // Completing is the doctor's separate, explicit step since HERO final (signing alone leaves the patient with the doctor).
+        await doctor('POST', `/api/encounters/${e.id}/complete`, {})
+      }
     }
 
     // The clinic's time of day now, in minutes; appointment times are offsets from it (so the schedule is plausible at any hour). It was fixed at the start of the run.

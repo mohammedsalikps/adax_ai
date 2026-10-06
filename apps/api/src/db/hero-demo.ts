@@ -196,9 +196,14 @@ export async function seedHeroDemo(
     // Found among all her visits (the history read model returns only the newest consultations, and every demo signed today is one more).
     const visitsOf = async () => (await nurse('GET', `/api/patients/${patientId}/visits`)).visits as { id: string; visitDate: string; status: string; tokenNumber: number; chiefComplaint: string | null; encounterId: string | null }[]
     const earlier = (await visitsOf()).filter((v) => v.chiefComplaint === HERO_PAST.complaint && v.status !== 'cancelled' && v.status !== 'no_show')
-    if (!earlier.some((v) => v.status === 'completed')) {
+    const statusOf = async (encounterId: string | null) => (encounterId ? ((await doctor('GET', `/api/encounters/${encounterId}`)) as { status: string }).status : null)
+    const unfinished = earlier.some((v) => v.status === 'completed') ? undefined : earlier[0]
+    if (unfinished && (await statusOf(unfinished.encounterId)) === 'signed') {
+      // A run that stopped between signing and completing the earlier consultation: its record is whole, only the seed's last step is left.
+      await doctor('POST', `/api/encounters/${unfinished.encounterId}/complete`, {})
+      historyAdded++
+    } else if (!earlier.some((v) => v.status === 'completed')) {
       // A run that stopped inside the earlier consultation leaves its visit (and perhaps an unsigned draft) behind: a person decides about that, not the seed.
-      const unfinished = earlier[0]
       if (unfinished) throw new Error(`An earlier run stopped inside the demo's earlier consultation (visit of ${unfinished.visitDate}, ${unfinished.status}). Discard that draft and cancel the visit in the app, then run again.`)
       const at = new Date(Date.now() - PAST_DAYS_AGO * 86_400_000)
       const v = await nurse('POST', '/api/visits', { patientId, departmentId: gen.id, chiefComplaint: HERO_PAST.complaint })
@@ -222,6 +227,8 @@ export async function seedHeroDemo(
       }
       const saved = await doctor('PUT', `/api/encounters/${e.id}/draft`, { version: e.version, note: { chiefComplaint: HERO_PAST.complaint, ...HERO_PAST.note }, diagnoses: HERO_PAST.diagnoses, prescription: HERO_PAST.prescription })
       await withClockAt(at, () => doctor('POST', `/api/encounters/${e.id}/sign`, { version: saved.version, attestation: true }))
+      // Signing no longer completes the visit (HERO final): the doctor completes the consultation, as in the app.
+      await withClockAt(at, () => doctor('POST', `/api/encounters/${e.id}/complete`, {}))
       historyAdded++
     }
     // Any entry of that medicine counts, current or stopped: one a doctor stopped during a demo is not added again.
@@ -233,7 +240,11 @@ export async function seedHeroDemo(
 
     // --- today's visit: a new one on every run ------------------------------------------------------------------------
     const open = (await visitsOf()).find((v) => v.visitDate === today && ['waiting', 'in_triage', 'ready', 'in_consultation'].includes(v.status))
-    if (open?.encounterId) throw new Error(`Today's demo visit (token ${open.tokenNumber}) has a consultation that is not signed yet. Sign or discard it in the app (as ${DOCTOR}), then run again for a new visit.`)
+    if (open?.encounterId) {
+      // Signed but not completed (HERO final: completing is the doctor's own step): the doctor completes it, not the seed.
+      if ((await statusOf(open.encounterId)) === 'signed') throw new Error(`Today's demo visit (token ${open.tokenNumber}) has a signed consultation that is not completed yet. Complete it in the app (as ${DOCTOR}), then run again for a new visit.`)
+      throw new Error(`Today's demo visit (token ${open.tokenNumber}) has a consultation that is not signed yet. Sign or discard it in the app (as ${DOCTOR}), then run again for a new visit.`)
+    }
     let replacedVisit: HeroDemoResult['replacedVisit'] = null
     if (open) {
       await nurse('POST', `/api/visits/${open.id}/status`, { status: 'cancelled', reason: 'Replaced by a new visit of the synthetic hero demo (npm run demo:hero)' })

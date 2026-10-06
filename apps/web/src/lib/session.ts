@@ -1,6 +1,7 @@
 import { applicationOf, type Me, Role } from '@adaxai/contracts'
 import type { QueryClient } from '@tanstack/react-query'
 import { ApiError, api } from './api.ts'
+import { forgetUnsavedHandwriting } from './handwritingApi.ts'
 import { clearSessionExit, markSessionEnded } from './sessionEnd.ts'
 
 /** Who is signed in lives in one cache entry; everything else cached belongs to that person. */
@@ -14,10 +15,14 @@ export const ME_KEY = ['auth', 'me'] as const
  */
 let epoch = 0
 
-/** Everything cached for the person who was here: their data, and the variables of their mutations (a sign-in's password among them). */
+/**
+ * Everything cached for the person who was here: their data, the variables of their mutations (a sign-in's password among them), and the
+ * handwriting a pad's last save could not store, which is kept in memory for its writer (lib/handwritingApi.ts).
+ */
 function dropPersonalData(qc: QueryClient) {
   qc.removeQueries({ predicate: (q) => q.queryKey[0] !== ME_KEY[0] })
   qc.getMutationCache().clear()
+  forgetUnsavedHandwriting()
 }
 
 /**

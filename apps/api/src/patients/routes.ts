@@ -4,11 +4,12 @@ import {
   AllergyInput,
   CreatePatientRequest,
   type DuplicateCandidate,
+  type PatientSummary,
   RecordConsentRequest,
   UpdatePatientRequest,
   WithdrawConsentRequest,
 } from '@adaxai/contracts'
-import { and, desc, eq, isNull, or, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { audit } from '../audit/audit.ts'
@@ -38,6 +39,15 @@ function newActivationCode(): string {
 
 const escapeLike = (s: string) => s.replace(/[%_\\]/g, '\\$&')
 
+/**
+ * The ABHA number a search term is, if it is one: 14 digits, written together or as ##-####-####-#### (spaces allowed in place of the
+ * hyphens), as the number is stored (digits only). Anything else is not an ABHA number, so a name or a short run of digits never matches one.
+ */
+export function abhaQuery(q: string): string | null {
+  const t = q.trim()
+  return /^\d{14}$/.test(t) || /^\d{2}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}$/.test(t) ? t.replace(/\D/g, '') : null
+}
+
 export function registerPatientRoutes(app: FastifyInstance, { db, dataOrigin }: { db: Db; dataOrigin: 'synthetic' | 'clinical' }) {
   // ---- Search / list ----
   app.get('/api/patients', { config: { permission: 'patients:read' } }, async (req) => {
@@ -52,16 +62,26 @@ export function registerPatientRoutes(app: FastifyInstance, { db, dataOrigin }: 
       const term = q.toLowerCase()
       const conds = [sql`${patients.mrn} ilike ${`${escapeLike(q)}%`}`, sql`${patients.searchName} ilike ${`%${escapeLike(term)}%`}`, sql`${patients.searchName} % ${term}`]
       if (digits.length >= 4) conds.push(sql`${patients.phone} like ${`%${digits}%`}`)
+      // HERO final: the ABHA number (exact, as stored), when the term is one.
+      const abha = abhaQuery(q)
+      if (abha) conds.push(sql`${patients.abhaNumber} = ${abha}`)
       rows = await db
         .select({ p: patients, lastVisit })
         .from(patients)
         .where(and(eq(patients.facilityId, me.facilityId), or(...conds)))
-        .orderBy(sql`(${patients.mrn} = ${q}) desc`, sql`similarity(${patients.searchName}, ${term}) desc`, desc(patients.updatedAt))
+        .orderBy(sql`(${patients.mrn} = ${q}) desc`, ...(abha ? [sql`(${patients.abhaNumber} = ${abha}) desc nulls last`] : []), sql`similarity(${patients.searchName}, ${term}) desc`, desc(patients.updatedAt))
         .limit(limit)
     }
+    // The allergy chip of each row: the names of the active allergies.
+    const ids = rows.map(({ p }) => p.id)
+    const allergyRows = ids.length
+      ? await db.select({ patientId: allergies.patientId, substance: allergies.substance }).from(allergies).where(and(inArray(allergies.patientId, ids), eq(allergies.status, 'active'))).orderBy(desc(allergies.recordedAt))
+      : []
     // Search terms can be names, so only their length is audited, with the patients the result disclosed.
     await audit(db, req, { action: 'patient.search', details: { queryLength: q?.length ?? 0, results: rows.length, patientIds: rows.map(({ p }) => p.id) } })
-    return { patients: rows.map(({ p, lastVisit: lv }) => toSummary(p, lv)) }
+    return {
+      patients: rows.map(({ p, lastVisit: lv }): PatientSummary => ({ ...toSummary(p, lv), activeAllergies: allergyRows.filter((a) => a.patientId === p.id).map((a) => a.substance) })),
+    }
   })
 
   // ---- Register ----

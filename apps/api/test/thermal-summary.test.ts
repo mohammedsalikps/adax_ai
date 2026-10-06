@@ -679,6 +679,8 @@ describe('thermal summaries (API)', () => {
       const signed = await insert(saved, { text: s.text, subjectId: s.id })
       expect(signed.statusCode).toBe(409)
       expect(signed.json().error).toBe('encounter_signed')
+      // HERO final (deliberate change): signing no longer closes the visit; the doctor completes it before the patient's next visit.
+      expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
 
       // The same patient's next consultation: the summary belongs to the earlier one.
       const next = await consultation({ patientId: p.id })

@@ -152,6 +152,11 @@ function QueueRow({ visit, role, onOpen, consultationAction }: { visit: Visit; r
           </div>
           <AllergySummary noKnownAllergies={visit.patient.noKnownAllergies} activeAllergies={visit.patient.activeAllergies} />
           {visit.chiefComplaint && <p className="text-sm">“{visit.chiefComplaint}”</p>}
+          {visit.triageNote && (
+            <p className="line-clamp-2 text-sm [overflow-wrap:anywhere] text-ink-muted">
+              <span className="font-medium text-ink">Triage note:</span> {visit.triageNote}
+            </p>
+          )}
           <VitalsInline vitals={visit.latestVitals} />
           <p className="text-xs text-ink-muted">
             {visit.departmentName} · {visit.assignedDoctorName ?? 'Any doctor'} · checked in {fmtTime(visit.checkedInAt)}
@@ -260,7 +265,7 @@ export function QueuePage({ consultationAction, notice }: { consultationAction?:
           <QueueRow key={v.id} visit={v} role={role} onOpen={setDialog} consultationAction={consultationAction} />
         ))}
       </ul>
-      {dialog?.kind === 'vitals' && <RecordVitalsDialog visitId={dialog.visit.id} patientName={dialog.visit.patient.fullName} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'vitals' && <RecordVitalsDialog visitId={dialog.visit.id} patientName={dialog.visit.patient.fullName} triageNote={dialog.visit.triageNote ?? null} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'cancel' && <CancelDialog visit={dialog.visit} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'edit' && <EditVisitDialog visit={dialog.visit} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'routing' && <RoutingDialog visit={dialog.visit} onClose={() => setDialog(null)} />}

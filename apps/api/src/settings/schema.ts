@@ -1,4 +1,4 @@
-import { VitalKind } from '@adaxai/contracts'
+import { ServiceCatalogueEntry, VitalKind } from '@adaxai/contracts'
 import { z } from 'zod'
 
 const mime = z.string().regex(/^[a-z]+\/[a-z0-9.+-]+$/, 'must be a MIME type')
@@ -93,6 +93,21 @@ export const AppSettings = z
         vitalTolerance: z.record(VitalKind, z.number().positive()),
       })
       .strict(),
+    // Service orders (HERO final): what the doctor can order, and the only provider there is, a deterministic simulator (no laboratory or
+    // imaging system is connected). Its orders move to "in progress" `inProgressAfterMinutes` after the request and complete after the
+    // service's `turnaroundMinutes`, carrying only a sentence that nothing was performed.
+    serviceOrders: z
+      .object({
+        provider: z.literal('simulated'),
+        inProgressAfterMinutes: z.number().int().min(0).max(1440),
+        catalogue: z
+          .array(ServiceCatalogueEntry.strict())
+          .min(1)
+          .max(200)
+          .refine((c) => new Set(c.map((s) => s.code)).size === c.length, 'service codes must be unique'),
+      })
+      .strict()
+      .refine((s) => s.catalogue.every((c) => c.turnaroundMinutes >= s.inProgressAfterMinutes), { message: 'every turnaroundMinutes must be at least inProgressAfterMinutes', path: ['catalogue'] }),
   })
   .strict()
 export type AppSettings = z.infer<typeof AppSettings>

@@ -1,4 +1,4 @@
-import { CURRENT_ENCOUNTER_HASH_SCHEME, ENCOUNTER_HASH_SCHEMES, type EncounterVerification, type VerificationCheck } from '@adaxai/contracts'
+import { ENCOUNTER_HASH_SCHEME_V2, ENCOUNTER_HASH_SCHEME_V3, ENCOUNTER_HASH_SCHEMES, type EncounterVerification, type VerificationCheck } from '@adaxai/contracts'
 import { and, asc, eq, sql } from 'drizzle-orm'
 import type { Db, DbOrTx } from '../db/client.ts'
 import { auditEvents, diagnoses, encounters, noteInsertions, patients, prescriptionItems, users } from '../db/schema.ts'
@@ -11,17 +11,24 @@ import { canonicalJson, type EncounterRow, sha256 } from './service.ts'
  * - adaxai.encounter.v1 (records signed before migration 0019, which carry no
  *   scheme marker): SHA-256 of canonicalJson(snapshot): JSON with object keys
  *   sorted, no whitespace.
- * - adaxai.encounter.v2 (current): the same serialisation, but strict (it
+ * - adaxai.encounter.v2: the same serialisation, but strict (it
  *   refuses undefined values, non-finite numbers and non-plain objects, so a
  *   fingerprint is never computed over something the stored JSON cannot
  *   reproduce), and the snapshot names its scheme and also covers the
  *   facility, visit id, reason for visit and the signing attestation.
+ * - adaxai.encounter.v3 (current, HERO final): v2, and each medicine also
+ *   carries its structured course: durationDays and startDate (null when the
+ *   medicine has none). The record's rows are compared with those as well.
  *
- * Both cover: patient identity (id, MRN, name, date of birth, sex), doctor
+ * All cover: patient identity (id, MRN, name, date of birth, sex), doctor
  * (id, name, registration number), visit date and token, the seven note
- * sections, diagnoses, prescription, references to AI-assisted text in the
- * note, and the signing time. Not covered: vitals, allergies, attached images
- * and recordings, and anything changed in other tables after signing.
+ * sections, diagnoses, prescription (as written: medicine, strength, form,
+ * dose, route, frequency, duration, instructions), references to AI-assisted
+ * text in the note, and the signing time. Not covered: vitals, allergies,
+ * attached images and recordings, completing the consultation (it happens
+ * after signing and changes the visit, not the record), and anything changed
+ * in other tables after signing. A v1 or v2 record's medicines are checked
+ * without a structured course (those schemes do not cover one).
  *
  * Amendments (adaxai.amendment.v1) are fingerprinted by the database when they
  * are added (migration 0019): each links to the previous one, the first to the
@@ -61,9 +68,13 @@ export function canonicalJsonStrict(value: unknown, path = '$'): string {
 /** The content hash of a signed snapshot under a scheme; null for a scheme this version does not support. */
 export function signedContentHash(snapshot: unknown, scheme: string): string | null {
   if (scheme === LEGACY_ENCOUNTER_HASH_SCHEME) return sha256(canonicalJson(snapshot))
-  if (scheme === CURRENT_ENCOUNTER_HASH_SCHEME) return sha256(canonicalJsonStrict(snapshot))
+  // v2 and v3 serialise the same way; v3's snapshot holds more (each medicine's course).
+  if (scheme === ENCOUNTER_HASH_SCHEME_V2 || scheme === ENCOUNTER_HASH_SCHEME_V3) return sha256(canonicalJsonStrict(snapshot))
   return null
 }
+
+/** Whether a scheme's signed prescription covers each medicine's structured course (durationDays, startDate). */
+export const schemeCoversCourse = (scheme: string) => scheme === ENCOUNTER_HASH_SCHEME_V3
 
 const jsonText = (v: string | null) => (v === null ? 'null' : JSON.stringify(v))
 
@@ -187,7 +198,7 @@ export async function verifyEncounter(db: DbOrTx, e: EncounterRow): Promise<Enco
   }
 
   // 2. The record's own rows still say what was signed (they are frozen by the database).
-  const [dx, rx, ins] = await Promise.all([
+  const [dx, rxRows, ins] = await Promise.all([
     db.select({ description: diagnoses.description, code: diagnoses.code, kind: diagnoses.kind }).from(diagnoses).where(eq(diagnoses.encounterId, e.id)).orderBy(asc(diagnoses.sortOrder)),
     db
       .select({
@@ -199,12 +210,20 @@ export async function verifyEncounter(db: DbOrTx, e: EncounterRow): Promise<Enco
         frequency: prescriptionItems.frequency,
         duration: prescriptionItems.duration,
         instructions: prescriptionItems.instructions,
+        durationDays: prescriptionItems.durationDays,
+        startDate: prescriptionItems.startDate,
       })
       .from(prescriptionItems)
       .where(eq(prescriptionItems.encounterId, e.id))
       .orderBy(asc(prescriptionItems.sortOrder)),
     db.select({ id: noteInsertions.id, section: noteInsertions.section }).from(noteInsertions).where(eq(noteInsertions.encounterId, e.id)),
   ])
+  // Under v3 the medicines' rows are compared with their course; under v1 and v2 without it (those schemes did not sign one).
+  const withCourse = schemeCoversCourse(scheme)
+  const rx = withCourse ? rxRows : rxRows.map(({ durationDays: _d, startDate: _s, ...written }) => written)
+  if (!withCourse && rxRows.some((r) => r.durationDays !== null || r.startDate !== null)) {
+    notes.push(`Some medicines have a course length or start date, which fingerprint version ${scheme.split('.').pop()} does not cover.`)
+  }
   const liveNote = Object.fromEntries(NOTE_KEYS.map((k) => [k, e[k]]))
   const sameRefs = (a: { id?: unknown; section?: unknown }[]) =>
     a

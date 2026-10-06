@@ -6,7 +6,19 @@ import { Alert, Spinner } from '../../components/ui/Feedback.tsx'
 import { errorMessage } from '../../lib/api.ts'
 import { useEncounter } from '../../lib/encounters.ts'
 import { ageFrom, fmtDate, fmtDateTime } from '../../lib/format.ts'
+import { durationLines } from '../../lib/prescriptionCourse.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
+
+/** A medicine's duration: "5 days from 6 Oct 2026" when it has a structured course, else as written (and the written words when they say more). */
+function DurationCell({ p }: { p: { duration: string; durationDays?: number | null; startDate?: string | null } }) {
+  const d = durationLines(p)
+  return (
+    <>
+      {d.main}
+      {d.written && <div className="text-ink-muted">{d.written}</div>}
+    </>
+  )
+}
 
 /**
  * Printable prescription built from the signed consultation. This build is a
@@ -103,7 +115,9 @@ export function PrescriptionPrintPage() {
                     {p.dose} ({p.route})
                   </td>
                   <td className="py-1.5 pr-2">{p.frequency}</td>
-                  <td className="py-1.5">{p.duration}</td>
+                  <td className="py-1.5">
+                    <DurationCell p={p} />
+                  </td>
                 </tr>
               ))}
             </tbody>

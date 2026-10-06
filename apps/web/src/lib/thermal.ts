@@ -13,8 +13,9 @@ export function useThermal(id: string | undefined) {
   return useQuery({ queryKey: thermalKey(id ?? ''), queryFn: () => api<ThermalCapture>(`/thermal/${id}`), enabled: !!id })
 }
 
-export function usePatientThermal(patientId: string) {
-  return useQuery({ queryKey: patientThermalKey(patientId), queryFn: () => api<{ captures: ThermalCapture[] }>(`/patients/${patientId}/thermal`), select: (d) => d.captures })
+/** The patient's thermal images. `enabled: false` asks for nothing (a screen that reads them only while something is open). */
+export function usePatientThermal(patientId: string, enabled = true) {
+  return useQuery({ queryKey: patientThermalKey(patientId), queryFn: () => api<{ captures: ThermalCapture[] }>(`/patients/${patientId}/thermal`), select: (d) => d.captures, enabled: enabled && !!patientId })
 }
 
 /** After a capture is stored (upload, import, live capture or simulator): cache it and refresh the lists it appears in. */

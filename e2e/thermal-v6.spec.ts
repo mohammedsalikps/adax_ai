@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { type APIRequestContext, expect, type Page, request as pwRequest, test } from '@playwright/test'
+import { type APIRequestContext, expect, type Locator, type Page, request as pwRequest, test } from '@playwright/test'
 import { simulateThermalMatrix, thermalStats } from '../packages/contracts/src/thermalSim.ts'
 import { DEMO_PASSWORD, expectNoAxeViolations, expectNoHorizontalOverflow, nurseHandsOverPatient, openModule, signIn } from './support.ts'
 
@@ -30,6 +30,13 @@ async function openConsultation(page: Page, baseURL: string) {
   return p
 }
 
+/** Opens the study's "Details" disclosure (Doctor HERO final, DESIGN §5.7: the engineering detail behind it), unless it is open already. */
+async function openStudyDetails(ws: Locator) {
+  const details = ws.getByTestId('thermal-details')
+  if ((await details.getAttribute('open')) === null) await details.locator('summary').click()
+  await expect(details).toHaveAttribute('open', '')
+}
+
 test.beforeEach(({ isMobile }) => test.skip(isMobile, 'desktop project only (tablet-landscape sizes are set here)'))
 
 test('thermal imaging in the consultation: no camera in a browser, a SIMULATED capture measured and summarised but never put in the note, and an imported FLIR image reviewed and added to the examination', async ({ page, baseURL }) => {
@@ -39,16 +46,15 @@ test('thermal imaging in the consultation: no camera in a browser, a SIMULATED c
   const p = await openConsultation(page, baseURL!)
   const encounterId = /\/encounters\/([0-9a-f-]{36})/.exec(page.url())![1]!
 
-  // Thermal imaging is module 5 of the inputs rail (Doctor HERO; it was the tools column's Thermal part, reached by the "Go to" bar). In a
-  // browser it says plainly that no camera can be reached: in its summary while the module is closed, and in its panel once it is opened.
-  const thermalModule = page.getByTestId('module-thermal')
-  await expect(thermalModule.getByRole('heading', { name: 'Thermal imaging' })).toBeVisible()
-  await expect(thermalModule.getByTestId('summary-thermal-camera')).toContainText('FLIR ONE not connected')
+  // Doctor HERO final (DESIGN §5.4): thermal imaging is the workspace's compact "Thermal" panel (#tools-thermal; the rail's module 5 and its
+  // thermal panel are gone). Its summary says no camera can be reached in a browser (for whoever reads it alone; the camera pane says it on
+  // screen, below), and that no image was captured, never "none".
   await openModule(page, 'Thermal')
-  await expect(page.locator('#tools-thermal')).toHaveAttribute('data-testid', 'module-thermal')
-  const panel = page.getByTestId('thermal-panel')
-  await expect(page.getByTestId('thermal-panel-camera')).toContainText('FLIR ONE not connected')
-  await expect(panel).toContainText('No thermal image in this consultation.')
+  const panel = page.locator('#tools-thermal').getByTestId('thermal-context')
+  await expect(panel.getByRole('heading', { name: 'Thermal', exact: true })).toBeVisible()
+  await expect(panel.getByTestId('summary-thermal-camera')).toContainText('FLIR ONE not connected')
+  await expect(panel.getByTestId('summary-thermal-images')).toHaveText('Thermal image not captured')
+  await expect(panel.getByTestId('thermal-source')).toHaveCount(0)
 
   // The workspace: this patient and this consultation; the camera not connected, no preview, no LIVE, no capture.
   await page.getByTestId('thermal-open').click()
@@ -115,8 +121,10 @@ test('thermal imaging in the consultation: no camera in a browser, a SIMULATED c
   await expect(dash).toContainText(C(expected.stdC))
   await expect(dash.getByTestId('thermal-dashboard-basis')).toHaveText('SIMULATED: generated numbers, not a measurement.')
   await expect(dash).not.toContainText('Measured from the radiometric data')
-  await expect(dash.getByTestId('thermal-model-status')).toHaveAttribute('data-available', 'false')
-  await expect(dash.getByTestId('thermal-model-status')).toContainText('MODEL UNAVAILABLE')
+  // Doctor HERO final (DESIGN §5.7): the thermal model's status and the provenance are behind the study's one "Details" disclosure.
+  await openStudyDetails(ws)
+  await expect(ws.getByTestId('thermal-details').getByTestId('thermal-model-status')).toHaveAttribute('data-available', 'false')
+  await expect(ws.getByTestId('thermal-details').getByTestId('thermal-model-status')).toContainText('MODEL UNAVAILABLE')
   await expect(ws.getByTestId('thermal-provenance')).toBeVisible()
   // No summary of an image that awaits review: it is composed only from an approved image, whose measurements and regions are fixed.
   const summary = ws.getByRole('region', { name: 'Thermal summary' })
@@ -179,9 +187,13 @@ test('thermal imaging in the consultation: no camera in a browser, a SIMULATED c
   // An earlier radiometric FLIR file, imported for this consultation: IMPORTED, measured from the file, approved, its summary reviewed and added.
   await ws.getByRole('button', { name: 'Import a thermal image' }).click()
   await dlg.getByLabel(/Radiometric JPEG/).setInputFiles(path.join(SAMPLES, 'flir_example.jpg'))
-  await dlg.getByLabel('Body region').fill('Left knee (public sample image)')
+  // Doctor HERO final (DESIGN §5.7): the doctor's import dialog is simplified: the body region is chosen from the fixed list, with an optional note.
+  await dlg.getByLabel('Body region').selectOption('knee')
+  await dlg.getByLabel('Note (optional)').fill('Left knee (public sample image)')
   await dlg.getByRole('button', { name: 'Import and extract' }).click()
   await expect(dash.getByTestId('thermal-source')).toHaveAttribute('data-source', 'gallery_import', { timeout: 30_000 })
+  await openStudyDetails(ws)
+  await expect(ws.getByTestId('thermal-raw-sha256')).toBeVisible()
   await expect(ws.getByTestId('thermal-raw-sha256')).toHaveText(/^[0-9a-f]{64}$/)
   await expect(dash.getByTestId('thermal-dashboard-basis')).toContainText('Measured from the radiometric data')
   await expect(summary.getByRole('button', { name: 'Compose summary' })).toHaveCount(0)
@@ -193,22 +205,35 @@ test('thermal imaging in the consultation: no camera in a browser, a SIMULATED c
   await summary.getByLabel('Edit the summary before accepting').fill('Thermal image (imported, public sample): skin-surface temperatures as measured; no asymmetry assessed. Reviewed by the doctor.')
   await summary.getByRole('button', { name: 'Save edited text' }).click()
   await expect(summary.getByTestId('thermal-summary-status')).toHaveAttribute('data-status', 'edited')
-  // Nothing reached the note until the doctor adds it.
+  // Nothing reached the note until the doctor adds it. (Doctor HERO final: the typed note is the Keyboard tab of Doctor notes.)
   await ws.getByRole('button', { name: 'Back to the consultation' }).click()
+  const notes = page.getByTestId('doctor-notes')
+  await notes.getByRole('tab', { name: 'Keyboard' }).click()
   await expect(page.getByLabel('Examination')).toHaveValue('')
-  await page.getByTestId('thermal-panel-study').filter({ has: page.locator('[data-source="gallery_import"]') }).click()
+  // The imported image is opened again from the thermal panel (Open thermal imaging, then that image in the workspace's list of this
+  // consultation's images: the panel itself shows only the newest image now).
+  await panel.getByTestId('thermal-open').click()
+  await ws.getByRole('navigation', { name: 'Thermal images in this consultation' }).getByRole('button').filter({ has: page.locator('[data-source="gallery_import"]') }).click()
+  await expect(dash.getByTestId('thermal-source')).toHaveAttribute('data-source', 'gallery_import')
   await ws.getByRole('region', { name: 'Thermal summary' }).getByTestId('thermal-summary-insert').getByRole('button', { name: 'Add to Examination' }).click()
   await expect(ws.getByRole('region', { name: 'Thermal summary' }).getByTestId('thermal-summary-insert')).toContainText('In the note')
   await ws.getByRole('button', { name: 'Back to the consultation' }).click()
   await expect(page.getByLabel('Examination')).toHaveValue(/Reviewed by the doctor\./)
-  await expect(page.getByRole('region', { name: 'Consultation note' })).toContainText(/thermal study summary \(thermal-summary-v1/i)
-  // Diagnosis and prescription untouched by any of it.
-  await expect(page.getByText('No diagnosis yet.')).toBeVisible()
-  await expect(page.getByText('No medicines prescribed.')).toBeVisible()
-  // The panel lists this consultation's two images, each with where it came from.
-  await expect(page.getByTestId('thermal-panel-study')).toHaveCount(2)
-  await expect(panel.locator('[data-source="simulator"]')).toHaveCount(1)
-  await expect(panel.locator('[data-source="gallery_import"]')).toHaveCount(1)
+  // Doctor HERO final (DESIGN §5.7): the inserted summary was composed by fixed rules, and says so ("Rule-composed text", not AI).
+  await expect(notes).toContainText(/Rule-composed text from thermal study summary \(thermal-summary-v1/i)
+  // Diagnosis and prescription untouched by any of it (Doctor HERO final: they are on the prescription page, so they are read from the record).
+  const record = await (await page.request.get(`/api/encounters/${encounterId}`)).json()
+  expect(record.diagnoses).toEqual([])
+  expect(record.prescription).toEqual([])
+  // The thermal panel counts this consultation's two images (both approved), and the thermal workspace lists them, each with where it came from.
+  await expect(panel.getByTestId('summary-thermal-images')).toHaveText('Images: 2 (approved 2)')
+  await panel.getByTestId('thermal-open').click()
+  const list = ws.getByRole('navigation', { name: 'Thermal images in this consultation' })
+  await expect(list.getByRole('listitem')).toHaveCount(2)
+  await expect(list.locator('[data-source="simulator"]')).toHaveCount(1)
+  await expect(list.locator('[data-source="gallery_import"]')).toHaveCount(1)
+  await ws.getByRole('button', { name: 'Back to the consultation' }).click()
+  await expect(ws).toHaveCount(0)
   await page.setViewportSize({ width: 1024, height: 768 })
   await expectNoHorizontalOverflow(page)
   await expectNoAxeViolations(page)

@@ -1,14 +1,15 @@
-import { type Observation, RecordVitalsRequest, VITAL_ORDER, VITALS, type VitalFlag, type VitalKind } from '@adaxai/contracts'
+import { type Observation, RecordVitalsRequest, TRIAGE_NOTE_MAX, VITAL_ORDER, VITALS, type VitalFlag, type VitalKind } from '@adaxai/contracts'
 import { ArrowDown, ArrowUp, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 import { errorMessage } from '../../lib/api.ts'
 import { useVisitMutation } from '../../lib/clinical.ts'
 import { fmtTime } from '../../lib/format.ts'
+import { triageNoteDraft, useSaveTriageNote } from '../../lib/triageNote.ts'
 import { latestPerKind } from '../../lib/vitals.ts'
 import { Button } from '../ui/Button.tsx'
 import { Dialog } from '../ui/Dialog.tsx'
 import { Alert } from '../ui/Feedback.tsx'
-import { TextField } from '../ui/Form.tsx'
+import { TextAreaField, TextField } from '../ui/Form.tsx'
 import { useToast } from '../ui/Toast.tsx'
 
 const FLAG_TEXT: Record<VitalFlag, string> = { normal: '', low: 'Low', high: 'High', critical_low: 'Very low', critical_high: 'Very high' }
@@ -105,16 +106,50 @@ export function VitalsTiles({ vitals }: { vitals: Observation[] }) {
 
 const ENTRY_KINDS: VitalKind[] = ['temperature', 'heart_rate', 'respiratory_rate', 'systolic_bp', 'diastolic_bp', 'spo2', 'blood_glucose', 'pain_score', 'weight', 'height']
 
-/** Nurse/doctor vitals entry. Empty fields are skipped; ranges are validated on both client and server. */
-export function RecordVitalsDialog({ visitId, patientName, onClose }: { visitId: string; patientName: string; onClose: () => void }) {
+/**
+ * Nurse/doctor vitals entry. Empty fields are skipped; ranges are validated on both client and server.
+ *
+ * With `triageNote` (the visit's current note, null when there is none; the nurse's queue passes it), the dialog also has an optional
+ * "Triage note" for the doctor (HERO final; at most 1000 characters; emptying it clears the note). A note alone can be saved without any
+ * measurement. The note is saved first; if the measurements are then refused, the note stays saved and is not sent again.
+ */
+export function RecordVitalsDialog({ visitId, patientName, onClose, triageNote }: { visitId: string; patientName: string; onClose: () => void; triageNote?: string | null }) {
   const toast = useToast()
   const [values, setValues] = useState<Partial<Record<VitalKind, string>>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const save = useVisitMutation<RecordVitalsRequest>(visitId, '/observations')
+  const withNote = triageNote !== undefined
+  const [note, setNote] = useState(triageNote ?? '')
+  const [savedNote, setSavedNote] = useState<string | null>(triageNote ?? null)
+  const saveNote = useSaveTriageNote(visitId)
+  const noteDraft = triageNoteDraft(savedNote, note)
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
+    void run()
+  }
+
+  const run = async () => {
     const items = ENTRY_KINDS.filter((k) => values[k]?.trim()).map((kind) => ({ kind, value: Number(values[kind]) }))
+    const noteChanged = withNote && noteDraft.changed
+    if (noteChanged && noteDraft.tooLong) {
+      setErrors((x) => ({ ...x, triageNote: `At most ${TRIAGE_NOTE_MAX} characters` }))
+      return
+    }
+    if (noteChanged && !items.length) {
+      // Only the note changed: no measurement is needed.
+      saveNote.mutate(
+        { note },
+        {
+          onSuccess: () => {
+            toast('success', noteDraft.length ? `Triage note saved for ${patientName}` : `Triage note cleared for ${patientName}`)
+            onClose()
+          },
+          onError: (err) => setErrors({ triageNote: errorMessage(err) }),
+        },
+      )
+      return
+    }
     const parsed = RecordVitalsRequest.safeParse({ items })
     if (!parsed.success) {
       const next: Record<string, string> = {}
@@ -127,9 +162,18 @@ export function RecordVitalsDialog({ visitId, patientName, onClose }: { visitId:
       setErrors(next)
       return
     }
+    if (noteChanged) {
+      try {
+        await saveNote.mutateAsync({ note })
+        setSavedNote(note.trim() || null)
+      } catch (err) {
+        setErrors({ triageNote: errorMessage(err) })
+        return
+      }
+    }
     save.mutate(parsed.data, {
       onSuccess: () => {
-        toast('success', `Vitals saved for ${patientName}`)
+        toast('success', noteChanged ? `Vitals and triage note saved for ${patientName}` : `Vitals saved for ${patientName}`)
         onClose()
       },
       onError: (err) => {
@@ -150,14 +194,16 @@ export function RecordVitalsDialog({ visitId, patientName, onClose }: { visitId:
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" form="vitals-form" loading={save.isPending}>
+          <Button type="submit" form="vitals-form" loading={save.isPending || saveNote.isPending}>
             Save vitals
           </Button>
         </>
       }
     >
       <form id="vitals-form" noValidate onSubmit={submit} className="space-y-4">
-        <p className="text-sm text-ink-muted">Enter the measurements you took; leave the rest blank. Values are recorded as manual entries by you.</p>
+        <p className="text-sm text-ink-muted">
+          Enter the measurements you took; leave the rest blank. Values are recorded as manual entries by you.{withNote && ' A triage note for the doctor is optional.'}
+        </p>
         {errors._form && <Alert tone="error">{errors._form}</Alert>}
         {save.isError && !Object.keys(errors).length && <Alert tone="error">{errorMessage(save.error)}</Alert>}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -180,6 +226,20 @@ export function RecordVitalsDialog({ visitId, patientName, onClose }: { visitId:
             )
           })}
         </div>
+        {withNote && (
+          <TextAreaField
+            label="Triage note"
+            rows={3}
+            maxLength={TRIAGE_NOTE_MAX}
+            value={note}
+            onChange={(e) => {
+              setNote(e.target.value)
+              setErrors(({ triageNote: _x, ...rest }) => rest)
+            }}
+            error={errors.triageNote}
+            hint={`Optional, for the doctor: what you noticed at triage. ${noteDraft.length} of ${TRIAGE_NOTE_MAX} characters.${savedNote && !note.trim() ? ' Saving with this empty clears the note.' : ''}`}
+          />
+        )}
       </form>
     </Dialog>
   )

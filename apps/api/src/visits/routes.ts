@@ -1,5 +1,5 @@
-import { ChangeVisitStatusRequest, CreateVisitRequest, EnteredInErrorRequest, OPEN_VISIT_STATUSES, RecordVitalsRequest, UpdateVisitRequest, VISIT_TRANSITIONS, VisitQuery, VisitStatus, VitalKind } from '@adaxai/contracts'
-import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm'
+import { ChangeVisitStatusRequest, CreateVisitRequest, EnteredInErrorRequest, OPEN_VISIT_STATUSES, RecordVitalsRequest, TriageNoteRequest, UpdateVisitRequest, VISIT_TRANSITIONS, VisitQuery, VisitStatus, VitalKind } from '@adaxai/contracts'
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -12,7 +12,7 @@ import { departments, encounters, observations, users, visits } from '../db/sche
 import { badRequest, conflict, HttpError, notFound } from '../http/errors.ts'
 import { parse } from '../http/validate.ts'
 import { ageOn, facilityToday, getPatientOr404 } from '../patients/service.ts'
-import { createVisit, getVisitOr404, loadVisits, standingWindow, toObservation, unitFor } from './service.ts'
+import { createVisit, getVisitOr404, loadVisits, mineVisits, standingWindow, toObservation, unitFor } from './service.ts'
 
 const IdParams = z.object({ id: z.uuid() })
 /** Of what a device sent, how many of the newest readings of each kind (per visit) the record's list of vital signs shows. */
@@ -76,12 +76,7 @@ export function registerVisitRoutes(app: FastifyInstance, { db, encounterLookup 
       if (statuses.length) conds.push(inArray(visits.status, statuses))
     }
     if (q.departmentId) conds.push(eq(visits.departmentId, q.departmentId))
-    if (q.mine === 'true') {
-      const mineCond = me.departmentId
-        ? or(eq(visits.assignedDoctorId, me.id), and(isNull(visits.assignedDoctorId), eq(visits.departmentId, me.departmentId)))
-        : eq(visits.assignedDoctorId, me.id)
-      conds.push(mineCond!)
-    }
+    if (q.mine === 'true') conds.push(mineVisits(me))
     const list = await withEncounters(and(...conds)!, date)
     await audit(db, req, { action: 'queue.read', details: { date, count: list.length, mine: q.mine === 'true', patientIds: [...new Set(list.map((v) => v.patient.id))] } })
     return { date, visits: list }
@@ -169,6 +164,34 @@ export function registerVisitRoutes(app: FastifyInstance, { db, encounterLookup 
       return true
     })
     if (!updated) await refuse(conflict('The visit was changed by someone else. Refresh and try again.', 'stale_status'))
+    const [out] = await withEncounters(eq(visits.id, id), v.visitDate)
+    return out
+  })
+
+  /**
+   * The triage note (HERO final, migration 0033): what the nurse (or a doctor) noted at triage, free text of at most 1000 characters; an empty
+   * note clears it. Who wrote or cleared it, and when, are kept with it. Only an open visit takes a note. The audit event says whether it was
+   * set or cleared and how long it is, never what it says.
+   */
+  app.put('/api/visits/:id/triage-note', { config: { permission: 'queue:manage' } }, async (req) => {
+    const me = currentUser(req)
+    const { id } = parse(IdParams, req.params)
+    const { note } = parse(TriageNoteRequest, req.body)
+    const v = await getVisitOr404(db, me, id)
+    const closed = conflict('A triage note can only be written while the visit is open', 'visit_closed')
+    if (!OPEN_VISIT_STATUSES.includes(v.status)) throw closed
+    const saved = await db.transaction(async (tx) => {
+      // Only while the visit is still open (it may have been completed or cancelled since it was read).
+      const [row] = await tx
+        .update(visits)
+        .set({ triageNote: note, triageNoteBy: me.id, triageNoteAt: sql`now()`, updatedAt: sql`now()` })
+        .where(and(eq(visits.id, id), inArray(visits.status, OPEN_VISIT_STATUSES)))
+        .returning({ id: visits.id })
+      if (!row) return false
+      await audit(tx, req, { action: 'visit.triage_note', entityType: 'visit', entityId: id, patientId: v.patientId, details: { cleared: note === null, length: note?.length ?? 0, hadNote: v.triageNote !== null } })
+      return true
+    })
+    if (!saved) throw closed
     const [out] = await withEncounters(eq(visits.id, id), v.visitDate)
     return out
   })

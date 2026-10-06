@@ -1,9 +1,9 @@
 import type { Role } from '@adaxai/contracts'
-import { Info } from 'lucide-react'
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Outlet, ScrollRestoration, useLocation, useMatches, useNavigate } from 'react-router'
 import { useLogout, useMe } from '../../lib/auth.tsx'
 import { signOutProblem } from '../../lib/signInErrors.ts'
+import { GlobalMana } from '../mana/GlobalMana.tsx'
 import { useToast } from '../ui/Toast.tsx'
 import { Sidebar } from './Sidebar.tsx'
 import { TopBar } from './TopBar.tsx'
@@ -75,10 +75,15 @@ export function useFocusMode(on: boolean | null) {
 }
 
 /**
- * The frame of every signed-in page: sidebar (a drawer on phones), top bar,
- * the development notice and the page. One shell for every role, so the app
- * looks and behaves the same wherever you are; what differs is the pages the
- * role has (lib/nav.ts) and whether patient search is offered.
+ * The frame of every signed-in page: sidebar (a drawer on phones), top bar
+ * and the page. One shell for every role, so the app looks and behaves the
+ * same wherever you are; what differs is the pages the role has (lib/nav.ts),
+ * whether patient search is offered, and, for doctors only, the global Mana
+ * button (components/mana/GlobalMana.tsx: Mana needs `ai:use`, which only
+ * doctors have). There is no application-wide development banner (Doctor
+ * HERO, DESIGN §4): synthetic, simulated and unverified data are marked where
+ * they appear (the patient's Synthetic badge, SIMULATED and UNVERIFIED tags,
+ * the printed prescription's note), and the sign-in pages keep one small line.
  *
  * On phones the sidebar is a drawer: opening it moves focus into it and makes
  * the page behind inert; Escape, its close button, the dimmed backdrop and
@@ -165,20 +170,18 @@ export function AppShell({ role }: { role: Role }) {
       />
       {/* While the drawer is open the page behind it cannot be reached by keyboard or screen reader. */}
       <div className={`flex min-w-0 flex-col ${frame.bar}`} inert={menuOpen}>
-        <div role="note" className="border-b border-line bg-notice-soft text-notice print:hidden">
-          <p className="flex items-start gap-2 px-4 py-1.5 text-xs sm:px-6 lg:px-8">
-            <Info aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-            <span>
-              <strong className="font-semibold">Development build.</strong> Synthetic data only. Not for clinical use. Not a medical device.
-            </span>
-          </p>
-        </div>
         <TopBar me={me} base={base} menuOpen={menuOpen} onMenu={() => setMenuOpen(true)} menuRef={menuButton} navId={NAV_ID} onSignOut={signOut} drawerUntil={frame.drawerUntil} />
         <main id="main" tabIndex={-1} className={frame.main}>
           <FocusModeContext.Provider value={setFocusMode}>
             <Outlet />
           </FocusModeContext.Provider>
         </main>
+        {/* The doctor's Mana, floating above the page (and above a page's bottom bar); inert with the page while the drawer is open, never printed. */}
+        {role === 'doctor' && (
+          <div className="print:hidden">
+            <GlobalMana />
+          </div>
+        )}
       </div>
       {/* A new page starts at the top (the browser would keep the old scroll position); going back restores it. A change of search parameters within a page opts out with preventScrollReset. */}
       <ScrollRestoration />

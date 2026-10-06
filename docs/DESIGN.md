@@ -335,13 +335,27 @@ The doctor's consultation editor, as built: [ADR 0022](adr/0022-doctor-hero-five
 
 - **Checked** by `e2e/doctor-hero.spec.ts`, `hero-journey.spec.ts` and `hero-demo.spec.ts` in Chromium (seven sizes from 390 × 844 to 1920 × 1080, no horizontal overflow) and by screenshots of a run on the real local models (STATUS.md). Not checked: a tablet, a screen reader by hand.
 
-**Not built** (the owner's later "complete redesign" brief): a Today/Week/Month home without the sidebar, a patient profile with tabs, the digital pen, one band-and-stethoscope input, recording that starts with the consultation, a prescription document page, a persistent Mana button, removing the development banner.
+**Superseded** by §4k for the doctor (the final application, ADR 0023): the rail, the workflow strip and the in-page Mana area above are no longer the doctor's consultation.
+
+## 4k. The final Doctor HERO application (ADR 0023)
+
+The binding design for this round is summarised in [ADR 0023](adr/0023-doctor-hero-final-application.md); the gap analysis that led to it is [DOCTOR_HERO_GAP_MATRIX.md](DOCTOR_HERO_GAP_MATRIX.md).
+
+- **Shell (doctor):** Home · My consultations · Patients · Thermal; an account menu (Change password) and a visible Sign out; a floating Mana button (doctor only, nothing requested until opened). No development banner for any role.
+- **Primitives** (`components/hero/`): `Panel` (a section named by an uppercase section label, flat, no shadow), `PanelGroup`, `StatusPill` (dot + word, never colour alone), `SourceTag` (Staff · Device · UNVERIFIED · SIMULATED (dashed) · AI DRAFT · Fixed rules · From the record), `StatTile`, `KeyValue` ("Not recorded" when missing), `HeroEmpty`, `Sheet` (a modal side or centred sheet with focus trap), `BottomBar` (the only publisher of `--action-bar-h`), `PageTitle`.
+- **Home:** greeting h1, Period (Today | Week | Month, in the URL), four tiles from `GET /api/doctor/day`, a minimal accessible trend for week/month, "Today's patients" (time · patient · reason · allergies · status · one action).
+- **My consultations** (`/doctor/queue`): today's queue in time order, All · Waiting · Completed, a polite "… is ready for you" cue, Signed — to complete rows; drafts and signed records at `/doctor/consultations`.
+- **Patients:** search by name, MRN, phone or ABHA; the patient page has Summary (default) · Details · Documents.
+- **Consultation:** header (patient, allergies, recording state, last vitals, profile, ⋯), grid (live transcription · clinical inputs · patient history with orders), doctor notes (Pen | Keyboard) and thermal, bottom bar (Order service · Generate prescription). 1280px+: three columns; 1024–1279: two; below: one column.
+- **Prescription page:** clinical summary (AI DRAFT, the doctor adds to the note) | prescription document; Sign & print; Complete consultation (confirmed). Printing never completes.
+- **Thermal page:** patient → Upload / Capture → thermal study (measurements only) with Details.
+- **Patient app:** Today's prescription with each medicine's course, after the doctor completes the consultation.
 
 ## 5. Rules the screens follow
 
 - **No fake controls.** A control appears only if the product can do it.
 - **Clinical safety is visible.** AI content is violet and labelled as a draft; the signed record
-  is not styled like it. The development banner stays on every page.
+  is not styled like it. There is no global development banner (removed in the final Doctor HERO, ADR 0023): synthetic, simulated and unverified marks are shown where the data is, and the printed prescription keeps its "not a valid prescription" note.
 - **Nothing succeeds silently or falsely.** Success messages say what happened; where a patient
   could not be told, the message says so.
 - **Destructive actions are confirmed**, with a reason where the record needs one.

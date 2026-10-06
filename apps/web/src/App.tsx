@@ -3,9 +3,8 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { createBrowserRouter, Outlet, RouterProvider } from 'react-router'
 import { PortalLayout } from './components/PortalLayout.tsx'
-import { CapturePanel } from './components/capture/CapturePanel.tsx'
 import { AiAssistantPanel } from './components/clinical/AiAssistantPanel.tsx'
-import { ConsultAction, ConsultationLink } from './components/clinical/ConsultAction.tsx'
+import { ConsultationLink } from './components/clinical/ConsultAction.tsx'
 import { Timeline } from './components/clinical/Timeline.tsx'
 import { RequireAuth, RoleRedirect } from './components/RequireAuth.tsx'
 import type { RouteHandle } from './components/shell/AppShell.tsx'
@@ -22,16 +21,19 @@ import { AdminAiOperationsPage } from './pages/admin/AdminAiOperationsPage.tsx'
 import { AdminThermalDataPage } from './pages/admin/AdminThermalDataPage.tsx'
 import { AiReviewPage } from './pages/doctor/AiReviewPage.tsx'
 import { DoctorHomePage } from './pages/doctor/DoctorHomePage.tsx'
-import { EarlierDraftsNotice, MyConsultationsPage } from './pages/doctor/MyConsultationsPage.tsx'
+import { MyConsultationsPage } from './pages/doctor/MyConsultationsPage.tsx'
+import { DoctorPatientPage } from './pages/doctor/DoctorPatientPage.tsx'
+import { MyConsultationsQueuePage } from './pages/doctor/MyConsultationsQueuePage.tsx'
+import { PrescriptionPage } from './pages/doctor/PrescriptionPage.tsx'
+import { ThermalPage } from './pages/doctor/ThermalPage.tsx'
 import { AdminUsersPage } from './pages/admin/AdminUsersPage.tsx'
 import { ActivatePage } from './pages/ActivatePage.tsx'
 import { ChangePasswordPage } from './pages/ChangePasswordPage.tsx'
 import { PatientProfilePage } from './pages/clinical/PatientProfilePage.tsx'
 import { PatientsPage } from './pages/clinical/PatientsPage.tsx'
 import { QueuePage } from './pages/clinical/QueuePage.tsx'
-import { TodaysPatientsPage } from './pages/doctor/TodaysPatientsPage.tsx'
 import { RegisterPatientPage } from './pages/clinical/RegisterPatientPage.tsx'
-import { PatientThermalCard, ThermalDetailPage, ThermalListPage } from './pages/clinical/ThermalPages.tsx'
+import { PatientThermalCard, ThermalDetailPage } from './pages/clinical/ThermalPages.tsx'
 import { ConsultationPage } from './pages/doctor/ConsultationPage.tsx'
 import { PrescriptionPrintPage } from './pages/doctor/PrescriptionPrintPage.tsx'
 import { ApplicationSelectorPage } from './pages/ApplicationSelectorPage.tsx'
@@ -42,10 +44,6 @@ import { AuscultationCard } from './components/clinical/AuscultationCard.tsx'
 import { DeviceReadingsCard } from './components/clinical/DeviceReadingsCard.tsx'
 import { PortalConsentsPage, PortalHomePage, PortalProfilePage, PortalRecordPage, PortalRecordsPage, PortalVisitsPage, PortalVitalsPage } from './pages/patient/PortalPages.tsx'
 import { ClinicalImagesCard } from './components/clinical/ClinicalImagesCard.tsx'
-import { ManaAssistant } from './components/mana/ManaAssistant.tsx'
-import { ThermalPanel } from './components/thermal/ThermalPanel.tsx'
-import { ManaArea } from './components/workspace/ManaArea.tsx'
-import { PrescriptionAiLane } from './components/workspace/PrescriptionAiLane.tsx'
 
 const portal = (role: Role) => (
   <RequireAuth roles={[role]}>
@@ -61,9 +59,8 @@ const profileExtra = (p: PatientDetail) => (
     <AuscultationCard patientId={p.id} />
   </div>
 )
+/** The nurse's patient profile. The doctor's is its own page (pages/doctor/DoctorPatientPage.tsx). */
 const profile = <PatientProfilePage visitAction={(v) => <ConsultationLink visit={v} />} timeline={(id) => <Timeline patientId={id} />} extra={profileExtra} />
-/** Doctors also get Mana AI on the patient record. */
-const doctorProfile = <PatientProfilePage visitAction={(v) => <ConsultationLink visit={v} />} timeline={(id) => <Timeline patientId={id} />} extra={profileExtra} companion={(p) => <ManaAssistant patientId={p.id} />} />
 
 const router = createBrowserRouter([
   {
@@ -103,32 +100,27 @@ const router = createBrowserRouter([
     ],
   },
   {
+    // The Doctor HERO (DESIGN §4). The navigation lists Home, My consultations (/queue), Patients and Thermal; every other route stays
+    // reachable by link (the drafts and signed records, appointments, registration, AI review) and e2e opens them directly.
     path: '/doctor',
     element: portal('doctor'),
     children: [
-      { index: true, element: <DoctorHomePage consultationAction={(v) => <ConsultAction visit={v} />} notice={<EarlierDraftsNotice />} /> },
-      { path: 'queue', element: <TodaysPatientsPage consultationAction={(v) => <ConsultAction visit={v} />} notice={<EarlierDraftsNotice />} /> },
+      // Home (DESIGN §5.1): its own timeline actions and the earlier-drafts notice (its default).
+      { index: true, element: <DoctorHomePage /> },
+      { path: 'queue', element: <MyConsultationsQueuePage /> },
       { path: 'consultations', element: <MyConsultationsPage /> },
       { path: 'appointments', element: <AppointmentsPage /> },
       { path: 'patients', element: <PatientsPage /> },
-      { path: 'patients/:patientId', element: doctorProfile },
+      { path: 'patients/:patientId', element: <DoctorPatientPage /> },
       {
-        // The doctor's consultation (Doctor HERO): the five inputs on the left, Mana and the record on the right, in focus mode (the
-        // navigation a drawer at every width) while it is being written. Each panel is its own slot, so a fault in one stays in it.
+        // The doctor's consultation workspace (DESIGN §5.4), in focus mode (the navigation a drawer at every width) while it is being written.
+        // The page composes the five inputs itself; the route adds the tools that are not among them (the clinical photographs and the older
+        // assistant), in a sheet from the header's menu. Each is its own boundary, so a fault in one stays in it.
         path: 'encounters/:encounterId',
         handle: { workspace: true, focus: true } satisfies RouteHandle,
         element: (
           <ConsultationPage
             panels={{
-              conversation: (e, inserter) => <CapturePanel encounter={e} inserter={inserter} />,
-              devices: (e) => <DeviceReadingsCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />,
-              stethoscope: (e) => <AuscultationCard patientId={e.patient.id} encounterId={e.id} variant="consultation" />,
-              // Its closed module's quick actions (Capture or Open thermal, Research) are the module summary's own: they use this panel's buttons.
-              thermal: (e, inserter) => <ThermalPanel encounter={e} inserter={inserter} canEdit={e.canEdit} />,
-              // The analysis' progress, the Mana result (model output), the consultation overview with the safety rules (fixed rules), and
-              // Ask Mana, which is given no way into the note: it is read-only.
-              mana: (e, inserter) => <ManaArea encounter={e} inserter={inserter} />,
-              prescriptionLane: (e, inserter) => <PrescriptionAiLane encounterId={e.id} inserter={inserter} />,
               more: (e, inserter) => (
                 <>
                   <PanelBoundary label="The clinical photographs">
@@ -143,8 +135,10 @@ const router = createBrowserRouter([
           />
         ),
       },
+      // The prescription page of a consultation (DESIGN §5.6), in focus mode like the consultation itself.
+      { path: 'encounters/:encounterId/prescription', handle: { workspace: true, focus: true } satisfies RouteHandle, element: <PrescriptionPage /> },
       { path: 'register', element: <RegisterPatientPage /> },
-      { path: 'thermal', element: <ThermalListPage /> },
+      { path: 'thermal', element: <ThermalPage /> },
       { path: 'ai-review', element: <AiReviewPage /> },
       { path: 'thermal/:captureId', element: <ThermalDetailPage /> },
     ],

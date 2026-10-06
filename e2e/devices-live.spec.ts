@@ -41,12 +41,24 @@ async function register(baseURL: string, o: { kind: 'wearable_band' | 'smart_ste
   }
 }
 
+/** The clinical inputs' tile of one vital sign (Doctor HERO final, DESIGN §5.4 column 2), and the value rows in it from one source. */
+const inputTile = (page: Page, kind: string) => page.getByTestId('clinical-inputs').locator(`[data-testid="input-tile"][data-kind="${kind}"]`)
+const inputValue = (page: Page, kind: string, source: 'staff' | 'device' | 'stored' | 'simulated') => inputTile(page, kind).locator(`[data-testid="input-value"][data-source="${source}"]`)
+/** The clinical inputs' one line on what the devices are doing (it replaced the bar's device chip). */
+const deviceLine = (page: Page) => page.getByTestId('clinical-inputs-devices')
+
 async function openConsultation(page: Page, patientName: string) {
   await signIn(page, 'dr.meera')
   await page.getByRole('listitem').filter({ hasText: patientName }).getByRole('button', { name: 'Start consultation' }).click()
   await expect(page).toHaveURL(/\/doctor\/encounters\/[0-9a-f-]{36}/)
-  // The devices are in module 3 of the inputs rail ("Health band & vitals"; Doctor HERO), which starts closed: opened, as the doctor would,
-  // and remembered, so it stays open after the reloads below.
+  await openDeviceDetails(page)
+}
+
+/**
+ * The device card is in the clinical inputs panel, folded under "Device details" (Doctor HERO final): unfolded, as the doctor would. It is
+ * not remembered across a reload, so it is unfolded again after each one.
+ */
+async function openDeviceDetails(page: Page) {
   await openModule(page, 'Vitals')
   await expect(card(page)).toBeVisible()
 }
@@ -92,10 +104,11 @@ test('a simulator’s values reach the consultation marked SIMULATED: live, then
   await dlg.getByRole('button', { name: 'Attach' }).click()
   await expect(attached(page)).toHaveAttribute('data-simulated', 'true')
   await expect(attached(page).getByTestId('simulated-badge')).toHaveText('SIMULATED')
-  // A simulator is never UNVERIFIED (that mark is for a real device's values), here or in the bar's chip, which says SIMULATED.
+  // A simulator is never UNVERIFIED (that mark is for a real device's values), here or in the clinical inputs, whose device line (it replaced
+  // the bar's device chip, removed in Doctor HERO final) calls it a simulator, never a device.
   await expect(attached(page).getByTestId('unverified-badge')).toHaveCount(0)
-  await expect(page.getByTestId('device-status-chip').getByTestId('simulated-badge')).toBeVisible()
-  await expect(page.getByTestId('device-status-chip').getByTestId('unverified-badge')).toHaveCount(0)
+  await expect(deviceLine(page)).toHaveText('Simulator not connected')
+  await expect(page.getByTestId('clinical-inputs').getByText('Device · UNVERIFIED')).toHaveCount(0)
   await expect(attached(page)).toContainText('They are not measurements of this patient and are not part of the record.')
 
   // Never heard from: disconnected, and every kind says "No reading" rather than showing a number.
@@ -122,14 +135,26 @@ test('a simulator’s values reach the consultation marked SIMULATED: live, then
   await expect(tile(page, 'heart_rate')).toContainText(/Measured \d/)
   await expect(tile(page, 'heart_rate')).not.toContainText('High')
   await expect(tile(page, 'temperature')).toContainText('No reading')
+  // The clinical inputs say a simulator is sending, not a device; its value is set apart in the tile, marked SIMULATED, never LIVE or flagged.
+  await expect(deviceLine(page)).toHaveText('Simulator sending (not a device)')
+  await expect(inputValue(page, 'heart_rate', 'simulated')).toContainText('131')
+  await expect(inputValue(page, 'heart_rate', 'simulated')).toContainText('SIMULATED')
+  await expect(inputValue(page, 'heart_rate', 'simulated')).not.toContainText(/LIVE|High/)
   await expectNoAxeViolations(page)
   await expectNoHorizontalOverflow(page)
 
-  // The visit's own vital signs are what the nurse measured (92): the simulator's 131 is not among them, here or in the banner.
+  // The visit's own vital signs are what the nurse measured (92): the simulator's 131 is not among them, here or in the banner. (Doctor HERO
+  // final: the clinical inputs' heart-rate tile shows the staff value as its value, and the simulator's apart, marked; the header's Last vitals
+  // are the staff's.)
   await page.reload()
-  await expect(card(page)).toBeVisible()
-  await expect(page.getByTestId('vitals-tiles')).toContainText('92')
-  await expect(page.getByTestId('vitals-tiles')).not.toContainText('131')
+  await openDeviceDetails(page)
+  await expect(inputTile(page, 'heart_rate')).toHaveAttribute('data-source', 'staff')
+  await expect(inputValue(page, 'heart_rate', 'staff')).toContainText('92')
+  await expect(inputValue(page, 'heart_rate', 'staff')).not.toContainText('131')
+  const snapshotHr = page.locator('[data-testid="vitals-snapshot-item"][data-kind="heart_rate"]')
+  await expect(snapshotHr).toHaveAttribute('data-source', 'staff')
+  await expect(snapshotHr).toContainText('92')
+  await expect(page.getByTestId('vitals-snapshot')).not.toContainText('131')
   await expect(page.getByTestId('patient-banner')).not.toContainText('131')
   await expect(attached(page)).toHaveAttribute('data-state', 'live', { timeout: 15_000 })
   await stopSending()
@@ -169,11 +194,10 @@ test('readings posted for a gateway device are shown as unverified device values
   await dlg.getByRole('button', { name: 'Attach' }).click()
   await expect(attached(page)).toHaveAttribute('data-simulated', 'false')
   await expect(attached(page).getByTestId('simulated-badge')).toHaveCount(0)
-  // In the consultation a device that is not a simulator says UNVERIFIED (solid), and so does the bar's device chip.
+  // In the consultation a device that is not a simulator says UNVERIFIED (solid), and so do its values in the clinical inputs (Doctor HERO final:
+  // the bar's device chip is gone; each value carries its own source), never SIMULATED.
   await expect(attached(page).getByTestId('unverified-badge')).toHaveText('UNVERIFIED')
-  const chip = page.getByTestId('device-status-chip')
-  await expect(chip.getByTestId('unverified-badge')).toBeVisible()
-  await expect(chip.getByTestId('simulated-badge')).toHaveCount(0)
+  await expect(deviceLine(page)).toHaveText('Device not connected')
 
   const stop = every(2000, () => band.send([{ kind: 'heart_rate', value: 118 }, { kind: 'spo2', value: 96 }]))
   await expect(tile(page, 'heart_rate')).toHaveAttribute('data-state', 'live', { timeout: 15_000 })
@@ -181,17 +205,28 @@ test('readings posted for a gateway device are shown as unverified device values
   await expect(tile(page, 'heart_rate')).toContainText('Device · unverified')
   await expect(tile(page, 'heart_rate')).toContainText('High')
   await expect(tile(page, 'spo2')).toContainText('96')
-  await expect(chip).toHaveAttribute('data-state', 'live')
-  await expect(chip).toContainText('Device live')
+  await expect(deviceLine(page)).toHaveText('Device live')
+  await expect(inputValue(page, 'spo2', 'device')).toContainText('96')
+  await expect(inputValue(page, 'spo2', 'device')).toContainText('Device · UNVERIFIED')
+  await expect(inputValue(page, 'spo2', 'device')).toHaveAttribute('data-state', 'live')
+  await expect(page.getByTestId('clinical-inputs').getByTestId('input-tiles').getByText('SIMULATED')).toHaveCount(0)
   await expectNoAxeViolations(page)
 
   // The visit's vital signs: the nurse measured the heart rate (92), so that stands; nobody measured oxygen saturation, so the device's value
-  // stands there, and says what it is.
+  // stands there, and says what it is. (Doctor HERO final: the clinical inputs' tiles and the header's Last vitals.)
   await page.reload()
-  const tiles = page.getByTestId('vitals-tiles')
-  await expect(tiles).toContainText('92')
-  await expect(tiles).not.toContainText('118')
-  await expect(tiles.getByRole('listitem').filter({ hasText: 'SpO₂' })).toContainText('device, unverified')
+  await openDeviceDetails(page)
+  await expect(inputTile(page, 'heart_rate')).toHaveAttribute('data-source', 'staff')
+  await expect(inputValue(page, 'heart_rate', 'staff')).toContainText('92')
+  await expect(inputValue(page, 'heart_rate', 'staff')).not.toContainText('118')
+  await expect(inputTile(page, 'spo2')).not.toHaveAttribute('data-source', 'staff')
+  await expect(inputTile(page, 'spo2')).toContainText('96')
+  await expect(inputTile(page, 'spo2')).toContainText('Device · UNVERIFIED')
+  const snapshotHr = page.locator('[data-testid="vitals-snapshot-item"][data-kind="heart_rate"]')
+  await expect(snapshotHr).toHaveAttribute('data-source', 'staff')
+  await expect(snapshotHr).toContainText('92')
+  await expect(snapshotHr).not.toContainText('118')
+  await expect(page.locator('[data-testid="vitals-snapshot-item"][data-kind="spo2"]')).toHaveAttribute('data-source', 'device')
   await expect(page.getByTestId('patient-banner')).toContainText('from a device that is not validated')
   await stop()
   await band.dispose()
@@ -203,17 +238,17 @@ test('a stethoscope recording is made in the browser from an audio input, and a 
   const p = await nurseHandsOverPatient(baseURL!, { consents: ['device_monitoring'] })
   const steth = await register(baseURL!, { kind: 'smart_stethoscope', integration: 'simulator', label: `Simulator stethoscope ${uniq()}` })
   await openConsultation(page, p.name)
-  // Module 4 of the inputs rail (Doctor HERO; it shared the devices' part before), which starts closed. Its summary says what the card says.
-  const stethoscopeModule = await openModule(page, 'Stethoscope')
-  await expect(stethoscopeModule.getByTestId('summary-stethoscope-honesty')).toContainText('No stethoscope has been connected to or tested with this system')
-  const recordings = page.getByRole('region', { name: 'Stethoscope recordings' })
-  await expect(recordings).toContainText('No stethoscope has been connected to or tested with this system')
+  // Doctor HERO final (DESIGN §5.4 column 2): the stethoscope is a group of the clinical inputs, recording inline (Record opens the input and
+  // records at once; the dialog with "Start recording" is gone). It claims no stethoscope: it says that no model analyses a recording, and
+  // nothing in it says a stethoscope is connected.
+  const recordings = await openModule(page, 'Stethoscope')
+  await expect(recordings.getByTestId('auscultation-no-analysis')).toHaveText('No clinical sound analysis: recordings are not analysed by any model.')
+  await expect(recordings).not.toContainText(/stethoscope (is )?connected|connected stethoscope/i)
+  await expect(recordings).toContainText('Not recorded yet in this consultation.')
 
   // Recorded in the browser (Chromium's synthetic audio input stands in for an input device).
   await recordings.getByRole('button', { name: 'Record', exact: true }).click()
-  const rec = page.getByRole('dialog', { name: 'Record from an audio input' })
-  await expect(rec).toContainText('it cannot tell what an input is')
-  await rec.getByRole('button', { name: 'Start recording' }).click()
+  const rec = recordings
   await expect(rec.getByTestId('auscultation-recording')).toContainText('Recording…')
   await page.waitForTimeout(1500)
   await rec.getByRole('button', { name: 'Stop' }).click()
@@ -236,7 +271,8 @@ test('a stethoscope recording is made in the browser from an audio input, and a 
   expect(sent.status()).toBe(201)
   expect(await sent.json()).toMatchObject({ simulated: true })
   await page.reload()
-  const simulated = page.getByRole('region', { name: 'Stethoscope recordings' }).locator('[data-testid="auscultation"][data-simulated="true"]')
+  // Doctor HERO final: this consultation's recordings are listed in the clinical inputs' stethoscope group.
+  const simulated = page.getByTestId('stethoscope-panel').locator('[data-testid="auscultation"][data-simulated="true"]')
   await expect(simulated.getByTestId('simulated-badge')).toHaveText('SIMULATED AUDIO')
   await expect(simulated).toContainText('Generated tones from a simulator: not a body sound')
   await expect(simulated.getByTestId('auscultation-capture')).toContainText('Sent by a device gateway')

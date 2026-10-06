@@ -1,5 +1,7 @@
 import {
   AmendmentRequest,
+  CompleteEncounterRequest,
+  type CompleteEncounterResult,
   CURRENT_ENCOUNTER_HASH_SCHEME,
   DiscardDraftRequest,
   type MyConsultationsResponse,
@@ -21,10 +23,11 @@ import { audit } from '../audit/audit.ts'
 import { currentUser } from '../auth/plugin.ts'
 import type { Db } from '../db/client.ts'
 import { setLifecycleContext } from '../db/lifecycle.ts'
-import { departments, diagnoses, encounterAmendments, encounters, encounterStatusEvents, patients, prescriptionItems, users, visits, visitStatusEvents } from '../db/schema.ts'
+import { appointments, departments, diagnoses, encounterAmendments, encounters, encounterStatusEvents, patients, prescriptionItems, users, visits, visitStatusEvents } from '../db/schema.ts'
 import { badRequest, conflict, forbidden, HttpError } from '../http/errors.ts'
 import { parse } from '../http/validate.ts'
 import { facilityToday, fullName, getPatientOr404 } from '../patients/service.ts'
+import { patientPortalAccess } from '../portal/access.ts'
 import { getVisitOr404 } from '../visits/service.ts'
 import { activeEncounterForVisit, assertOwnDraft, assertWithDoctor, getEncounterOr404, loadEncounter, PAUSED_MESSAGE, sha256 } from './service.ts'
 import { canonicalJsonStrict, verifyEncounterById } from './verify.ts'
@@ -191,6 +194,9 @@ export function registerEncounterRoutes(app: FastifyInstance, { db }: { db: Db }
     const e = await getEncounterOr404(db, me, id)
     assertOwnDraft(e, me, 'edit')
     await assertWithDoctor(db, e)
+    // A course given in days without a first day starts on the consultation's date (stored, so what is signed says it: scheme v3).
+    const visitDate = body.prescription.some((p) => p.durationDays && !p.startDate) ? ((await db.select({ d: visits.visitDate }).from(visits).where(eq(visits.id, e.visitId)))[0]?.d ?? null) : null
+    const rxRows = body.prescription.map((p, i) => ({ encounterId: id, ...p, durationDays: p.durationDays ?? null, startDate: p.startDate ?? (p.durationDays ? visitDate : null), sortOrder: i }))
 
     const updated = await db.transaction(async (tx) => {
       const [row] = await tx
@@ -202,7 +208,7 @@ export function registerEncounterRoutes(app: FastifyInstance, { db }: { db: Db }
       await tx.delete(diagnoses).where(eq(diagnoses.encounterId, id))
       if (body.diagnoses.length) await tx.insert(diagnoses).values(body.diagnoses.map((d, i) => ({ encounterId: id, description: d.description, code: d.code ?? null, kind: d.kind, sortOrder: i })))
       await tx.delete(prescriptionItems).where(eq(prescriptionItems.encounterId, id))
-      if (body.prescription.length) await tx.insert(prescriptionItems).values(body.prescription.map((p, i) => ({ encounterId: id, ...p, sortOrder: i })))
+      if (rxRows.length) await tx.insert(prescriptionItems).values(rxRows)
       await audit(tx, req, { action: 'encounter.save', entityType: 'encounter', entityId: id, patientId: e.patientId, details: { version: row.version } })
       return row
     })
@@ -211,9 +217,11 @@ export function registerEncounterRoutes(app: FastifyInstance, { db }: { db: Db }
   })
 
   /**
-   * Signing freezes the record (database-enforced) and completes the visit.
-   * The visit must be with the doctor; both changes are compare-and-set, so a
-   * stale or concurrent request changes nothing.
+   * Signing freezes the record (database-enforced). It no longer completes the
+   * visit (HERO final): the visit stays with the doctor, and cannot go back to
+   * the queue (migration 0033), until the doctor completes the consultation
+   * (POST /api/encounters/:id/complete). The visit must be with the doctor; the
+   * change is compare-and-set, so a stale or concurrent request changes nothing.
    */
   app.post('/api/encounters/:id/sign', { config: { permission: 'encounters:sign' } }, async (req) => {
     const me = currentUser(req)
@@ -229,7 +237,7 @@ export function registerEncounterRoutes(app: FastifyInstance, { db }: { db: Db }
     if (missing.length) throw badRequest('The record is not complete enough to sign', missing)
 
     const signedAt = new Date()
-    // What is signed (scheme adaxai.encounter.v2; see verify.ts for what is covered).
+    // What is signed (scheme adaxai.encounter.v3: v2 plus each medicine's durationDays and startDate; see verify.ts for what is covered).
     const snapshot = {
       scheme: CURRENT_ENCOUNTER_HASH_SCHEME,
       encounterId: e.id,
@@ -254,16 +262,53 @@ export function registerEncounterRoutes(app: FastifyInstance, { db }: { db: Db }
         .where(and(eq(encounters.id, id), eq(encounters.version, body.version), eq(encounters.status, 'in_progress')))
         .returning()
       if (!row) throw new HttpError(409, 'version_conflict', 'The consultation changed while signing. Review and sign again.')
-      const [v] = await tx
-        .update(visits)
-        .set({ status: 'completed', statusChangedAt: sql`now()`, updatedAt: sql`now()` })
-        .where(and(eq(visits.id, e.visitId), eq(visits.status, 'in_consultation')))
-        .returning({ id: visits.id })
+      // The visit must still be with the doctor at this moment (locked, so it cannot leave while the record is signed); it stays there.
+      const [v] = await tx.select({ id: visits.id }).from(visits).where(and(eq(visits.id, e.visitId), eq(visits.status, 'in_consultation'))).for('share')
       if (!v) throw conflict(PAUSED_MESSAGE, 'visit_not_in_consultation')
       await audit(tx, req, { action: 'encounter.sign', entityType: 'encounter', entityId: id, patientId: e.patientId, details: { contentHash, hashScheme: CURRENT_ENCOUNTER_HASH_SCHEME, visitId: e.visitId } })
       return row
     })
     return loadEncounter(db, me, signed)
+  })
+
+  /**
+   * Completes a signed consultation (HERO final; signing no longer does): the
+   * visit moves from "with the doctor" to completed (the database requires the
+   * signed record, and completes the linked appointment with it), the status
+   * history names the doctor and "consultation completed", and the record and
+   * its prescription become visible to the patient. Only the doctor who signed
+   * it, only once: a second request changes nothing and says so (409).
+   */
+  app.post('/api/encounters/:id/complete', { config: { permission: 'encounters:sign' } }, async (req) => {
+    const me = currentUser(req)
+    const { id } = parse(IdParams, req.params)
+    const body = parse(CompleteEncounterRequest, req.body ?? {})
+    const e = await getEncounterOr404(db, me, id)
+    if (e.status === 'discarded') throw conflict('This draft was discarded. It is kept read-only and cannot be completed.', 'encounter_discarded')
+    if (e.status !== 'signed') throw conflict('Sign the consultation before completing it.', 'not_signed')
+    if (e.doctorId !== me.id) throw forbidden('Only the doctor who signed this consultation can complete it')
+    if (body.version !== undefined && body.version !== e.version) throw new HttpError(409, 'version_conflict', 'This consultation changed since you opened it. Reload it first.')
+
+    const completed = await db.transaction(async (tx) => {
+      await setLifecycleContext(tx, { actorId: me.id, source: 'consultation_completed' })
+      // Compare-and-set: only a visit still with the doctor is completed; a concurrent second request finds it completed and changes nothing.
+      const [v] = await tx
+        .update(visits)
+        .set({ status: 'completed', statusChangedAt: sql`now()`, updatedAt: sql`now()` })
+        .where(and(eq(visits.id, e.visitId), eq(visits.status, 'in_consultation')))
+        .returning({ id: visits.id, completedAt: visits.statusChangedAt })
+      if (!v) {
+        const [now] = await tx.select({ status: visits.status }).from(visits).where(eq(visits.id, e.visitId))
+        if (now?.status === 'completed') throw conflict('This consultation is already completed.', 'already_completed')
+        throw conflict('The visit is no longer with the doctor, so this consultation cannot be completed now. Refresh and try again.', 'visit_not_in_consultation')
+      }
+      const [appt] = await tx.select({ id: appointments.id }).from(appointments).where(eq(appointments.visitId, e.visitId))
+      // Ids only (no clinical text).
+      await audit(tx, req, { action: 'encounter.complete', entityType: 'encounter', entityId: id, patientId: e.patientId, details: { visitId: e.visitId, appointmentId: appt?.id ?? null } })
+      return v
+    })
+    const out: CompleteEncounterResult = { encounterId: id, visitId: e.visitId, completedAt: completed.completedAt.toISOString(), patientPortalAccess: await patientPortalAccess(db, e.patientId) }
+    return out
   })
 
   /**

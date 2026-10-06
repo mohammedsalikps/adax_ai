@@ -313,6 +313,11 @@ export const visits = pgTable(
     checkedInAt: timestamp('checked_in_at', { withTimezone: true }).notNull().defaultNow(),
     statusChangedAt: timestamp('status_changed_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    /** The triage note a nurse (or doctor) wrote for this visit (HERO final, migration 0033): free text, at most 1000 characters; null when none. */
+    triageNote: text('triage_note'),
+    /** Who last wrote (or cleared) the triage note, and when. */
+    triageNoteBy: uuid('triage_note_by').references(() => users.id),
+    triageNoteAt: timestamp('triage_note_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('visits_token_uq').on(t.facilityId, t.visitDate, t.tokenNumber),
@@ -322,6 +327,7 @@ export const visits = pgTable(
       .where(sql`status in ('waiting', 'in_triage', 'ready', 'in_consultation')`),
     index('visits_date_status_idx').on(t.facilityId, t.visitDate, t.status),
     index('visits_patient_idx').on(t.patientId),
+    check('visits_triage_note_check', sql`length(coalesce(triage_note, '')) <= 1000 and (triage_note is null or (triage_note_by is not null and triage_note_at is not null))`),
   ],
 )
 
@@ -515,11 +521,19 @@ export const prescriptionItems = pgTable(
     dose: text('dose').notNull(),
     route: text('route').notNull().default('Oral'),
     frequency: text('frequency').notNull(),
+    /** As written ("5 days", "Until review", "When needed"); kept for every row, including those with a structured duration below. */
     duration: text('duration').notNull(),
     instructions: text('instructions').notNull().default(''),
     sortOrder: integer('sort_order').notNull().default(0),
+    /**
+     * HERO final (migration 0033): the course length in days, when the doctor gave one (1 to 3650). Null for medicines prescribed before it and for
+     * courses without a fixed length (when needed, until review): those say "duration not recorded", never "completed".
+     */
+    durationDays: integer('duration_days'),
+    /** HERO final: the first day of the course (the consultation's date unless the doctor chose another); null for medicines prescribed before it. */
+    startDate: date('start_date'),
   },
-  (t) => [index('prescription_items_encounter_idx').on(t.encounterId)],
+  (t) => [index('prescription_items_encounter_idx').on(t.encounterId), check('prescription_items_duration_days_check', sql`duration_days is null or duration_days between 1 and 3650`)],
 )
 
 // ---------------------------------------------------------------------------
@@ -1817,7 +1831,8 @@ export const patientHistoryEvents = pgTable(
   (t) => [
     index('patient_history_events_patient_idx').on(t.patientId, t.id),
     index('patient_history_events_entity_idx').on(t.entityType, t.entityId),
-    check('patient_history_events_entity_check', sql`entity_type in ('condition', 'medication', 'investigation') and action in ('created', 'status_changed')`),
+    // Migration 0033 added surgeries (procedure) and patient documents (document).
+    check('patient_history_events_entity_check', sql`entity_type in ('condition', 'medication', 'investigation', 'procedure', 'document') and action in ('created', 'status_changed')`),
   ],
 )
 /**
@@ -2074,4 +2089,262 @@ export const manaMessageSources = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('mana_message_sources_uq').on(t.messageId, t.ref)],
+)
+
+// ---------------------------------------------------------------------------
+// Doctor HERO final (migration 0033): service orders (the only provider is a simulated laboratory, marked as such), patient documents and
+// surgeries, the doctor's handwritten notes, and the doctor's decisions on actions Mana proposed. The structured medicine duration is on
+// prescription_items and the triage note on visits (above). Guards and history triggers are hand-written in the same migration.
+// ---------------------------------------------------------------------------
+
+export const serviceOrderStatus = pgEnum('service_order_status', ['requested', 'in_progress', 'completed', 'cancelled'])
+
+/**
+ * A service the doctor ordered in a consultation (a laboratory test, an imaging study, something else) from the catalogue in config/adaxai.yaml.
+ * No laboratory or imaging system is connected: the only provider is `simulated`, a deterministic simulator that moves an order along on a fixed
+ * schedule from `requested_at` (it never performs anything, never writes an investigation result and never invents a value). `simulated` is true
+ * exactly for it, and its completed orders carry only a report text that says so. What was ordered, for whom and by whom never changes; the status
+ * moves requested -> in_progress -> completed, or to cancelled while open, and every change is written to service_order_events by a trigger.
+ * Never deleted (trigger, migration 0033).
+ */
+export const serviceOrders = pgTable(
+  'service_orders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    facilityId: uuid('facility_id')
+      .notNull()
+      .references(() => facilities.id),
+    patientId: uuid('patient_id')
+      .notNull()
+      .references(() => patients.id),
+    visitId: uuid('visit_id').references(() => visits.id),
+    encounterId: uuid('encounter_id')
+      .notNull()
+      .references(() => encounters.id),
+    orderedBy: uuid('ordered_by')
+      .notNull()
+      .references(() => users.id),
+    /** The catalogue entry, and its name and category as they read when it was ordered. */
+    serviceCode: text('service_code').notNull(),
+    serviceName: text('service_name').notNull(),
+    /** lab | imaging | other */
+    category: text('category').notNull(),
+    /** The doctor's instructions or reason (optional). */
+    note: text('note'),
+    status: serviceOrderStatus('status').notNull().default('requested'),
+    /** Who carries it out: only `simulated` exists (no external laboratory is connected). */
+    provider: text('provider').notNull().default('simulated'),
+    simulated: boolean('simulated').notNull(),
+    /** The simulated provider's time from request to completion, copied from the catalogue when ordered, so its schedule never moves. */
+    turnaroundMinutes: integer('turnaround_minutes'),
+    /** Client-chosen key: a repeated "Send order" returns the same order. */
+    idempotencyKey: uuid('idempotency_key'),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+    /** When the current status began (for a simulated step: the time the schedule says it happened, not when it was read). */
+    statusChangedAt: timestamp('status_changed_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    cancelledBy: uuid('cancelled_by').references(() => users.id),
+    cancelReason: text('cancel_reason'),
+    /** Set when completed. For the simulated provider it is a fixed sentence saying that nothing was performed and no result exists. */
+    reportText: text('report_text'),
+    dataOrigin: text('data_origin').notNull(),
+  },
+  (t) => [
+    index('service_orders_encounter_idx').on(t.encounterId, t.requestedAt),
+    index('service_orders_patient_idx').on(t.patientId, t.requestedAt),
+    index('service_orders_open_idx')
+      .on(t.facilityId, t.status)
+      .where(sql`status in ('requested', 'in_progress')`),
+    uniqueIndex('service_orders_idempotency_uq')
+      .on(t.orderedBy, t.idempotencyKey)
+      .where(sql`idempotency_key is not null`),
+    check('service_orders_category_check', sql`category in ('lab', 'imaging', 'other')`),
+    check('service_orders_provider_check', sql`provider in ('simulated') and simulated = (provider = 'simulated') and (provider <> 'simulated' or turnaround_minutes is not null)`),
+    check('service_orders_turnaround_check', sql`turnaround_minutes is null or turnaround_minutes between 1 and 10080`),
+    check(
+      'service_orders_closed_check',
+      sql`(status = 'completed') = (completed_at is not null) and (status = 'cancelled') = (cancelled_at is not null and cancelled_by is not null) and (cancel_reason is null or status = 'cancelled') and (report_text is null or status = 'completed')`,
+    ),
+    // A simulated order never carries anything but a text that says it is simulated, and a completed one always carries it.
+    check('service_orders_simulated_report_check', sql`not simulated or (report_text is null or report_text like 'Simulated %') and (status <> 'completed' or report_text is not null)`),
+    check('service_orders_text_check', sql`length(btrim(service_code)) between 1 and 40 and length(btrim(service_name)) between 1 and 120 and length(coalesce(note, '')) <= 500 and length(coalesce(cancel_reason, '')) <= 200 and length(coalesce(report_text, '')) <= 2000`),
+    check('service_orders_origin_check', sql`data_origin in ('synthetic', 'clinical')`),
+  ],
+)
+
+/**
+ * Every status of a service order: written by a database trigger when the order is placed and at each change (the application never writes
+ * here). `source` is doctor (placed or cancelled, with the doctor) or simulated_lab (a step of the simulated provider). Append-only.
+ */
+export const serviceOrderEvents = pgTable(
+  'service_order_events',
+  {
+    id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => serviceOrders.id),
+    fromStatus: serviceOrderStatus('from_status'),
+    toStatus: serviceOrderStatus('to_status').notNull(),
+    source: text('source').notNull(),
+    actorUserId: uuid('actor_user_id').references(() => users.id),
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('service_order_events_order_idx').on(t.orderId, t.id), check('service_order_events_source_check', sql`source in ('doctor', 'simulated_lab') and (source <> 'doctor' or actor_user_id is not null)`)],
+)
+
+export const patientDocumentStatus = pgEnum('patient_document_status', ['recorded', 'entered_in_error'])
+
+/**
+ * A document on a patient's record: a laboratory report, an imaging report or image (MRI, CT, X-ray, ultrasound), or another document, uploaded
+ * by staff as a PDF, JPEG or PNG (the bytes are a `files` row). `report_text` is what staff typed from the report (optional); nothing reads the
+ * file itself (no OCR, no image model). Like the history tables: never deleted, its content never changes, and a mistake is marked entered in
+ * error with a reason (trigger, migration 0033).
+ */
+export const patientDocuments = pgTable(
+  'patient_documents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    facilityId: uuid('facility_id')
+      .notNull()
+      .references(() => facilities.id),
+    patientId: uuid('patient_id')
+      .notNull()
+      .references(() => patients.id),
+    /** The consultation it was added in, if any. */
+    encounterId: uuid('encounter_id').references(() => encounters.id),
+    /** lab_report | imaging_report | imaging_image | other */
+    category: text('category').notNull(),
+    /** mri | ct | xray | ultrasound | other (imaging documents only) */
+    modality: text('modality'),
+    title: text('title').notNull(),
+    /** When the test or study was done, if known. */
+    studyDate: date('study_date'),
+    reportText: text('report_text'),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id),
+    mimeType: text('mime_type').notNull(),
+    status: patientDocumentStatus('status').notNull().default('recorded'),
+    /** Why it was marked as entered in error. */
+    statusReason: text('status_reason'),
+    dataOrigin: text('data_origin').notNull(),
+    uploadedBy: uuid('uploaded_by')
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('patient_documents_patient_idx').on(t.patientId, t.createdAt),
+    index('patient_documents_encounter_idx').on(t.encounterId),
+    uniqueIndex('patient_documents_file_uq').on(t.fileId),
+    check(
+      'patient_documents_category_check',
+      sql`category in ('lab_report', 'imaging_report', 'imaging_image', 'other') and (modality is null or (modality in ('mri', 'ct', 'xray', 'ultrasound', 'other') and category in ('imaging_report', 'imaging_image')))`,
+    ),
+    check('patient_documents_text_check', sql`length(btrim(title)) between 1 and 160 and length(coalesce(report_text, '')) <= 20000 and length(coalesce(status_reason, '')) <= 200`),
+    check('patient_documents_mime_check', sql`mime_type in ('application/pdf', 'image/jpeg', 'image/png')`),
+    check('patient_documents_study_date_check', sql`study_date is null or study_date >= date '1900-01-01'`),
+    check('patient_documents_error_reason_check', sql`status <> 'entered_in_error' or length(btrim(coalesce(status_reason, ''))) >= 3`),
+    check('patient_documents_origin_check', sql`data_origin in ('synthetic', 'clinical')`),
+  ],
+)
+
+export const procedureStatus = pgEnum('procedure_status', ['recorded', 'entered_in_error'])
+
+/**
+ * Surgeries and other procedures in the patient's past (history, typed in by staff), the same way as patient_conditions: never deleted, content
+ * fixed after entry, a mistake marked entered in error with a reason; every change is in patient_history_events (entity `procedure`).
+ */
+export const patientProcedures = pgTable(
+  'patient_procedures',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    patientId: uuid('patient_id')
+      .notNull()
+      .references(() => patients.id),
+    name: text('name').notNull(),
+    /** When it was done, as far as known (year, or year and month); null when not known. */
+    performedYear: integer('performed_year'),
+    performedMonth: integer('performed_month'),
+    status: procedureStatus('status').notNull().default('recorded'),
+    note: text('note'),
+    /** Why the entry was marked as an error. */
+    statusReason: text('status_reason'),
+    source: text('source').notNull().default('clinician_entered'),
+    dataOrigin: text('data_origin').notNull(),
+    enteredBy: uuid('entered_by')
+      .notNull()
+      .references(() => users.id),
+    enteredAt: timestamp('entered_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('patient_procedures_patient_idx').on(t.patientId, t.status),
+    // The same procedure at the same time is not on the list twice (a double click, or two people entering it).
+    uniqueIndex('patient_procedures_recorded_uq')
+      .on(t.patientId, sql`lower(${t.name})`, sql`coalesce(${t.performedYear}, 0)`, sql`coalesce(${t.performedMonth}, 0)`)
+      .where(sql`status = 'recorded'`),
+    check('patient_procedures_performed_check', sql`(performed_year is null or performed_year between 1900 and 2200) and (performed_month is null or (performed_year is not null and performed_month between 1 and 12))`),
+    check('patient_procedures_text_check', sql`length(btrim(name)) between 1 and 120 and length(coalesce(note, '')) <= 300 and length(coalesce(status_reason, '')) <= 200`),
+    check('patient_procedures_error_reason_check', sql`status <> 'entered_in_error' or length(btrim(coalesce(status_reason, ''))) >= 3`),
+    check('patient_procedures_source_check', sql`source in ('clinician_entered') and data_origin in ('synthetic', 'clinical')`),
+  ],
+)
+
+/**
+ * The doctor's handwritten notes in a consultation (digital pen, stylus, touch or mouse). Each save is a new version (1, 2, 3 ...) whose strokes are
+ * a JSON file (`files`, kind handwriting_strokes) of this patient and consultation; the latest version is what the pad shows, and every earlier one
+ * is kept. Nothing reads or recognises the writing. Append-only; a version is accepted only while the consultation is an unsigned draft
+ * (trigger, migration 0033).
+ */
+export const encounterHandwriting = pgTable(
+  'encounter_handwriting',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    encounterId: uuid('encounter_id')
+      .notNull()
+      .references(() => encounters.id),
+    patientId: uuid('patient_id')
+      .notNull()
+      .references(() => patients.id),
+    version: integer('version').notNull(),
+    strokesFileId: uuid('strokes_file_id')
+      .notNull()
+      .references(() => files.id),
+    strokeCount: integer('stroke_count').notNull(),
+    pageCount: integer('page_count').notNull(),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('encounter_handwriting_version_uq').on(t.encounterId, t.version), check('encounter_handwriting_counts_check', sql`version >= 1 and stroke_count between 0 and 20000 and page_count between 1 and 50`)],
+)
+
+/**
+ * The doctor's decision on an action Mana proposed from the doctor's own words (HERO final: adding a medicine to the consultation's unsigned
+ * prescription). Mana's answer is finished and never changes, so the decision is its own row: one per answer, made once, append-only. The server
+ * never carries the action out: an approved medicine is added to the draft by the doctor's screen, as the doctor's act.
+ */
+export const manaActionDecisions = pgTable(
+  'mana_action_decisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    messageId: uuid('message_id')
+      .notNull()
+      .references(() => manaMessages.id),
+    /** The consultation the proposed action was for. */
+    encounterId: uuid('encounter_id').references(() => encounters.id),
+    /** add_prescription_item */
+    kind: text('kind').notNull(),
+    /** approved | declined */
+    decision: text('decision').notNull(),
+    decidedBy: uuid('decided_by')
+      .notNull()
+      .references(() => users.id),
+    decidedAt: timestamp('decided_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('mana_action_decisions_message_uq').on(t.messageId), check('mana_action_decisions_check', sql`kind in ('add_prescription_item') and decision in ('approved', 'declined')`)],
 )

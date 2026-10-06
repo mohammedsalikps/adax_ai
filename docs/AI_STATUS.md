@@ -47,6 +47,15 @@
 
 Accepting a *note-draft* item does not insert it: as with the important points and the consultation-draft statements, the doctor accepts or edits it and then adds it with a separate "Add to <section>", which the server records with a reference to the suggestion. The doctor still signs.
 
+## What the final Doctor HERO changed here ([ADR 0023](adr/0023-doctor-hero-final-application.md))
+
+- **No new model, no new prompt, no hosted AI.** The local model (Qwen3.5-4B via llama.cpp) and the local speech model (faster-whisper `small`) are the same; the draft is now reached through **Generate prescription** and reviewed on the prescription page. AI never creates a prescription row.
+- **Voice transcription (A):** recording now starts with a new consultation when the patient's recording consent is on record (never otherwise; never the synthetic demo; never on a reload), in 10-second parts. **Important-point extraction (B)** runs by itself after each part (the same fixed rules, local only); unchanged pending points keep their id; nothing is confirmed except by the doctor. No model identifies speakers.
+- **Mana (F):** a floating control on every doctor page. **Fixed-rule answers without the model** for next patient, patients seen today, a patient's arrival time, who has waited longest, the nurse's triage (reason, priority, staff vitals, the triage note), orders and lab status (always "SIMULATED lab": no laboratory is connected) and a document's typed report text — labelled "From the records (fixed rules)", answered even while the model is busy or down. **Voice questions**: a clip of at most 30 s is transcribed in memory by the local speech model and never stored (in a consultation it needs the patient's recording consent); **spoken answers** use only voices that run on this computer (`localService`), off by default. **Actions**: only from the doctor's own fully specified words in their own open consultation; Mana proposes, the doctor approves, the page adds the row as the doctor's act; the server never writes the prescription.
+- **Service orders:** the only provider is a deterministic **simulated laboratory**; a completed simulated order says "no test was performed and no result values exist". Not AI, not a laboratory.
+- **The digital pen:** handwriting is stored as strokes; **there is no handwriting recognition** and Mana and the draft never read it.
+- **Thermal (G):** unchanged in what it computes (measurements, ROI statistics, fixed rules; MODEL UNAVAILABLE); the doctor's Thermal page shows measurements only.
+
 ## What Doctor HERO (Step 3) changed here
 
 - **No new model, no new prompt.** The consultation draft (D) now reports the local model's **real token count while it writes** (the client streams only to count; the assembled answer was checked byte for byte against the whole answer from the real server) and records **what was sent** (`inputsUsed`). Measured on this machine's GPU (llama.cpp b11379 CUDA, Qwen3.5-4B Q4_K_M) on the synthetic demo child: **36.0 s on the server, 37.7 s from the click**, about 44 tokens/s; earlier runs 29–43 s. The 10-second target is **not met**.

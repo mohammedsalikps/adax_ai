@@ -4,15 +4,16 @@
  *
  * Only these keys are taken, and only in the consultation being written:
  * - Ctrl+S (⌘S on a Mac): save now. Always, also while typing, so the browser never offers to save the page instead.
- * - Ctrl+Enter (⌘Enter): Analyze with Mana. Also while typing.
- * - Alt+1 to Alt+5: open and focus input module 1 to 5. Alt+N: the note. Alt+P: the prescription. Also while typing, except on a Mac, where
- *   Option with a letter or a digit types a character.
+ * - Ctrl+Enter (⌘Enter): Generate prescription. Also while typing.
+ * - Alt+1 to Alt+5: go to the workspace's panels in the five-input order (DESIGN §5.4, §15): 1 live transcription, 2 clinical inputs,
+ *   3 stethoscope, 4 doctor notes, 5 thermal. Alt+N: write in the typed note. Also while typing, except on a Mac, where Option with a letter
+ *   or a digit types a character. (The prescription is its own page now: Alt+P is no longer taken.)
  * - Shift+? (the "?" key): this list, only when not typing.
  * AltGr (which some keyboards need to type characters) is never a shortcut, nor is a key held down (repeated), a key that a control already
  * took (`defaultPrevented`), or a key pressed while a character is being composed. While a dialog is open only Ctrl+S is taken.
  */
 
-export type Shortcut = { kind: 'save' } | { kind: 'analyze' } | { kind: 'module'; n: 1 | 2 | 3 | 4 | 5 } | { kind: 'note' } | { kind: 'prescription' } | { kind: 'help' }
+export type Shortcut = { kind: 'save' } | { kind: 'analyze' } | { kind: 'panel'; n: 1 | 2 | 3 | 4 | 5 } | { kind: 'note' } | { kind: 'help' }
 
 /** What a shortcut reads of a key press (a KeyboardEvent has all of it; `altGraph` is `getModifierState('AltGraph')`). */
 export interface KeyPress {
@@ -36,7 +37,7 @@ export interface KeyContext {
   dialogOpen: boolean
 }
 
-const MODULE_CODES: Record<string, 1 | 2 | 3 | 4 | 5> = { Digit1: 1, Digit2: 2, Digit3: 3, Digit4: 4, Digit5: 5 }
+const PANEL_CODES: Record<string, 1 | 2 | 3 | 4 | 5> = { Digit1: 1, Digit2: 2, Digit3: 3, Digit4: 4, Digit5: 5 }
 
 /**
  * The shortcut a key press asks for, or null when it is not one (and must be left to the page and the browser). Read by the physical key
@@ -56,10 +57,9 @@ export function shortcutOf(e: KeyPress, ctx: KeyContext): Shortcut | null {
   if (ctx.dialogOpen) return null
   if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
     if (ctx.mac && ctx.typing) return null
-    const n = MODULE_CODES[e.code]
-    if (n) return { kind: 'module', n }
+    const n = PANEL_CODES[e.code]
+    if (n) return { kind: 'panel', n }
     if (e.code === 'KeyN') return { kind: 'note' }
-    if (e.code === 'KeyP') return { kind: 'prescription' }
     return null
   }
   if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey && !ctx.typing) return { kind: 'help' }
@@ -95,8 +95,8 @@ export interface ShortcutRow {
   note: string | null
 }
 
-/** The modules, in order, as Alt+1 to Alt+5 open them. */
-export const MODULE_NAMES = ['Conversation', 'History', 'Vitals', 'Stethoscope', 'Thermal imaging'] as const
+/** The workspace's panels, in the five-input order, as Alt+1 to Alt+5 go to them (lib/workspace.ts WORKSPACE_PANELS). */
+export const PANEL_NAMES = ['Live transcription', 'Clinical inputs', 'Stethoscope', 'Doctor notes', 'Thermal'] as const
 
 /** The list the "Keyboard shortcuts" dialog shows, with the keys as this computer names them. */
 export function shortcutRows(mac: boolean): ShortcutRow[] {
@@ -105,10 +105,9 @@ export function shortcutRows(mac: boolean): ShortcutRow[] {
   const whileTyping = mac ? 'Not while typing in a field (Option with a letter or a digit types a character there).' : null
   return [
     { keys: [[primary, 'S']], does: 'Save now', note: null },
-    { keys: [[primary, 'Enter']], does: 'Analyze with Mana', note: null },
-    ...MODULE_NAMES.map((name, i) => ({ keys: [[alt, String(i + 1)]], does: `Open and go to module ${i + 1}, ${name}`, note: whileTyping })),
-    { keys: [[alt, 'N']], does: 'Go to the consultation note', note: whileTyping },
-    { keys: [[alt, 'P']], does: 'Go to the prescription', note: whileTyping },
+    { keys: [[primary, 'Enter']], does: 'Generate prescription', note: null },
+    ...PANEL_NAMES.map((name, i) => ({ keys: [[alt, String(i + 1)]], does: `Go to ${name}`, note: whileTyping })),
+    { keys: [[alt, 'N']], does: 'Write in the typed note', note: whileTyping },
     { keys: [['Shift', '?']], does: 'Show these shortcuts', note: 'Not while typing in a field.' },
   ]
 }

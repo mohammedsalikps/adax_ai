@@ -54,6 +54,7 @@ import type { RoutingRulesSource } from '../settings/load.ts'
 import type { AppSettings } from '../settings/schema.ts'
 import { compareFacts, COMPARE_RULES_VERSION, type EvidenceOut } from './compare.ts'
 import { buildPatientContext, formatContext } from './context.ts'
+import { planReextraction } from './extract/reextract.ts'
 import { type JobService, loadJobs, sha256, toRun } from './jobs.ts'
 import { type AiProviders, aiStatus } from './providers.ts'
 import { loadEvidence, reviewSubject } from './review.ts'
@@ -459,9 +460,11 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
           ctx,
           settings.safety,
         )
+        // Counts only (they reach the job's summary and its audit entry); `kept`, `added` and `replaced` are filled in when the points are stored.
+        const summary: Record<string, unknown> = { facts: compared.length, flagged: compared.filter((c) => c.flags.length).length, comparison: COMPARE_RULES_VERSION, ...('skippedLines' in result && typeof result.skippedLines === 'number' && result.skippedLines > 0 && { skippedLines: result.skippedLines }) }
         return {
           run: { ...runBase, model: result.model, inputSha256: inputSha, outputSha256: sha256(JSON.stringify(result.facts)), inputTokens: result.inputTokens, outputTokens: result.outputTokens, providerRequestId: result.requestId },
-          summary: { facts: compared.length, flagged: compared.filter((c) => c.flags.length).length, comparison: COMPARE_RULES_VERSION, ...('skippedLines' in result && typeof result.skippedLines === 'number' && result.skippedLines > 0 && { skippedLines: result.skippedLines }) },
+          summary,
           persist: async (tx, runId) => {
             // Decisions already made on this transcript carry forward: a point the doctor confirmed is not proposed a second time, and one they rejected does not come back.
             const decided = await tx.select({ id: clinicalFacts.id, category: clinicalFacts.category, text: clinicalFacts.text }).from(clinicalFacts).where(and(eq(clinicalFacts.transcriptId, transcriptId), inArray(clinicalFacts.status, ['accepted', 'edited', 'rejected'])))
@@ -471,8 +474,34 @@ export function registerAiRoutes(app: FastifyInstance, deps: AiRouteDeps) {
             const keyOf = (category: string, text: string, refs: string[]) => `${category}|${text.toLowerCase().replace(/\s+/g, ' ').trim()}|${[...new Set(refs)].sort().join(',')}`
             const known = new Set(decided.map((d) => keyOf(d.category, d.text, decidedRefs.filter((r) => r.id === d.id).map((r) => r.ref))))
             const fresh = compared.filter((c) => !known.has(keyOf(c.fact.category, c.fact.text, c.evidence.filter((x) => x.sourceType === 'transcript_segment' && x.relation === 'supports').map((x) => x.sourceRef))))
-            await tx.update(clinicalFacts).set({ status: 'superseded' }).where(and(eq(clinicalFacts.transcriptId, transcriptId), inArray(clinicalFacts.status, ['pending', 'deferred'])))
-            for (const [n, c] of fresh.entries()) {
+            // Points not decided yet that this run finds again unchanged stay exactly as they are (same id, same status, still a draft), so a doctor
+            // reviewing one while the recording goes on is not told it was replaced; the others are superseded, not deleted (extract/reextract.ts).
+            const undecided = await tx
+              .select({ f: clinicalFacts, provider: aiRuns.provider, model: aiRuns.model, promptVersion: aiRuns.promptVersion })
+              .from(clinicalFacts)
+              .innerJoin(aiRuns, eq(aiRuns.id, clinicalFacts.runId))
+              .where(and(eq(clinicalFacts.transcriptId, transcriptId), inArray(clinicalFacts.status, ['pending', 'deferred'])))
+              .orderBy(asc(clinicalFacts.createdAt), asc(clinicalFacts.sortOrder))
+            const undecidedSources = await loadEvidence(
+              tx,
+              undecided.map((u) => u.f.id),
+            )
+            const assignments = undecided.length
+              ? await tx.select({ label: transcriptSegments.label, at: transcriptSegmentSpeakers.assignedAt }).from(transcriptSegmentSpeakers).innerJoin(transcriptSegments, eq(transcriptSegments.id, transcriptSegmentSpeakers.segmentId)).where(eq(transcriptSegments.transcriptId, transcriptId))
+              : []
+            const producedBy = { provider: extractor.provider, model: result.model, promptVersion: extractor.promptVersion }
+            const plan = planReextraction(
+              undecided.map(({ f, provider, model, promptVersion }) => ({
+                id: f.id,
+                createdAt: f.createdAt,
+                content: { category: f.category, text: f.text, attribution: f.attribution, certainty: f.certainty, uncertaintyReason: f.uncertaintyReason, negated: f.negated, attributes: f.attributes as Record<string, unknown>, flags: f.flags as string[], evidence: undecidedSources.get(f.id) ?? [], producedBy: { provider, model, promptVersion } },
+              })),
+              fresh.map((c) => ({ item: c, content: { category: c.fact.category, text: c.fact.text, attribution: c.fact.attribution, certainty: c.fact.certainty, uncertaintyReason: c.fact.uncertaintyReason, negated: c.fact.negated, attributes: c.fact.details, flags: c.flags, evidence: c.evidence, producedBy } })),
+              assignments,
+            )
+            if (plan.replace.length) await tx.update(clinicalFacts).set({ status: 'superseded' }).where(and(inArray(clinicalFacts.id, plan.replace), inArray(clinicalFacts.status, ['pending', 'deferred'])))
+            Object.assign(summary, { kept: plan.keep.length, added: plan.add.length, replaced: plan.replace.length })
+            for (const [n, c] of plan.add.entries()) {
               const f = c.fact
               const attributes = Object.fromEntries(Object.entries(f.details).filter(([, v]) => v !== null))
               const [row] = await tx

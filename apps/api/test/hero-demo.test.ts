@@ -114,6 +114,21 @@ describe('the synthetic hero demo', () => {
     expect(after.replacedVisit).toMatchObject({ id: first.visit.id })
   })
 
+  it('also stops at a consultation that is signed but not completed (HERO final), and says to complete it; once completed, a new visit is made', async () => {
+    const open = (await visits(first.patientId)).find((v) => v.status === 'ready' && v.chiefComplaint === HERO_TODAY_COMPLAINT)!
+    const e = (await call(ctx.app, 'POST', `/api/visits/${open.id}/encounter`, { cookie: doctor })).json()
+    const saved = (await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body: { version: e.version, note: { ...e.note, chiefComplaint: 'Fever', assessment: 'Viral fever', plan: 'Fluids' }, diagnoses: [{ description: 'Viral fever', kind: 'provisional' }], prescription: [] } })).json()
+    expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })).statusCode).toBe(200)
+    await expect(run()).rejects.toThrow(/signed consultation that is not completed yet. Complete it in the app/)
+    expect((await visits(first.patientId)).find((v) => v.id === open.id)).toMatchObject({ status: 'in_consultation' })
+    // The seed never completes the doctor's consultation itself; the doctor does.
+    expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
+    const after = await run()
+    expect(after.replacedVisit).toBeNull()
+    expect(after.visit.id).not.toBe(open.id)
+    expect((await visits(first.patientId)).find((v) => v.id === open.id)).toMatchObject({ status: 'completed' })
+  })
+
   it('refuses a deployment that is not synthetic, production, records marked as clinical, or a facility not marked synthetic', async () => {
     await expect(run({ config: { ...testConfig, dataOrigin: 'clinical' } })).rejects.toThrow(/synthetic/)
     await expect(run({ config: { ...testConfig, env: 'production' } })).rejects.toThrow(/production/)

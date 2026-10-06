@@ -1,5 +1,10 @@
 import { expect, type Page, request as pwRequest, test } from '@playwright/test'
-import { analyzeButton, expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, signIn, uniq } from './support.ts'
+import { expectNoAxeViolations, expectNoHorizontalOverflow, llmExclusive, nurseHandsOverPatient, openMana as openGlobalMana, openPrescription, signIn, uniq } from './support.ts'
+
+// Doctor HERO final (DESIGN §5.8): Mana is the global Mana on every doctor page, a floating button (data-testid mana-launcher) that opens a
+// right sheet (mana-sheet) holding ManaAssistant (mana-assistant); the in-consultation "Ask Mana" card and the patient page's companion, with
+// their Open/Close toggle (mana-toggle) and "New conversation" button (mana-new), are gone. The sheet's subtitle says whom the conversation is
+// about; its menu "Mana options" holds "New conversation". Fixed-rule questions (MANA_RULES_QUESTIONS) are answered by the server without a model.
 
 // Mana AI (V4), the doctor's clinical assistant, in a real browser. The planner and the writer are "the local model": the labelled stand-in in
 // e2e/mock-llm.mjs (keyword rules for the plan; the writer copies the facts it is shown). No model runs in this suite. Everything else is real: the
@@ -38,11 +43,23 @@ async function startConsultation(page: Page, baseURL: string, opts: Parameters<t
   return p
 }
 const mana = (page: Page) => page.getByTestId('mana-assistant')
+const sheet = (page: Page) => page.getByTestId('mana-sheet')
 const input = (page: Page) => mana(page).getByTestId('mana-input')
 const message = (page: Page) => mana(page).getByTestId('mana-message')
+/** Opens the global Mana from its floating button (it replaced the card's Open toggle); the question box is shown. */
 async function openMana(page: Page) {
-  await mana(page).getByTestId('mana-toggle').click()
+  await openGlobalMana(page)
   await expect(input(page)).toBeVisible()
+}
+/** Closes the global Mana's sheet (it replaced the card's Close toggle): what it showed is gone from the page. */
+async function closeMana(page: Page) {
+  await sheet(page).getByRole('button', { name: 'Close Mana' }).click()
+  await expect(mana(page)).toHaveCount(0)
+}
+/** "New conversation", from the sheet's menu "Mana options" (it replaced the card's own button, mana-new). */
+async function newConversation(page: Page) {
+  await sheet(page).getByRole('button', { name: 'Mana options' }).click()
+  await page.getByRole('menuitem', { name: 'New conversation' }).click()
 }
 async function ask(page: Page, text: string) {
   await input(page).fill(text)
@@ -56,29 +73,35 @@ test('Mana is closed until the doctor opens it, then answers from the record: st
   page.on('request', (r) => {
     if (r.url().includes('/api/mana-assistant')) manaRequests.push(`${r.method()} ${new URL(r.url()).pathname}`)
   })
-  // With the recording consent as well, so that "Analyze with Mana" can be used below (the local model's draft needs it; Mana does not).
+  // With the recording consent as well, so that "Generate prescription" can be used below (the local model's draft needs it; Mana does not).
   const p = await startConsultation(page, baseURL!, { allergies: ['Penicillin'], consents: ['ai_recording'] })
-  // Closed: a header and one button; nothing was asked of the server.
-  await expect(mana(page)).toHaveAttribute('data-open', 'false')
-  // In the consultation the card's heading is "Ask Mana", sized like the Mana area's other headings (Doctor HERO polish, round 2); its name
-  // still says what it is.
-  await expect(mana(page).getByRole('heading', { name: /^Ask Mana: Mana AI, Doctor’s Clinical Assistant/ })).toBeVisible()
-  await expect(input(page)).toBeHidden()
+  const encounterId = /\/encounters\/([0-9a-f-]{36})/.exec(page.url())![1]!
+  // Closed (Doctor HERO final: the global Mana): one floating button named Mana, no conversation on the page; nothing was asked of the server.
+  const launcher = page.getByTestId('mana-launcher')
+  await expect(launcher).toBeVisible()
+  await expect(launcher).toHaveAccessibleName('Mana')
+  await expect(launcher).toHaveAttribute('aria-expanded', 'false')
+  await expect(mana(page)).toHaveCount(0)
+  await expect(input(page)).toHaveCount(0)
   expect(manaRequests).toEqual([])
-  // "Analyze with Mana" (Doctor HERO) asks the local model for the draft and runs the fixed rules: it does not open Mana or ask it anything.
-  await analyzeButton(page).click()
-  await expect(page.getByTestId('consult-panel').getByTestId('consult-status')).toContainText('READY FOR REVIEW', { timeout: 30_000 })
-  await expect(mana(page)).toHaveAttribute('data-open', 'false')
+  // "Generate prescription" (it replaced "Analyze with Mana"; data-testid analyze-mana) asks the local model for the draft and runs the fixed rules,
+  // and opens the prescription page with the draft ready for review: it does not open Mana or ask it anything.
+  await openPrescription(page)
+  await expect(page.getByTestId('clinical-summary-state')).toHaveAttribute('data-state', 'shown', { timeout: 30_000 })
+  await expect(launcher).toHaveAttribute('aria-expanded', 'false')
+  await expect(mana(page)).toHaveCount(0)
   expect(manaRequests).toEqual([])
+  // Opened on the prescription page, Mana is about this consultation (scoped by the route).
   await openMana(page)
   await expect(mana(page)).toHaveAttribute('data-open', 'true')
+  await expect(launcher).toHaveAttribute('aria-expanded', 'true')
   expect(manaRequests).toEqual(['POST /api/mana-assistant/conversations'])
-  await expect(input(page)).toHaveAttribute('placeholder', "Ask Mana about this patient, today's queue, or hospital records...")
-  await expect(mana(page).getByTestId('mana-context')).toContainText(p.name)
-  await expect(mana(page).getByTestId('mana-context')).toContainText(`MRN ${p.mrn}`)
-  await expect(mana(page)).toContainText('doctor-facing AI assistant')
-  await expect(mana(page)).toContainText('require clinician review')
-  await expect(mana(page)).toContainText('cannot prescribe, sign or change anything')
+  await expect(input(page)).toHaveAttribute('placeholder', 'Ask Mana about this patient…')
+  // Whom it is about is the sheet's subtitle (its accessible description), with the patient's name and MRN.
+  await expect(sheet(page)).toHaveAccessibleDescription(`About ${p.name} · MRN ${p.mrn}`)
+  await expect(mana(page).getByTestId('mana-context')).toContainText('Ask about this patient')
+  // What Mana is and may do, in the sheet's own words (Mana now proposes actions the doctor approves, so "cannot change anything" became this).
+  await expect(mana(page)).toContainText('Mana only reads records you can already see. It never signs, and adds nothing without your approval.')
 
   await llm('slow', 1500)
   const base = (await llmCalls()).count
@@ -105,8 +128,14 @@ test('Mana is closed until the doctor opens it, then answers from the record: st
   await expect(a.getByTestId('mana-details')).toContainText('runs on this computer')
   await expect(a.getByTestId('mana-details')).toContainText('mana-assistant-answer-v1')
   await expectNoAxeViolations(page)
-  // Nothing was written to the consultation by asking.
-  await expect(page.getByLabel('Plan')).toHaveValue('')
+  // Nothing was written to the consultation by asking: the prescription page's Advice / diet (the note's Plan) is empty and nothing is prescribed,
+  // on the page and in the record.
+  await closeMana(page)
+  await expect(page.getByLabel('Advice / diet')).toHaveValue('')
+  await expect(page.getByTestId('rx-medicines')).toContainText('No medicines prescribed.')
+  const saved = await (await page.request.get(`/api/encounters/${encounterId}`)).json()
+  expect(saved.note.plan).toBe('')
+  expect(saved.prescription).toEqual([])
 
   // What the model was shown: the record as statements, the patient as a handle; never the name, the MRN or the telephone number.
   const calls = (await llmCalls(true)).calls.slice(base).filter((c) => c.kind)
@@ -124,11 +153,17 @@ test('suggested questions and follow-ups: a button asks at once, a follow-up kee
   const p = await startConsultation(page, baseURL!)
   await openMana(page)
   const base = (await llmCalls()).count
-  await mana(page).getByRole('button', { name: 'Allergies on record' }).click()
+  // Doctor HERO final (DESIGN §5.8): the suggestions are the design's buttons; "Allergies" (it replaced "Allergies on record") asks
+  // "What allergies does this patient have?", which fixed rules answer from the record.
+  const chips = mana(page).getByRole('group', { name: 'Suggested questions' })
+  for (const chip of ['Next patient', 'Seen today', 'Waiting longest', 'Allergies', 'Nurse triage', 'Lab / orders status', 'Summarize history'])
+    await expect(chips.getByRole('button', { name: chip, exact: true })).toBeVisible()
+  await chips.getByRole('button', { name: 'Allergies', exact: true }).click()
   await answered(page)
   await expect(message(page).last()).toContainText('Penicillin')
-  // A button is the server's own plan: the planner was not asked.
-  expect((await llmCalls()).calls.slice(base).filter((c) => c.kind === 'plan')).toHaveLength(0)
+  await expect(message(page).last().getByTestId('mana-rules-label')).toContainText('From the records (fixed rules)')
+  // A button is the server's own answer: neither the planner nor the writer was asked (no model at all).
+  expect((await llmCalls()).calls.slice(base).filter((c) => c.kind)).toHaveLength(0)
   await ask(page, 'And her medicines?')
   await expect(message(page)).toHaveCount(2)
   await answered(page)
@@ -148,9 +183,9 @@ test('suggested questions and follow-ups: a button asks at once, a follow-up kee
   const plans = (await llmCalls(true)).calls.slice(base).filter((c) => c.kind === 'plan')
   expect(plans).toHaveLength(1)
   expect(plans.at(-1)!.prompt).toMatch(/FOCUS: P1/)
-  expect(plans.at(-1)!.prompt).toMatch(/EARLIER QUESTIONS \(oldest first\):\n1\. Allergies on record/)
+  expect(plans.at(-1)!.prompt).toMatch(/EARLIER QUESTIONS \(oldest first\):\n1\. What allergies does this patient have\?/)
   // New conversation: what was said is not shown or used any more.
-  await mana(page).getByTestId('mana-new').click()
+  await newConversation(page)
   await expect(mana(page).getByTestId('mana-question')).toHaveCount(0)
   await expect(mana(page).getByTestId('mana-log')).toContainText('Nothing asked yet')
   expect(p.name).toBeTruthy()
@@ -184,8 +219,7 @@ test('questions about the clinic’s day are answered from the queue and the sch
   await page.goto('/doctor')
   // A general conversation: no consultation is open.
   await page.goto(`/doctor/patients/${a.patientId}`)
-  const panel = mana(page)
-  await panel.getByTestId('mana-toggle').click()
+  await openMana(page)
   await ask(page, 'Who is waiting right now?')
   await answered(page)
   await expect(message(page).last()).toContainText('queue today')
@@ -238,10 +272,10 @@ test('screen readers are told what arrived, each time and not what was already t
   await expect(message(page).last().getByTestId('mana-answer')).toBeVisible({ timeout: 20_000 })
   await expect.poll(() => page.evaluate(() => (window as unknown as { __liveChanges: number }).__liveChanges)).toBeGreaterThan(0)
   await expect(live).toHaveText('Mana answered.')
-  // Closed and opened again: the answers that were already there are not told again.
-  await mana(page).getByTestId('mana-toggle').click()
+  // Closed and opened again (the sheet's close button and the floating button): the answers that were already there are not told again.
+  await closeMana(page)
   await expect(input(page)).toBeHidden()
-  await mana(page).getByTestId('mana-toggle').click()
+  await openMana(page)
   await expect(message(page)).toHaveCount(2)
   await expect(live).toHaveText('')
   // A choice of patients can be made while it is the last thing said; after the next answer it can not.
@@ -270,10 +304,14 @@ test('Mana does not write, give general medical advice, or read more than a doct
     await ask(page, q)
     await expect(message(page).last().getByTestId('mana-refusal')).toContainText(words, { timeout: 20_000 })
   }
-  // Each question cost the planner a call and the writer none (nothing was read), and the prescription is still empty.
+  // Each question cost the planner a call and the writer none (nothing was read), and the prescription is still empty. (Doctor HERO final: the
+  // medicines are on the prescription page, so the consultation's prescription and Plan are read from the record and the typed note.)
   const calls = (await llmCalls()).calls.slice(before)
   expect(calls.filter((c) => c.kind === 'answer')).toHaveLength(0)
-  await expect(page.getByRole('button', { name: 'Add medicine' })).toBeVisible()
+  const encounterId = /\/encounters\/([0-9a-f-]{36})/.exec(page.url())![1]!
+  const saved = await (await page.request.get(`/api/encounters/${encounterId}`)).json()
+  expect(saved.prescription).toEqual([])
+  expect(saved.note.plan).toBe('')
   await expect(page.getByLabel('Plan')).toHaveValue('')
   await expectNoAxeViolations(page)
 })
@@ -285,13 +323,26 @@ test('when the model is not there Mana says so and makes nothing up, and comes b
   await openMana(page)
   await expect(mana(page).getByText('Mana is currently unavailable.', { exact: true }).first()).toBeVisible({ timeout: 20_000 })
   await expect(mana(page).getByTestId('mana-status-unavailable')).toBeVisible()
-  await expect(input(page)).toBeDisabled()
   await expect(mana(page).getByTestId('mana-send')).toBeDisabled()
   await expect(message(page)).toHaveCount(0)
   await expectNoAxeViolations(page)
+  // Doctor HERO final (DESIGN §5.8, §6): the question box stays usable while the model is down, because questions fixed rules answer need no
+  // model; a question the model would have to answer is refused before anything is stored, and nothing is made up; Summarize history (the model
+  // writes it) is not offered.
+  await expect(input(page)).toBeEnabled()
+  await expect(mana(page).getByRole('button', { name: 'Summarize history' })).toHaveCount(0)
+  await ask(page, 'What allergies are recorded for this patient?')
+  await expect(mana(page).getByTestId('mana-ask-error')).toHaveText('Mana is currently unavailable.')
+  await expect(message(page)).toHaveCount(0)
+  await expect(mana(page).getByTestId('mana-question')).toHaveCount(0)
+  await mana(page).getByRole('button', { name: 'Allergies', exact: true }).click()
+  await answered(page)
+  await expect(message(page).last()).toContainText('Penicillin')
+  await expect(message(page).last().getByTestId('mana-rules-label')).toContainText('From the records (fixed rules)')
   await llm('ok')
-  await expect(input(page)).toBeEnabled({ timeout: 20_000 })
-  await expect(mana(page).getByTestId('mana-status-unavailable')).toHaveCount(0)
+  // Back by itself (the sheet looks again every few seconds): the input was never disabled, so the wait is on the unavailable notice going away.
+  await expect(mana(page).getByTestId('mana-status-unavailable')).toHaveCount(0, { timeout: 20_000 })
+  await expect(input(page)).toBeEnabled()
   await ask(page, 'Who is waiting right now?')
   await answered(page)
 })
@@ -324,11 +375,14 @@ test('the patient record has Mana too, for that patient, and a question from the
   const p = await nurseHandsOverPatient(baseURL!, { allergies: ['Penicillin'] })
   await signIn(page, 'dr.meera')
   await page.goto(`/doctor/patients/${p.patientId}`)
-  await mana(page).getByTestId('mana-toggle').click()
-  await expect(mana(page).getByTestId('mana-context')).toContainText(p.name)
+  // Doctor HERO final: the global Mana opened on the patient page is about that patient (its subtitle names them).
+  await openMana(page)
+  await expect(sheet(page)).toHaveAccessibleDescription(`About ${p.name} · MRN ${p.mrn}`)
   await ask(page, 'What allergies does this patient have?')
   await answered(page)
   await expect(message(page).last()).toContainText('Penicillin')
+  // This question is now one fixed rules answer from the record (no model); the answer is about this patient and says so.
+  await expect(message(page).last().getByTestId('mana-rules-label')).toContainText('From the records (fixed rules)')
   await expectNoHorizontalOverflow(page)
   await expectNoAxeViolations(page)
 })
@@ -357,18 +411,16 @@ test('states at five widths: the workspace with Mana closed, open, generating, a
       expect(box, `${label} at ${size.width}px`).toBeTruthy()
       expect(box!.x + box!.width, `${label} at ${size.width}px`).toBeLessThanOrEqual(size.width + 0.5)
       expect(box!.x, `${label} at ${size.width}px`).toBeGreaterThanOrEqual(-0.5)
-      // Brought into view the way the page itself does it (honouring its scroll padding), so the panel's header is not left under the sticky top bar:
-      // Mana is the last block of the Mana area (Doctor HERO), in the middle of a phone's one column, and centring a tall panel there put its
-      // buttons behind that bar.
+      // Brought into view the way the page itself does it (honouring its scroll padding), so it is not left under the sticky top bar.
       await target.evaluate((el) => el.scrollIntoView({ block: 'start' }))
       const slug = label.replace(/\W+/g, '-')
       // The crop of the panel is taken with the page's own sticky and fixed bars (the patient banner, the action bar) out of the way: a panel taller than the window
       // would otherwise have them drawn over it. The full-page screenshot keeps them.
-      await page.evaluate(() => {
-        const mana = document.querySelector('[data-testid="mana-assistant"]')
+      // (Doctor HERO final: what is cropped is the target itself, Mana in its sheet or, closed, the floating Mana button.)
+      await target.evaluate((mana) => {
         for (const el of document.querySelectorAll<HTMLElement>('body *')) {
           const position = getComputedStyle(el).position
-          if ((position === 'fixed' || position === 'sticky') && !el.contains(mana) && !mana?.contains(el)) {
+          if ((position === 'fixed' || position === 'sticky') && !el.contains(mana) && !mana.contains(el)) {
             el.dataset.shotHidden = el.style.visibility
             el.style.visibility = 'hidden'
           }
@@ -386,7 +438,9 @@ test('states at five widths: the workspace with Mana closed, open, generating, a
     await expectNoAxeViolations(page)
   }
   await page.setViewportSize(WIDTHS[0]!)
-  await fit('1 closed')
+  // Closed (Doctor HERO final: the global Mana): only the floating Mana button is on the page, and it fits at every width.
+  await expect(mana(page)).toHaveCount(0)
+  await fit('1 closed', page.getByTestId('mana-launcher'))
   await openMana(page)
   await fit('2 open')
   await llm('slow', 6000)
@@ -404,7 +458,7 @@ test('states at five widths: the workspace with Mana closed, open, generating, a
   await ask(page, `Show the visits of Ambig${tag}`)
   await expect(message(page).last().getByTestId('mana-candidates')).toBeVisible({ timeout: 20_000 })
   await fit('7 choice of patient')
-  await mana(page).getByTestId('mana-new').click()
+  await newConversation(page)
   await llm('invalid')
   await ask(page, 'What allergies are recorded for this patient?')
   await expect(message(page).last().getByTestId('mana-error')).toBeVisible({ timeout: 20_000 })

@@ -1,4 +1,4 @@
-import type { AskManaAssistantRequest, ManaConversationState, ManaMessage, ManaQuestion, OpenManaConversationRequest } from '@adaxai/contracts'
+import type { AskManaAssistantRequest, ManaActionDecision, ManaActionDecisionResult, ManaConversationState, ManaMessage, ManaQuestion, ManaVoiceTranscript, OpenManaConversationRequest } from '@adaxai/contracts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { newIdempotencyKey } from './ai.ts'
 import { api } from './api.ts'
@@ -78,6 +78,30 @@ export function useNewManaConversation(scope: ManaScope) {
     mutationFn: () => api<ManaConversationState>('/mana-assistant/conversations', { method: 'POST', body: openBody(scope, true) }),
     onSuccess: (s) => qc.setQueryData(manaConversationKey(scope), s),
   })
+}
+
+/**
+ * HERO final: the doctor's Approve or Cancel on a medicine Mana proposed. The server records the decision only; the caller adds an approved medicine to
+ * the draft through lib/draftBridge (the doctor's act). The conversation is read again afterwards (it shows the decision).
+ */
+export function useManaDecision(scope: ManaScope) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: { messageId: string; decision: ManaActionDecision }) => api<ManaActionDecisionResult>(`/mana-assistant/messages/${v.messageId}/decision`, { method: 'POST', body: { decision: v.decision } }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: manaConversationKey(scope) }),
+  })
+}
+
+/**
+ * HERO final: one spoken question to the local speech model (transcribed in memory on the server, never stored). The text fields go before the file,
+ * as the server reads them. In a consultation's conversation the server requires the patient's recording consent.
+ */
+export function transcribeVoice(clip: Blob, o: { type: string; name: string; conversationId?: string | undefined; durationMs: number; signal?: AbortSignal }): Promise<ManaVoiceTranscript> {
+  const fd = new FormData()
+  if (o.conversationId) fd.append('conversationId', o.conversationId)
+  fd.append('durationMs', String(Math.max(0, Math.round(o.durationMs))))
+  fd.append('file', new File([clip], o.name, { type: o.type }))
+  return api<ManaVoiceTranscript>('/mana-assistant/voice', { method: 'POST', body: fd, ...(o.signal && { signal: o.signal }) })
 }
 
 export type { ManaQuestion }

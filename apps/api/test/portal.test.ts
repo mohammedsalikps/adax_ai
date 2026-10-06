@@ -1,4 +1,4 @@
-import { Encounter, EncounterAi, PatientDetail, PortalHome, PortalRecord, Visit } from '@adaxai/contracts'
+import { Encounter, EncounterAi, medicineCourse, medicineCourseLabel, PatientDetail, PortalCurrentPrescriptionResponse, PortalHome, PortalRecord, Visit } from '@adaxai/contracts'
 import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import { adminQuery, call, createFixture, createTestApp, type Fixture, login, resetDatabase, samplePatient } from './helpers.ts'
 
@@ -33,6 +33,8 @@ async function patientWithRecords(givenName: string, phone: string) {
   const ai = EncounterAi.parse((await call(ctx.app, 'GET', `/api/encounters/${e.id}/ai`, { cookie: doctor })).json())
   const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body: fullDraft(e.version, `${givenName} complaint`) })).json())
   expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })).statusCode).toBe(200)
+  // HERO final (deliberate change): the portal shows a record once the doctor completes the consultation (signing no longer does it).
+  expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
   // A second, unsigned (draft) consultation that must never be visible in the portal.
   const v2 = Visit.parse((await call(ctx.app, 'POST', '/api/visits', { cookie: nurse, body: { patientId: p.id, departmentId: fx.departments.gen } })).json())
   const draft = Encounter.parse((await call(ctx.app, 'POST', `/api/visits/${v2.id}/encounter`, { cookie: doctor })).json())
@@ -120,6 +122,131 @@ describe('patient portal', () => {
     expect(rows[0].n).toBe(probes.length + 2)
     const { rows: recordProbes } = await adminQuery("SELECT entity_id FROM audit_events WHERE action = 'portal.read' AND outcome = 'denied' ORDER BY id")
     expect(recordProbes.map((r) => r.entity_id)).toEqual([b.encounterId, a.draftId])
+  })
+
+  it('shows a consultation only once the doctor has completed it, and today’s prescription is the newest completed one; earlier ones stay', async () => {
+    const p = PatientDetail.parse((await call(ctx.app, 'POST', '/api/patients', { cookie: nurse, body: samplePatient({ givenName: 'Chitra', phone: '98400 33333' }) })).json())
+    await call(ctx.app, 'POST', `/api/patients/${p.id}/consents`, { cookie: nurse, body: { type: 'portal_access', method: 'verbal' } })
+    const code = (await call(ctx.app, 'POST', `/api/patients/${p.id}/portal-activation`, { cookie: nurse })).json().activationCode
+    const act = await call(ctx.app, 'POST', '/api/auth/activate', { body: { mrn: p.mrn, activationCode: code, password: 'Chitra-passphrase-1' } })
+    const cookie = `adaxai_session=${act.cookies.find((c) => c.name === 'adaxai_session')!.value}`
+    const get = async (url: string) => call(ctx.app, 'GET', url, { cookie })
+    const current = async () => PortalCurrentPrescriptionResponse.parse((await get('/api/portal/prescriptions/current')).json())
+    const consult = async (cc: string, drug: string) => {
+      const v = Visit.parse((await call(ctx.app, 'POST', '/api/visits', { cookie: nurse, body: { patientId: p.id, departmentId: fx.departments.gen } })).json())
+      const e = Encounter.parse((await call(ctx.app, 'POST', `/api/visits/${v.id}/encounter`, { cookie: doctor })).json())
+      const base = fullDraft(e.version, cc)
+      const body = { ...base, prescription: [{ ...base.prescription[0]!, drugName: drug, duration: '5 days', durationDays: 5 }] }
+      const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body })).json())
+      expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })).statusCode).toBe(200)
+      return { v, e }
+    }
+
+    // Signed, not completed: nothing of it in the portal, and opening it directly is "not found" (and audited).
+    const first = await consult('First complaint', 'Amoxicillin')
+    expect(await current()).toMatchObject({ prescription: null })
+    expect((await get('/api/portal/records')).json().records).toEqual([])
+    expect((await get(`/api/portal/records/${first.e.id}`)).statusCode).toBe(404)
+    expect(PortalHome.parse((await get('/api/portal/home')).json())).toMatchObject({ counts: { records: 0, visits: 1 }, upcoming: [] })
+    expect((await get('/api/portal/visits')).json().visits).toEqual([expect.objectContaining({ id: first.v.id, status: 'in_consultation', recordId: null })])
+    expect(JSON.stringify((await get('/api/portal/home')).json())).not.toContain('First complaint')
+
+    // Completed: the record, and today's prescription from the same signed rows.
+    expect((await call(ctx.app, 'POST', `/api/encounters/${first.e.id}/complete`, { cookie: doctor, body: {} })).json().patientPortalAccess).toBe(true)
+    expect((await get('/api/portal/records')).json().records.map((r: { id: string }) => r.id)).toEqual([first.e.id])
+    expect((await get('/api/portal/visits')).json().visits).toEqual([expect.objectContaining({ id: first.v.id, status: 'completed', recordId: first.e.id })])
+    const one = await current()
+    expect(one.prescription).toMatchObject({
+      recordId: first.e.id,
+      date: first.v.visitDate,
+      doctorName: 'Test t.doctor',
+      departmentName: 'General Medicine',
+      diagnoses: [{ description: 'Diagnosis for First complaint', code: 'J06.9' }],
+      items: [{ drugName: 'Amoxicillin', dose: '1 tablet', frequency: 'TDS', duration: '5 days', durationDays: 5, startDate: first.v.visitDate, course: { state: 'active', day: 1, totalDays: 5, daysLeft: 4 } }],
+      advice: 'Plan text',
+      followUp: 'Review in one week',
+    })
+    expect(one.today).toBe(first.v.visitDate)
+    expect(one.prescription!.completedAt >= one.prescription!.signedAt).toBe(true)
+
+    // A later consultation (same day): signed but not completed changes nothing; completed, it becomes today's prescription, and the first stays.
+    const second = await consult('Second complaint', 'Cetirizine')
+    expect((await current()).prescription!.recordId).toBe(first.e.id)
+    expect((await call(ctx.app, 'POST', `/api/encounters/${second.e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
+    expect((await current()).prescription).toMatchObject({ recordId: second.e.id, items: [expect.objectContaining({ drugName: 'Cetirizine' })] })
+    expect((await get('/api/portal/records')).json().records.map((r: { id: string }) => r.id)).toEqual([second.e.id, first.e.id])
+    expect(PortalRecord.parse((await get(`/api/portal/records/${first.e.id}`)).json()).prescription.map((x) => x.drugName)).toEqual(['Amoxicillin'])
+
+    // Read as the patient's own data only, and audited (ids, no clinical text).
+    const { rows } = await adminQuery("SELECT entity_type, entity_id, patient_id, details FROM audit_events WHERE action = 'portal.read' AND entity_type = 'current_prescription' ORDER BY id")
+    expect(rows.at(-1)).toEqual({ entity_type: 'current_prescription', entity_id: second.e.id, patient_id: p.id, details: { what: 'current_prescription' } })
+    expect(rows[0]).toMatchObject({ entity_id: p.id })
+    expect((await call(ctx.app, 'GET', '/api/portal/prescriptions/current', { cookie: doctor })).statusCode).toBe(403)
+    expect((await call(ctx.app, 'GET', '/api/portal/prescriptions/current')).statusCode).toBe(401)
+  })
+
+  it('says where each medicine’s course is on the clinic’s calendar day, across time zones; a medicine without a structured duration says so', async () => {
+    const tz = async (zone: string) => {
+      await adminQuery('UPDATE facilities SET timezone = $2 WHERE id = $1', [fx.facilityId, zone])
+      return (await adminQuery('SELECT (now() at time zone $1)::date::text AS d', [zone])).rows[0].d as string
+    }
+    const plus = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10)
+    // A clinic 14 hours ahead of UTC: its day is not the UTC day for ten hours of every day.
+    const todayA = await tz('Pacific/Kiritimati')
+    const p = PatientDetail.parse((await call(ctx.app, 'POST', '/api/patients', { cookie: nurse, body: samplePatient({ givenName: 'Devi', phone: '98400 44444' }) })).json())
+    await call(ctx.app, 'POST', `/api/patients/${p.id}/consents`, { cookie: nurse, body: { type: 'portal_access', method: 'verbal' } })
+    const code = (await call(ctx.app, 'POST', `/api/patients/${p.id}/portal-activation`, { cookie: nurse })).json().activationCode
+    const act = await call(ctx.app, 'POST', '/api/auth/activate', { body: { mrn: p.mrn, activationCode: code, password: 'Devi-passphrase-1' } })
+    const cookie = `adaxai_session=${act.cookies.find((c) => c.name === 'adaxai_session')!.value}`
+    const v = Visit.parse((await call(ctx.app, 'POST', '/api/visits', { cookie: nurse, body: { patientId: p.id, departmentId: fx.departments.gen } })).json())
+    expect(v.visitDate).toBe(todayA)
+    const e = Encounter.parse((await call(ctx.app, 'POST', `/api/visits/${v.id}/encounter`, { cookie: doctor })).json())
+    const item = (drugName: string, duration: string, durationDays?: number, startDate?: string) => ({ drugName, strength: '', form: 'Tablet', dose: '1 tablet', route: 'Oral', frequency: 'OD', duration, instructions: '', ...(durationDays && { durationDays }), ...(startDate && { startDate }) })
+    const body = {
+      ...fullDraft(e.version, 'Courses'),
+      prescription: [
+        item('Started two days ago', '5 days', 5, plus(todayA, -2)),
+        item('Last day today', '5 days', 5, plus(todayA, -4)),
+        item('Finished last week', '3 days', 3, plus(todayA, -10)),
+        item('Starts tomorrow', '3 days', 3, plus(todayA, 1)),
+        item('Starts today by default', '7 days', 7),
+        item('No fixed length', 'Until review'),
+      ],
+    }
+    const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body })).json())
+    expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })).statusCode).toBe(200)
+    expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
+    const read = async () => PortalCurrentPrescriptionResponse.parse((await call(ctx.app, 'GET', '/api/portal/prescriptions/current', { cookie })).json())
+    const lines = (r: PortalCurrentPrescriptionResponse) => r.prescription!.items.map((x) => `${x.drugName}: ${medicineCourseLabel(x.course, r.today)}`)
+
+    const a = await read()
+    expect(a.today).toBe(todayA)
+    expect(lines(a)).toEqual([
+      'Started two days ago: Day 3 of 5 · 2 days left',
+      'Last day today: Day 5 of 5 · Completed',
+      'Finished last week: Completed',
+      `Starts tomorrow: Starts ${plus(todayA, 1)}`,
+      'Starts today by default: Day 1 of 7 · 6 days left',
+      // Missing is not none: never "Completed" or "0 days" for a medicine without a structured duration.
+      'No fixed length: Duration not recorded',
+    ])
+    expect(a.prescription!.items.map((x) => x.course.endDate)).toEqual([plus(todayA, 2), todayA, plus(todayA, -8), plus(todayA, 3), plus(todayA, 6), null])
+    expect(a.prescription!.items[5]).toMatchObject({ duration: 'Until review', durationDays: null, startDate: null, course: { state: 'duration_not_recorded', day: null, daysLeft: null } })
+
+    // The same clinic moved 25 hours west (UTC-11): its day is one or two days earlier, and the courses follow its calendar, not the server's.
+    const todayB = await tz('Pacific/Pago_Pago')
+    const back = (Date.parse(`${todayA}T00:00:00Z`) - Date.parse(`${todayB}T00:00:00Z`)) / 86_400_000
+    expect([1, 2]).toContain(back)
+    const b = await read()
+    expect(b.today).toBe(todayB)
+    expect(b.prescription!.items.map((x) => x.course)).toEqual(b.prescription!.items.map((x) => medicineCourse(x, todayB)))
+    expect(lines(b)[0]).toBe(`Started two days ago: Day ${3 - back} of 5 · ${2 + back} days left`)
+    expect(lines(b)[4]).toBe(`Starts today by default: Starts ${todayA}`)
+    expect(lines(b)[5]).toBe('No fixed length: Duration not recorded')
+    // The record itself shows the same course per medicine.
+    const record = PortalRecord.parse((await call(ctx.app, 'GET', `/api/portal/records/${e.id}`, { cookie })).json())
+    expect(record.today).toBe(todayB)
+    expect(record.prescription.map((x) => x.course)).toEqual(b.prescription!.items.map((x) => x.course))
   })
 
   it('staff accounts cannot use the portal; portal responses are not cacheable and reads are audited', async () => {

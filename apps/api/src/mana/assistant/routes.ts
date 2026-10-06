@@ -1,6 +1,7 @@
-import { AskManaAssistantRequest, OpenManaConversationRequest, SelectManaCandidateRequest } from '@adaxai/contracts'
+import { AskManaAssistantRequest, ManaActionDecisionRequest, OpenManaConversationRequest, SelectManaCandidateRequest } from '@adaxai/contracts'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import type { Transcriber } from '../../ai/providers.ts'
 import { currentUser } from '../../auth/plugin.ts'
 import type { Db } from '../../db/client.ts'
 import { enforceLimit, type RateLimiter } from '../../http/rate-limit.ts'
@@ -15,6 +16,8 @@ export interface ManaAssistantRouteDeps {
   service: ManaAssistantService
   limiter: RateLimiter
   settings: AppSettings
+  /** The local speech model, for a spoken question (HERO final). Absent or null: the voice route says the speech service is not set up. */
+  transcriber?: Transcriber | null
 }
 
 /**
@@ -24,7 +27,7 @@ export interface ManaAssistantRouteDeps {
  * look up is the server's own plan. It names a patient in two places only, and each is checked by the server: opening a conversation for a consultation or a patient
  * record the doctor has open (it must belong to the doctor's clinic), and choosing one of the patients Mana offered (a handle from the conversation, not an id).
  */
-export function registerManaAssistantRoutes(app: FastifyInstance, { db, service, limiter, settings }: ManaAssistantRouteDeps) {
+export function registerManaAssistantRoutes(app: FastifyInstance, { db, service, limiter, settings, transcriber = null }: ManaAssistantRouteDeps) {
   const limits = settings.security.rateLimits
 
   app.get('/api/mana-assistant/status', { config: { permission: 'ai:use' } }, async (req, reply) => {
@@ -77,5 +80,28 @@ export function registerManaAssistantRoutes(app: FastifyInstance, { db, service,
     const me = currentUser(req)
     const { id } = parse(IdParams, req.params)
     return service.cancel(req, me, id)
+  })
+
+  /**
+   * HERO final: the doctor's Approve or Cancel on an action an answer proposed (a medicine to add to the open consultation's draft). Records the decision
+   * once and audits it (ids only); nothing clinical is written: the doctor's screen adds the medicine to the unsigned draft.
+   */
+  app.post('/api/mana-assistant/messages/:id/decision', { config: { permission: 'ai:use' } }, async (req, reply) => {
+    const me = currentUser(req)
+    const { id } = parse(IdParams, req.params)
+    const body = parse(ManaActionDecisionRequest, req.body)
+    await enforceLimit(db, limiter, req, reply, 'ai-step', me.id, limits.aiStepPerUser)
+    const { result, created } = await service.decide(req, me, id, body)
+    return reply.code(created ? 201 : 200).send(result)
+  })
+
+  /**
+   * HERO final: a spoken question (multipart: `conversationId`, `durationMs`, then one short audio file), transcribed in memory by the local speech model
+   * and returned as text; nothing is stored. Limited like the consultation's audio routes (per user).
+   */
+  app.post('/api/mana-assistant/voice', { config: { permission: 'ai:use' } }, async (req, reply) => {
+    const me = currentUser(req)
+    await enforceLimit(db, limiter, req, reply, 'ai-audio', me.id, limits.aiAudioPerUser)
+    return service.voice(req, me, transcriber)
   })
 }

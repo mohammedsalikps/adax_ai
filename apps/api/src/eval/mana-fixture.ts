@@ -114,6 +114,8 @@ export async function buildManaWorld(d: WorldDeps, base: ManaBase, password: str
       'draft',
     )
     ok(await d.call('POST', `/api/encounters/${e.id}/sign`, { cookie: o.doctor, body: { version: saved.version, attestation: true } }), 'sign')
+    // Signing no longer completes the visit (HERO final): the doctor completes the consultation, so these visits are closed as before.
+    ok(await d.call('POST', `/api/encounters/${e.id}/complete`, { cookie: o.doctor, body: {} }), 'complete')
     if (o.daysAgo > 0) {
       // Older records: the dates of this visit, its consultation and its readings move back (with the lifecycle triggers set aside, as in the tests).
       const n = o.daysAgo

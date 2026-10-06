@@ -162,7 +162,7 @@ test('check-in makes the one visit and links it; the queue shows it; the appoint
   await expectNoAxeViolations(doc.page)
   await expectNoHorizontalOverflow(doc.page)
 
-  // The consultation is signed (set up by API; its UI is covered elsewhere): the appointment completes by itself.
+  // The consultation is signed and then completed (set up by API; its UI is covered elsewhere): the appointment completes by itself with its visit.
   const visits = ((await (await nurseApi.get('/api/visits')).json()).visits as { id: string; patient: { id: string } }[]).filter((v) => v.patient.id === p.id)
   expect(visits).toHaveLength(1)
   await nurseApi.post(`/api/visits/${visits[0]!.id}/status`, { data: { status: 'ready' } })
@@ -173,6 +173,13 @@ test('check-in makes the one visit and links it; the queue shows it; the appoint
     })
   ).json()
   expect((await doctorApi.post(`/api/encounters/${e.id}/sign`, { data: { version: saved.version, attestation: true } })).ok()).toBe(true)
+  // Doctor HERO final (DESIGN §5.6, §6): signing no longer completes the visit; the doctor's explicit Complete does, and the appointment follows it.
+  await doc.page.goto('/doctor/appointments')
+  const signedOnly = doc.page.getByRole('listitem').filter({ hasText: p.name })
+  await expect(signedOnly).toContainText('Checked in')
+  await expect(signedOnly.getByTestId('linked-visit')).toContainText('With doctor')
+  await expect(signedOnly).not.toContainText('Completed')
+  expect((await doctorApi.post(`/api/encounters/${e.id}/complete`, { data: {} })).ok()).toBe(true)
   await doc.page.goto('/doctor/appointments')
   await expect(doc.page.getByRole('listitem').filter({ hasText: p.name })).toContainText('Completed')
   await doc.page.getByRole('listitem').filter({ hasText: p.name }).getByRole('button', { name: /Details/ }).click()

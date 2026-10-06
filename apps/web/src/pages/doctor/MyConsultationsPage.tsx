@@ -119,7 +119,8 @@ export function MyConsultationsPage() {
   const earlier = q.data ? items.filter((d) => d.visit.visitDate < q.data.today).length : 0
   return (
     <>
-      <PageHeader title="My consultations" description="Your unsigned drafts from any day, and the records you signed recently." />
+      {/* HERO final: "My consultations" is now today's queue (/doctor/queue); this page keeps the drafts and the recently signed records. */}
+      <PageHeader title="Drafts and signed records" description="Your unsigned drafts from any day, and the records you signed recently." />
       <div role="group" aria-label="Which consultations" className="mb-4 inline-flex rounded-md border border-line bg-surface p-0.5">
         {(['in_progress', 'signed'] as const).map((t) => (
           <button

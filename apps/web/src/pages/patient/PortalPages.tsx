@@ -1,8 +1,24 @@
-import { type PortalConsent, type PortalHome, type PortalProfile, type PortalRecord, type PortalRecordSummary, type PortalThermalReport, type PortalVisit, type PortalVital, VITAL_ORDER, VITALS } from '@adaxai/contracts'
+import {
+  type PortalConsent,
+  type PortalCurrentPrescriptionItem,
+  type PortalCurrentPrescriptionResponse,
+  type PortalHome,
+  type PortalProfile,
+  type PortalRecord,
+  type PortalRecordSummary,
+  type PortalThermalReport,
+  type PortalVisit,
+  type PortalVital,
+  VITAL_ORDER,
+  VITALS,
+} from '@adaxai/contracts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CalendarClock, ChevronRight, FileText, HeartPulse, Printer } from 'lucide-react'
+import { CalendarClock, ChevronRight, FileText, HeartPulse, Pill, Printer } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
+import { HeroEmpty } from '../../components/hero/HeroEmpty.tsx'
+import { KeyValue, KeyValueList } from '../../components/hero/KeyValue.tsx'
+import { Panel, PanelGroup } from '../../components/hero/Panel.tsx'
 import { Button } from '../../components/ui/Button.tsx'
 import { Dialog } from '../../components/ui/Dialog.tsx'
 import { TextField } from '../../components/ui/Form.tsx'
@@ -13,11 +29,26 @@ import { Alert, Badge, EmptyState, Spinner } from '../../components/ui/Feedback.
 import { Card, DescriptionList, PageHeader } from '../../components/ui/Layout.tsx'
 import { api, errorMessage } from '../../lib/api.ts'
 import { fmtDate, fmtDateTime } from '../../lib/format.ts'
+import { portalPollInterval, usePortalActive } from '../../lib/portalActivity.ts'
+import { courseLine, courseTone, durationLines } from '../../lib/prescriptionCourse.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
 
-/** Portal data is never kept beyond the page session: no persistence, short cache. */
-function usePortal<T>(path: string) {
-  return useQuery({ queryKey: ['portal', path], queryFn: () => api<T>(`/portal${path}`), staleTime: 30_000, gcTime: 5 * 60_000 })
+/**
+ * Portal data is never kept beyond the page session: no persistence, short cache. `live`: what changes when the doctor completes a
+ * consultation (home, records, today's prescription) is read again when the patient comes back to the app and every 60 s while the patient
+ * is using it (no push; the next read shows it). Nobody there for 15 minutes: no more polling, so an unattended portal's session can still
+ * time out (lib/portalActivity.ts).
+ */
+function usePortal<T>(path: string, opts: { live?: boolean } = {}) {
+  const live = !!opts.live
+  const active = usePortalActive(live)
+  return useQuery({
+    queryKey: ['portal', path],
+    queryFn: () => api<T>(`/portal${path}`),
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    ...(live && { refetchInterval: portalPollInterval(active), refetchOnWindowFocus: 'always' as const }),
+  })
 }
 
 function Loading<T>({ q, children }: { q: { isPending: boolean; isError: boolean; error: unknown; data?: T }; children: (d: T) => ReactNode }) {
@@ -45,17 +76,96 @@ function RecordLink({ r }: { r: PortalRecordSummary }) {
   )
 }
 
+/** One medicine of a prescription: what to take, how, for how long, and where the course is today (from the clinic's calendar). */
+function MedicineLine({ m, today }: { m: PortalCurrentPrescriptionItem; today: string }) {
+  const duration = durationLines(m)
+  const tone = courseTone(m.course)
+  return (
+    <li className="py-3 first:pt-0 last:pb-0" data-testid="portal-medicine">
+      <p className="font-medium">{[m.drugName, m.strength, m.form].filter(Boolean).join(' ')}</p>
+      <p>{[m.dose, m.route, m.frequency].filter(Boolean).join(', ')}</p>
+      <p className="text-ink-muted">
+        {duration.main}
+        {duration.written ? ` (${duration.written})` : ''}
+      </p>
+      {m.instructions && <p className="text-ink-muted">{m.instructions}</p>}
+      <p className={`mt-1 text-sm ${tone === 'active' ? 'font-medium text-brand-strong' : 'text-ink-muted'}`} data-testid="portal-course" data-state={m.course.state}>
+        {courseLine(m.course, today)}
+      </p>
+    </li>
+  )
+}
+
+/**
+ * Today's prescription (HERO final): the prescription of the newest consultation the doctor has completed, from the signed record (no
+ * copy): doctor, date, diagnosis, medicines with their course, advice and follow-up. "Latest prescription" when it is not from today.
+ */
+function CurrentPrescriptionCard() {
+  const q = usePortal<PortalCurrentPrescriptionResponse>('/prescriptions/current', { live: true })
+  if (q.isPending) return <Spinner />
+  if (q.isError) return <Alert tone="error">{errorMessage(q.error)}</Alert>
+  const { today, prescription: p } = q.data
+  return (
+    <Panel
+      label={p && p.date !== today ? 'Latest prescription' : 'Today’s prescription'}
+      icon={Pill}
+      testId="portal-current-prescription"
+      className="mb-4"
+      actions={
+        p && (
+          <Link to={`/patient/records/${p.recordId}`} className="inline-flex min-h-11 items-center text-sm font-medium text-brand-strong underline underline-offset-2">
+            Open the record
+          </Link>
+        )
+      }
+    >
+      {!p ? (
+        <HeroEmpty>Your prescription appears here after your doctor completes your consultation.</HeroEmpty>
+      ) : (
+        <>
+          <p className="text-sm text-ink-muted">
+            {p.doctorName}
+            {p.doctorRegistrationNumber ? ` (reg. ${p.doctorRegistrationNumber})` : ''} · {p.departmentName} · {fmtDate(p.date)}
+          </p>
+          <PanelGroup label="Diagnosis">
+            <p className="text-sm">{p.diagnoses.map((d) => d.description).join('; ') || <span className="text-ink-muted">Not recorded</span>}</p>
+          </PanelGroup>
+          <PanelGroup label="Medicines">
+            {p.items.length ? (
+              <ul className="divide-y divide-line text-sm">
+                {p.items.map((m, i) => (
+                  <MedicineLine key={i} m={m} today={today} />
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-ink-muted">No medicines prescribed.</p>
+            )}
+          </PanelGroup>
+          <PanelGroup>
+            <KeyValueList>
+              <KeyValue label="Advice and diet" value={p.advice.trim() ? <span className="whitespace-pre-wrap">{p.advice}</span> : null} />
+              <KeyValue label="Follow-up" value={p.followUp.trim() || null} />
+            </KeyValueList>
+          </PanelGroup>
+          <p className="mt-3 text-xs text-ink-muted">Take medicines only as your doctor advised. This development build is not a valid prescription for a pharmacy.</p>
+        </>
+      )}
+    </Panel>
+  )
+}
+
 export function PortalHomePage() {
   useDocumentTitle('My health record')
-  const q = usePortal<PortalHome>('/home')
+  const q = usePortal<PortalHome>('/home', { live: true })
   return (
     <Loading q={q}>
       {(d) => (
         <>
-          <PageHeader title={`Hello, ${d.profile.fullName}`} description={`Record number ${d.profile.mrn}. Only records your doctor has signed are shown here.`} />
+          <PageHeader title={`Hello, ${d.profile.fullName}`} description={`Record number ${d.profile.mrn}. Only consultations your doctor has completed are shown here.`} />
+          <CurrentPrescriptionCard />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <Card title="Follow-up advice">
-              {!d.upcoming.length && <p className="text-sm text-ink-muted">No follow-up advice in your signed records.</p>}
+              {!d.upcoming.length && <p className="text-sm text-ink-muted">No follow-up advice in your records.</p>}
               <ul className="space-y-3">
                 {d.upcoming.map((u) => (
                   <li key={u.recordId} className="flex gap-3 text-sm">
@@ -110,11 +220,11 @@ export function PortalHomePage() {
 
 export function PortalRecordsPage() {
   useDocumentTitle('My records')
-  const q = usePortal<{ records: PortalRecordSummary[] }>('/records')
+  const q = usePortal<{ records: PortalRecordSummary[] }>('/records', { live: true })
   const thermal = usePortal<{ reports: PortalThermalReport[] }>('/thermal')
   return (
     <>
-      <PageHeader title="Records and prescriptions" description="Consultation records signed by your doctor, newest first." />
+      <PageHeader title="Records and prescriptions" description="Consultations your doctor has signed and completed, newest first." />
       <Loading q={q}>
         {(d) =>
           d.records.length ? (
@@ -126,7 +236,7 @@ export function PortalRecordsPage() {
               ))}
             </ul>
           ) : (
-            <EmptyState title="No signed records yet">Records appear here after your doctor signs them.</EmptyState>
+            <EmptyState title="No records yet">A consultation appears here after your doctor completes it.</EmptyState>
           )
         }
       </Loading>
@@ -179,17 +289,26 @@ export function PortalRecordPage() {
             <Card title="Prescription">
               {!r.prescription.length && <p className="text-sm text-ink-muted">No medicines prescribed.</p>}
               <ul className="space-y-3">
-                {r.prescription.map((p, i) => (
-                  <li key={i} className="text-sm">
-                    <strong>
-                      {p.drugName} {p.strength} {p.form}
-                    </strong>
-                    <span className="block">
-                      {p.dose}, {p.route}, {p.frequency}, for {p.duration}
-                    </span>
-                    {p.instructions && <span className="block text-ink-muted">{p.instructions}</span>}
-                  </li>
-                ))}
+                {r.prescription.map((p, i) => {
+                  const duration = durationLines(p)
+                  return (
+                    <li key={i} className="text-sm">
+                      <strong>
+                        {p.drugName} {p.strength} {p.form}
+                      </strong>
+                      <span className="block">
+                        {p.dose}, {p.route}, {p.frequency}, for {duration.main}
+                        {duration.written ? ` (${duration.written})` : ''}
+                      </span>
+                      {p.instructions && <span className="block text-ink-muted">{p.instructions}</span>}
+                      {p.course && r.today && (
+                        <span className={`block ${courseTone(p.course) === 'active' ? 'font-medium text-brand-strong' : 'text-ink-muted'}`} data-testid="portal-course" data-state={p.course.state}>
+                          {courseLine(p.course, r.today)}
+                        </span>
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
               <p className="mt-3 text-xs text-ink-muted">Take medicines only as your doctor advised. This development build is not a valid prescription for a pharmacy.</p>
             </Card>

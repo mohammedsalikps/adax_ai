@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { IsoDate, NUL_MESSAGE, noNul, OptionalText, RecordOrigin, Text } from './common.ts'
+import { DocumentsSummary, PatientProcedure } from './documents.ts'
 import { DiagnosisKind, ICD10_PATTERN } from './encounters.ts'
 import { Allergy } from './patients.ts'
 import { Observation } from './vitals.ts'
@@ -195,7 +196,21 @@ export const PriorConsultation = z.object({
   chiefComplaint: z.string(),
   diagnoses: z.array(z.object({ description: z.string(), code: z.string().nullable(), kind: DiagnosisKind })),
   /** What was prescribed in that consultation: not a record of what the patient takes. */
-  prescription: z.array(z.object({ drugName: z.string(), strength: z.string(), form: z.string(), dose: z.string(), route: z.string(), frequency: z.string(), duration: z.string(), instructions: z.string() })),
+  prescription: z.array(
+    z.object({
+      drugName: z.string(),
+      strength: z.string(),
+      form: z.string(),
+      dose: z.string(),
+      route: z.string(),
+      frequency: z.string(),
+      duration: z.string(),
+      instructions: z.string(),
+      /** HERO final (optional): the structured course, when the medicine has one. */
+      durationDays: z.number().int().nullable().optional(),
+      startDate: z.string().nullable().optional(),
+    }),
+  ),
   amendmentCount: z.number().int(),
 })
 export type PriorConsultation = z.infer<typeof PriorConsultation>
@@ -220,5 +235,10 @@ export const PatientHistory = z.object({
   latestVitals: z.array(Observation),
   /** How many entries each list holds beyond what is returned. */
   more: z.object({ consultations: z.number().int(), investigations: z.number().int() }),
+  // --- HERO final (optional: producers that predate them leave them out, and a reader must say "not available", never "none") ---
+  /** Surgeries and other past procedures, not including those marked as entered in error. */
+  procedures: z.array(PatientProcedure).optional(),
+  /** The patient's documents (lab reports, imaging, others): counts and the latest few. */
+  documents: DocumentsSummary.optional(),
 })
 export type PatientHistory = z.infer<typeof PatientHistory>

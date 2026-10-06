@@ -1,12 +1,13 @@
 import { type Encounter, THERMAL_STATEMENT_BASES, THERMAL_SUMMARY_DECISIONS, type ThermalCapture, type ThermalSummary } from '@adaxai/contracts'
 import { Check, FileText, Pencil, X } from 'lucide-react'
-import { useState } from 'react'
+import { type ReactNode, useId, useState } from 'react'
 import { errorMessage } from '../../lib/api.ts'
 import { useMe } from '../../lib/auth.tsx'
 import { fmtDateTime } from '../../lib/format.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
 import { canAddThermalSummary, canComposeThermalSummary, thermalSummaryDecision, useGenerateThermalSummary, useReviewThermalSummary, useThermalSummaries } from '../../lib/thermal.ts'
 import { InsertButton } from '../ai/InsertButton.tsx'
+import { SECTION_LABEL } from '../hero/Panel.tsx'
 import { SimulatedBadge } from '../clinical/DeviceReadingsCard.tsx'
 import { Button } from '../ui/Button.tsx'
 import { Alert, Badge, type BadgeTone, Spinner } from '../ui/Feedback.tsx'
@@ -56,26 +57,70 @@ function SummaryReview({ s }: { s: ThermalSummary }) {
   )
 }
 
-function Statements({ s, testIds }: { s: ThermalSummary; testIds: boolean }) {
+function Statements({ s, testIds, sources = true }: { s: ThermalSummary; testIds: boolean; sources?: boolean }) {
   return (
     <ul className={`space-y-2 text-sm ${s.status === 'rejected' ? 'text-ink-muted' : ''}`}>
       {s.statements.map((st, i) => (
         <li key={i} className="flex flex-wrap items-baseline gap-x-2 gap-y-1" data-testid={testIds ? 'thermal-summary-statement' : undefined} data-basis={st.basis}>
           <Badge tone={BASIS_TONE[st.basis]}>{THERMAL_STATEMENT_BASES[st.basis]}</Badge>
           <span className={`min-w-0 flex-1 basis-48 break-words ${s.status === 'rejected' ? 'line-through' : ''}`}>{st.text}</span>
-          <span className="w-full text-xs text-ink-muted break-words">Source: {st.source}</span>
+          {sources && <span className="w-full text-xs text-ink-muted break-words">Source: {st.source}</span>}
         </li>
       ))}
     </ul>
   )
 }
 
-/** Composer, rules and model at the time, and who composed it. */
-function Provenance({ s }: { s: ThermalSummary }) {
+/**
+ * The summary's frame inside the doctor's thermal study: a group of the study's panel (a line above, the section label), still a region named
+ * "Thermal summary", instead of a card of its own.
+ */
+function StudyGroup({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+  const id = useId()
+  return (
+    <section aria-labelledby={id} className="min-w-0 border-t border-line pt-3">
+      <div className="mb-2 flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <h3 id={id} className={SECTION_LABEL}>
+          {title}
+        </h3>
+        {actions}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+/** The clinical study's summary keeps what each statement rests on, and the composer's versions, one tap away (as an AI draft's sources). */
+function SourcesDisclosure({ s }: { s: ThermalSummary }) {
+  return (
+    <details className="mt-3 text-sm" data-testid="thermal-summary-sources">
+      <summary className="min-h-control-sm cursor-pointer font-medium text-ink-muted">Sources</summary>
+      <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-ink-muted">
+        {s.statements.map((st, i) => (
+          <li key={i} className="break-words">
+            {st.source}
+          </li>
+        ))}
+      </ol>
+      <div className="mt-2">
+        <Provenance s={s} versions />
+      </div>
+    </details>
+  )
+}
+
+/** Composer, rules and model at the time, and who composed it. `versions: false` (the clinical study): only that it was composed by fixed rules, when and by whom. */
+function Provenance({ s, versions = true }: { s: ThermalSummary; versions?: boolean }) {
   return (
     <p className="text-xs text-ink-muted">
-      <span className="font-medium text-ink">Composed by fixed rules from the measurements, not by AI.</span> Composer {s.composerVersion}
-      {s.rulesVersion ? ` · rules ${s.rulesVersion}` : ''} · model: {s.model.available ? `${s.model.kind ?? 'kind not stated'} ${s.model.modelId ?? ''} ${s.model.version ?? ''}`.trim() : 'unavailable'} · {fmtDateTime(s.createdAt)}
+      <span className="font-medium text-ink">Composed by fixed rules from the measurements, not by AI.</span>{' '}
+      {versions && (
+        <>
+          Composer {s.composerVersion}
+          {s.rulesVersion ? ` · rules ${s.rulesVersion}` : ''} · model: {s.model.available ? `${s.model.kind ?? 'kind not stated'} ${s.model.modelId ?? ''} ${s.model.version ?? ''}`.trim() : 'unavailable'} ·{' '}
+        </>
+      )}
+      {fmtDateTime(s.createdAt)}
       {s.createdByName ? ` · ${s.createdByName}` : ''}
     </p>
   )
@@ -87,7 +132,8 @@ function Provenance({ s }: { s: ThermalSummary }) {
  * regions, so the summary's numbers stay the image's; a rejected image never gets one). The doctor accepts, edits or rejects it; only then, and
  * only by a separate "Add to Examination" while the image is approved and the consultation is an unsigned draft they may edit, can its text
  * reach the note. A simulated summary never can. The newest summary is shown; earlier ones are kept, collapsed. `canEdit` defaults to the
- * consultation's own `canEdit`.
+ * consultation's own `canEdit`. `variant="clinical"` (the doctor's thermal study): what each statement rests on and the composer's versions
+ * are under "Sources" (one tap away) instead of under every statement; everything else is the same.
  */
 export function ThermalSummaryCard({
   captureId,
@@ -95,6 +141,7 @@ export function ThermalSummaryCard({
   encounter,
   inserter,
   canEdit,
+  variant = 'full',
 }: {
   captureId: string
   /** The image's review status: draft (awaiting review), approved or rejected. */
@@ -102,7 +149,9 @@ export function ThermalSummaryCard({
   encounter?: Encounter | undefined
   inserter?: NoteInserter | undefined
   canEdit?: boolean | undefined
+  variant?: 'full' | 'clinical'
 }) {
+  const clinical = variant === 'clinical'
   const { data: me } = useMe()
   const isDoctor = me?.role === 'doctor'
   const q = useThermalSummaries(captureId)
@@ -112,8 +161,9 @@ export function ThermalSummaryCard({
   const [latest, ...earlier] = q.data ?? []
   const decided = latest && (latest.status === 'accepted' || latest.status === 'edited')
   const insertable = !!latest && !!inserter && canAddThermalSummary(latest, encounter, editable, captureStatus)
+  const Frame = clinical ? StudyGroup : Card
   return (
-    <Card
+    <Frame
       title="Thermal summary"
       actions={
         isDoctor &&
@@ -148,7 +198,7 @@ export function ThermalSummaryCard({
             </span>
             {latest.simulated && <SimulatedBadge />}
           </div>
-          <Statements s={latest} testIds />
+          <Statements s={latest} testIds sources={!clinical} />
           {latest.status === 'edited' && latest.finalText && (
             <div className="mt-3 rounded-md bg-canvas p-2 text-sm">
               <p className="text-xs font-medium text-ink-muted">Text as edited by the doctor</p>
@@ -156,8 +206,9 @@ export function ThermalSummaryCard({
             </div>
           )}
           <div className="mt-3">
-            <Provenance s={latest} />
+            <Provenance s={latest} versions={!clinical} />
           </div>
+          {clinical && <SourcesDisclosure s={latest} />}
           {latest.status !== 'pending' && <p className="mt-2 text-sm font-medium">{thermalSummaryDecision(latest)}</p>}
           {latest.status === 'pending' && isDoctor && <SummaryReview key={latest.id} s={latest} />}
           {latest.status === 'pending' && !isDoctor && <p className="mt-2 text-sm text-ink-muted">Awaiting the doctor’s review.</p>}
@@ -195,6 +246,6 @@ export function ThermalSummaryCard({
           </ul>
         </details>
       )}
-    </Card>
+    </Frame>
   )
 }

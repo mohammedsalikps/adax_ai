@@ -14,19 +14,32 @@ import { ClinicalImagesCard } from './ClinicalImagesCard.tsx'
 import { PastHistoryPanel } from './PastHistory.tsx'
 import { ageSex } from './PatientBanner.tsx'
 import { RecordSummary } from './RecordSummary.tsx'
+import { PatientDocumentsPanel } from '../patients/DocumentsList.tsx'
 
-type TabId = 'overview' | 'history' | 'documents'
+/** The drawer's tabs: Overview, Full history (the consultation's [View details]) and Documents (its [Documents]). */
+export type ProfileDrawerTab = 'overview' | 'history' | 'documents'
 
 /**
  * The patient's profile as a side sheet over the consultation, so the doctor
  * can look at the whole picture without leaving the note. Overview: who the
  * patient is and a summary written from the record (not by AI) with what it is
  * based on. Full history: the same past-history panel as in the consultation.
- * Documents: the photographs, stethoscope recordings and thermal studies that
- * belong to the patient.
+ * Documents: the patient's documents (lab reports, imaging, others), and the
+ * photographs, stethoscope recordings and thermal studies that belong to the
+ * patient; mounted only while that tab is open (each list is an audited read).
+ *
+ * `initialTab` (default Overview) is the tab it opens on, set again every time
+ * it opens. `encounterId`: the consultation it is opened from, so a document
+ * uploaded here is linked to it.
  */
-export function PatientProfileDrawer({ patientId, open, onClose }: { patientId: string; open: boolean; onClose: () => void }) {
-  const [tab, setTab] = useState<TabId>('overview')
+export function PatientProfileDrawer({ patientId, open, onClose, initialTab = 'overview', encounterId }: { patientId: string; open: boolean; onClose: () => void; initialTab?: ProfileDrawerTab; encounterId?: string | undefined }) {
+  const [tab, setTab] = useState<ProfileDrawerTab>(initialTab)
+  // Each opening starts on the tab asked for (state adjusted during render, so the first frame is already the right tab).
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
+    if (open) setTab(initialTab)
+  }
   const patient = usePatient(open ? patientId : undefined)
   const p = patient.data
   return (
@@ -80,9 +93,14 @@ export function PatientProfileDrawer({ patientId, open, onClose }: { patientId: 
                 <PastHistoryPanel idScope="drawer" patientId={patientId} bare />
               </TabPanel>
               <TabPanel prefix={`profile-${patientId}`} id="documents" active={tab === 'documents'} className="space-y-4">
-                <ClinicalImagesCard patientId={patientId} />
-                <AuscultationCard patientId={patientId} />
-                <PatientThermalCard patient={p} />
+                {tab === 'documents' && (
+                  <>
+                    <PatientDocumentsPanel patientId={patientId} encounterId={encounterId} />
+                    <ClinicalImagesCard patientId={patientId} />
+                    <AuscultationCard patientId={patientId} />
+                    <PatientThermalCard patient={p} encounterId={encounterId} />
+                  </>
+                )}
               </TabPanel>
             </>
           )}
@@ -96,7 +114,8 @@ function PatientPageLink({ patientId }: { patientId: string }) {
   const base = usePortalBase()
   return (
     <Link to={`${base}/patients/${patientId}`} className="font-medium text-brand-strong hover:underline">
-      Open the patient’s page (consents, appointments, portal access)
+      {/* The doctor's patient page has no appointments or portal access (DESIGN §5.3); the nurse's has. */}
+      {base === '/doctor' ? 'Open the patient’s page (summary, details, documents, consents)' : 'Open the patient’s page (consents, appointments, portal access)'}
     </Link>
   )
 }

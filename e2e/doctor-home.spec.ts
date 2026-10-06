@@ -20,50 +20,78 @@ test('the doctor’s Home shows how the day stands from real data, and its short
   // booked by other tests; the database move to today is e2e-only.
   const time = hhmm(0, 5 * Math.floor(Math.random() * 12))
   await moveAppointmentToToday(appt.id, time)
-  const ready = await nurseHandsOverPatient(baseURL!)
+  // With an allergy on record: the Home row shows an allergy chip only when there is one (DESIGN §5.1), so the chip can be checked.
+  const ready = await nurseHandsOverPatient(baseURL!, { allergies: ['Penicillin'] })
 
   await signIn(page, 'dr.meera')
   await expect(page).toHaveURL(/\/doctor$/)
   await expect(page.getByRole('heading', { level: 1, name: /^Good (morning|afternoon|evening), Dr\. Meera$/ })).toBeVisible()
   await expect(page.getByTestId('signed-in-user')).toContainText('Meera')
 
-  // Four numbers, each a real count (not a placeholder), under their labels.
+  // Four numbers, each a real count (not a placeholder), under their labels. Redesigned Home (DESIGN §5.1): Patients seen · Waiting · Yet to
+  // see · Total, and each must be the server's own count (GET /api/doctor/day), read again until both agree (the page polls every 30 s).
   const glance = page.getByRole('list', { name: 'Today at a glance' })
-  for (const label of ['In the queue', 'With a doctor', 'Completed today', 'Appointments to come']) {
-    await expect(glance.getByRole('listitem').filter({ hasText: label })).toContainText(/\d/)
+  const tiles = [
+    ['Patients seen', 'day-seen', 'seen'],
+    ['Waiting', 'day-waiting', 'waiting'],
+    ['Yet to see', 'day-yet-to-see', 'yetToSee'],
+    ['Total', 'day-total', 'total'],
+  ] as const
+  for (const [label, testId] of tiles) {
+    await expect(glance.getByRole('listitem').filter({ hasText: label })).toHaveAttribute('data-testid', testId)
+    await expect(glance.getByTestId(testId)).toContainText(/\d/)
   }
-  await expect(glance).not.toContainText('Not loaded yet')
+  await expect(glance.locator('[aria-busy="true"]')).toHaveCount(0)
+  await expect
+    .poll(
+      async () => {
+        const counts = (await (await page.request.get('/api/doctor/day?period=today')).json()).counts as Record<string, number>
+        const shown = await Promise.all(tiles.map(async ([, testId]) => Number((await glance.getByTestId(testId).locator('p').nth(1).innerText()).trim())))
+        return JSON.stringify(shown) === JSON.stringify(tiles.map(([, , key]) => counts[key])) ? 'same' : `shown ${JSON.stringify(shown)}, server ${JSON.stringify(counts)}`
+      },
+      { timeout: 35_000 },
+    )
+    .toBe('same')
 
-  // Today's schedule has the booked appointment, with check-in; the patient who was handed over is ready for the doctor, in the same list.
-  const schedule = page.getByRole('region', { name: 'Today’s schedule' })
-  const row = schedule.getByTestId(`appointment-${appt.id}`)
+  // Today's patients (redesign: one list instead of the schedule card). The booked appointment is there at its time, yet to see, and offers
+  // nothing (no check-in on the doctor's Home, DESIGN §5.1); the patient who was handed over is ready for the doctor, in the same list.
+  const todays = page.getByRole('list', { name: 'Today’s patients' })
+  const row = todays.locator(`[data-row-key="appointment:${appt.id}"]`)
   await expect(row).toContainText(booked.name)
   await expect(row).toContainText(clockText(time))
-  await expect(row.getByRole('button', { name: 'Check in' })).toBeVisible()
-  const readyRow = schedule.getByRole('listitem').filter({ hasText: ready.name })
+  await expect(row.locator('[data-status="yet_to_see"]')).toHaveText('Yet to see')
+  await expect(row.getByRole('button')).toHaveCount(0)
+  const readyRow = todays.getByRole('listitem').filter({ hasText: ready.name })
   await expect(readyRow).toContainText('Ready for doctor')
-  // Whoever is one click from a consultation is identified as precisely as in the queue: MRN, age and sex, allergy status.
+  // Whoever is one click from a consultation is identified as precisely as in the queue: MRN, age and sex, allergy.
   await expect(readyRow).toContainText(ready.mrn)
   await expect(readyRow).toContainText(/\d+ y · Female/)
-  await expect(readyRow).toContainText(/Allergies|allergies/)
+  await expect(readyRow).toContainText('Allergy: Penicillin')
   await expect(readyRow.getByRole('button', { name: 'Start consultation' })).toBeVisible()
   await expectNoAxeViolations(page)
   await expectNoHorizontalOverflow(page)
 
-  // The shortcuts are links to pages that exist.
-  const quick = page.getByRole('region', { name: 'Quick actions' })
-  await quick.getByRole('link', { name: 'Find a patient' }).click()
-  await expect(page).toHaveURL(/\/doctor\/patients$/)
-  await page.goto('/doctor')
-  await quick.getByRole('link', { name: 'Register patient' }).click()
-  await expect(page).toHaveURL(/\/doctor\/register$/)
-  await page.goto('/doctor')
-  await quick.getByRole('link', { name: 'My consultations' }).click()
+  // The shortcuts are links to pages that exist. Redesign (DESIGN §4-5.1): Home has no quick actions; the doctor's four places are the
+  // navigation, "View all" leads to My consultations, and its quiet link to the drafts and signed records.
+  await expect(page.getByRole('region', { name: 'Quick actions' })).toHaveCount(0)
+  const nav = page.getByRole('navigation', { name: 'Doctor navigation' })
+  for (const [name, url, heading] of [
+    ['Patients', /\/doctor\/patients$/, 'Patients'],
+    ['Thermal', /\/doctor\/thermal$/, 'Thermal'],
+    ['My consultations', /\/doctor\/queue$/, 'My consultations'],
+  ] as const) {
+    await page.goto('/doctor')
+    await nav.getByRole('link', { name }).click()
+    await expect(page).toHaveURL(url)
+    await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
+  }
+  await page.getByRole('link', { name: 'Drafts and signed records' }).click()
   await expect(page).toHaveURL(/\/doctor\/consultations$/)
+  await expect(page.getByRole('heading', { level: 1, name: 'Drafts and signed records' })).toBeVisible()
   await page.goto('/doctor')
-  await schedule.getByRole('link', { name: 'View all' }).click()
+  await page.getByRole('link', { name: 'View all' }).click()
   await expect(page).toHaveURL(/\/doctor\/queue$/)
-  await expect(page.getByRole('heading', { name: 'Today’s patients' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: 'My consultations' })).toBeVisible()
   await nurse.dispose()
 })
 
@@ -140,14 +168,16 @@ test('on a phone the menu is a drawer: focus moves in, Escape closes it and focu
   await expect(nav).toBeHidden()
 
   // Choosing a page closes the drawer and moves focus to the new page (for a keyboard or screen-reader user, not the top of the document).
+  // Appointments is no longer in the doctor's navigation (DESIGN §4: Home · My consultations · Patients · Thermal), so My consultations (a
+  // page without a field that takes focus by itself, as Appointments was) is chosen.
   await open.click()
-  await nav.getByRole('link', { name: 'Appointments' }).click()
-  await expect(page).toHaveURL(/\/doctor\/appointments$/)
+  await nav.getByRole('link', { name: 'My consultations' }).click()
+  await expect(page).toHaveURL(/\/doctor\/queue$/)
   await expect(nav).toBeHidden()
   await expect(page.locator('#main')).toBeFocused()
   // Choosing the page you are already on also closes it.
   await open.click()
-  await nav.getByRole('link', { name: 'Appointments' }).click()
+  await nav.getByRole('link', { name: 'My consultations' }).click()
   await expect(nav).toBeHidden()
 
   // The dimmed page behind the drawer closes it too, and the page does not scroll while it is open.

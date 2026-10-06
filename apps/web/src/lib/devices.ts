@@ -102,6 +102,55 @@ export function usePatientDeviceReadings(patientId: string) {
   return { view: aged?.view ?? null, now: aged?.now ?? null, isPending: q.isPending, error: q.error, isError: q.isError, refetch: q.refetch, isFetching: q.isFetching, receivedAt: q.data?.receivedAt ?? null }
 }
 
+/** The card's answer aged to now, or null when it is not an answer the screen can read (a malformed answer is never guessed at). */
+function safelyAged(data: ReceivedDeviceReadings | undefined, nowLocal: number): { view: PatientDeviceReadings; now: number } | null {
+  const v = data?.view
+  if (!data || !v || typeof v.serverTime !== 'string' || !v.thresholds || !Array.isArray(v.devices)) return null
+  if (!v.devices.every((d) => !!d && typeof d === 'object' && Array.isArray(d.readings) && Array.isArray(d.kinds) && typeof d.state === 'string')) return null
+  try {
+    const aged = ageView(data, nowLocal)
+    return Number.isFinite(aged.now) ? aged : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * What the "Device readings" card on the same page last read, aged every second on the server's clock (HERO final: the clinical inputs panel and
+ * the stethoscope section). It OBSERVES the card's query (same key, same function, never enabled): it never asks the server itself, so the card
+ * must stay mounted on the page (the clinical inputs panel keeps it mounted behind "Device details"). `view` is null until the card has read
+ * once, or when its answer cannot be read.
+ */
+export function useObservedDeviceReadings(patientId: string): { view: PatientDeviceReadings | null; now: number | null; isError: boolean; unreadable: boolean; receivedAt: number | null } {
+  const q = useQuery({ queryKey: deviceReadingsKey(patientId), queryFn: () => fetchDeviceReadings(patientId), enabled: false })
+  useSecondTick(!!q.data?.view?.devices?.length)
+  const aged = safelyAged(q.data, Date.now())
+  return { view: aged?.view ?? null, now: aged?.now ?? null, isError: q.isError, unreadable: !!q.data && !aged, receivedAt: q.data?.receivedAt ?? null }
+}
+
+/** Which devices the card's answer says are attached (their kind, and whether each is a simulator) and the consent: nothing that ages. */
+export interface AttachedDevicesNow {
+  consent: PatientDeviceReadings['consent'] | null
+  devices: { kind: AttachedDevice['kind']; simulated: boolean }[]
+}
+
+/** The part of the card's answer that does not change with time, or null when the answer cannot be read. */
+export function attachedDevicesNow(data: ReceivedDeviceReadings | undefined): AttachedDevicesNow | null {
+  const v = data?.view
+  if (!v || !Array.isArray(v.devices)) return null
+  return { consent: v.consent ?? null, devices: v.devices.filter((d) => !!d && typeof d === 'object').map((d) => ({ kind: d.kind, simulated: d.simulated === true })) }
+}
+
+/**
+ * Like useObservedDeviceReadings (it observes the card's query and never asks the server), but only which devices are attached and the consent:
+ * it re-renders when that changes, not every second nor on every read (the selected value is shared structurally). For the simulator controls,
+ * which do not depend on the time.
+ */
+export function useObservedAttachedDevices(patientId: string): AttachedDevicesNow | null {
+  const q = useQuery({ queryKey: deviceReadingsKey(patientId), queryFn: () => fetchDeviceReadings(patientId), enabled: false, select: attachedDevicesNow })
+  return q.data ?? null
+}
+
 /** From the most concerning to the least: the state a summary of several devices takes is the first one any of them is in. */
 const WORST_FIRST: readonly ReadingState[] = ['disconnected', 'unavailable', 'no_data', 'stale', 'live']
 

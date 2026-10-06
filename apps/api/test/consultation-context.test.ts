@@ -672,9 +672,11 @@ describe('CASE J: another consultation of the same patient', () => {
     await thermal(first, { when: at(3), approved: true })
     await stethoscope(first, at(4))
     await transcript(first, [['Patient', 'OLD-CONSULTATION-WORDS']], 0)
-    // The first consultation is signed, which closes its visit; the patient comes back the same day.
+    // The first consultation is signed and completed (HERO final, deliberate change: completing, no longer signing, closes its visit); the
+    // patient comes back the same day.
     const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${first.e.id}/draft`, { cookie: doctor, body: { version: first.e.version, note: { ...first.e.note, chiefComplaint: 'Knee pain', assessment: 'Strain', plan: 'Rest' }, diagnoses: [{ description: 'Knee strain', kind: 'provisional' }], prescription: [] } })).json())
     expect((await call(ctx.app, 'POST', `/api/encounters/${first.e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })).statusCode).toBe(200)
+    expect((await call(ctx.app, 'POST', `/api/encounters/${first.e.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
     const v2 = Visit.parse((await call(ctx.app, 'POST', '/api/visits', { cookie: nurse, body: { patientId: first.p.id, departmentId: fx.departments.gen, chiefComplaint: 'Follow-up' } })).json())
     const e2 = Encounter.parse((await call(ctx.app, 'POST', `/api/visits/${v2.id}/encounter`, { cookie: doctor })).json())
     const second = { p: first.p, v: v2, e: e2 }

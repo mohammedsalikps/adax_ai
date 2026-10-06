@@ -103,6 +103,8 @@ async function scenario(ctx: TestContext, { consent = true, vitals = true } = {}
   const e1 = Encounter.parse((await call(ctx.app, 'POST', `/api/visits/${v1.id}/encounter`, { cookie: doctor })).json())
   const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e1.id}/draft`, { cookie: doctor, body: draft(e1.version) })).json())
   expect((await call(ctx.app, 'POST', `/api/encounters/${e1.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })).statusCode).toBe(200)
+  // HERO final (deliberate change): signing no longer closes the visit; the doctor completes it, so the same-day second visit below can open.
+  expect((await call(ctx.app, 'POST', `/api/encounters/${e1.id}/complete`, { cookie: doctor, body: {} })).statusCode).toBe(200)
   const v2 = Visit.parse((await call(ctx.app, 'POST', '/api/visits', { cookie: nurse, body: { patientId: p.id, departmentId: fx.departments.gen } })).json())
   if (vitals) await call(ctx.app, 'POST', `/api/visits/${v2.id}/observations`, { cookie: nurse, body: { items: [{ kind: 'temperature', value: 38.6 }, { kind: 'spo2', value: 97 }] } })
   const e = Encounter.parse((await call(ctx.app, 'POST', `/api/visits/${v2.id}/encounter`, { cookie: doctor })).json())
@@ -217,13 +219,18 @@ describe('clinical fact extraction', () => {
     // Same idempotency key: the provider is called once and the same job is returned.
     const key = crypto.randomUUID()
     const before = extractor.calls
+    const pendingIds = async () => (await adminQuery("SELECT id FROM clinical_facts WHERE status = 'pending' ORDER BY id")).rows.map((r) => r.id as string)
+    const pendingBefore = await pendingIds()
     const a = await call(withAi.app, 'POST', `/api/transcripts/${t.id}/extract`, { cookie: doctor, body: { idempotencyKey: key } })
     const b = await call(withAi.app, 'POST', `/api/transcripts/${t.id}/extract`, { cookie: doctor, body: { idempotencyKey: key } })
     expect(a.json().jobId).toBe(b.json().jobId)
     expect(extractor.calls).toBe(before + 1)
-    // A new extraction supersedes undecided facts instead of duplicating them.
-    expect((await adminQuery("SELECT count(*)::int AS n FROM clinical_facts WHERE status = 'pending'")).rows[0].n).toBe(7)
-    expect((await adminQuery("SELECT count(*)::int AS n FROM clinical_facts WHERE status = 'superseded'")).rows[0].n).toBe(7)
+    // Changed deliberately (Doctor HERO: points are found again after each recorded part): a new extraction that finds the same points keeps the
+    // undecided facts as they are, the same rows under the same ids, instead of duplicating them (or, as before, superseding and re-adding them).
+    expect(pendingBefore).toHaveLength(7)
+    expect(await pendingIds()).toEqual(pendingBefore)
+    expect((await adminQuery('SELECT count(*)::int AS n FROM clinical_facts')).rows[0].n).toBe(7)
+    expect((await adminQuery("SELECT count(*)::int AS n FROM clinical_facts WHERE status = 'superseded'")).rows[0].n).toBe(0)
   })
 })
 
