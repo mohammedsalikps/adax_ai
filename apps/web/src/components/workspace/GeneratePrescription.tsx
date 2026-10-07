@@ -123,6 +123,7 @@ export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, 
   return (
     <>
       <Button
+        variant="cta"
         icon={control.busy ? <LoaderCircle aria-hidden="true" className="size-5 motion-safe:animate-spin" /> : <Sparkles aria-hidden="true" className="size-5" />}
         disabled={control.disabled}
         aria-busy={control.busy || undefined}

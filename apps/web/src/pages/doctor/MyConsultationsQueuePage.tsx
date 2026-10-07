@@ -1,7 +1,7 @@
 import { FileStack } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router'
-import { TodayList } from '../../components/doctor/TodayList.tsx'
+import { TodayList, TodayListHeader } from '../../components/doctor/TodayList.tsx'
 import { useReadyCue } from '../../components/doctor/useReadyCue.ts'
 import { HeroEmpty } from '../../components/hero/HeroEmpty.tsx'
 import { PageTitle } from '../../components/hero/PageTitle.tsx'
@@ -71,11 +71,12 @@ export function MyConsultationsQueuePage() {
       {day.isError && data && <p className="mb-3 text-sm text-pending">The latest update failed, so this may be out of date.</p>}
       {data &&
         (rows.length ? (
-          <div className="overflow-hidden rounded-xl border border-line bg-surface">
+          <div className="overflow-hidden rounded-2xl border border-line/70 bg-surface pt-2 shadow-card">
+            <TodayListHeader />
             <TodayList rows={rows} today={data.today} label="Visits" highlightKey={highlightKey} />
           </div>
         ) : (
-          <div className="rounded-xl border border-line bg-surface px-4 py-3 xl:px-5">
+          <div className="rounded-2xl border border-line/70 bg-surface px-4 py-3 shadow-card xl:px-5">
             <HeroEmpty>{QUEUE_FILTER_EMPTY[data.timeline.length ? filter : 'all']}</HeroEmpty>
           </div>
         ))}

@@ -8,7 +8,7 @@ import { Button } from '../ui/Button.tsx'
 import { useToast } from '../ui/Toast.tsx'
 
 /** A link drawn as a small secondary button (Open, Complete): the same size and focus ring as Button size sm. */
-const LINK_BUTTON = 'inline-flex min-h-control-sm items-center justify-center gap-2 rounded-md border px-3 text-sm font-medium whitespace-nowrap transition-colors'
+const LINK_BUTTON = 'inline-flex min-h-control-sm items-center justify-center gap-2 rounded-lg border px-3.5 text-sm font-medium whitespace-nowrap transition-colors'
 
 /**
  * The one action of a row of today's patients (lib/doctorDay.ts todayAction): Start consultation (a new start opens the workspace with

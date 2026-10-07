@@ -43,7 +43,7 @@ export function BottomBar({ start, children, label, testId, className = '' }: Bo
       role={label ? 'region' : undefined}
       aria-label={label}
       data-testid={testId}
-      className={`sticky bottom-0 z-20 -mx-4 mt-6 -mb-6 border-t border-line bg-surface/95 px-4 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] backdrop-blur sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8 print:hidden ${className}`}
+      className={`sticky bottom-0 z-20 -mx-4 mt-6 -mb-6 border-t border-line/60 bg-surface/85 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-12px_30px_-24px_rgb(30_58_138/0.35)] backdrop-blur-md sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8 print:hidden ${className}`}
     >
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         {start && <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-ink-muted">{start}</div>}

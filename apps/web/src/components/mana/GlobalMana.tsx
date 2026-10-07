@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { AudioLines, MessageSquarePlus, Sparkles, Volume2, VolumeX } from 'lucide-react'
+import { AudioLines, MessageSquarePlus, Volume2, VolumeX } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useLocation } from 'react-router'
 import { manaConversationKey, useManaConversation, useNewManaConversation } from '../../lib/manaAssistant.ts'
@@ -8,6 +8,7 @@ import { isManaOpen, onCloseMana, onOpenMana, openMana, publishManaOpen, subscri
 import { readSpeakAnswers, writeSpeakAnswers } from '../../lib/manaSpeech.ts'
 import { Sheet } from '../hero/Sheet.tsx'
 import { Menu } from '../ui/Menu.tsx'
+import { ManaAvatar } from '../brand/Brand.tsx'
 import { ManaAssistant, ManaMark } from './ManaAssistant.tsx'
 
 /**
@@ -24,12 +25,12 @@ export function ManaSidebarCard() {
       aria-expanded={open}
       aria-label="Mana"
       data-testid="mana-launcher"
-      className="group flex w-full items-center gap-3 rounded-2xl border border-line/80 bg-gradient-to-br from-surface to-ai-soft/60 px-3 py-2.5 text-left shadow-card transition-shadow hover:shadow-pop focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+      className="group flex w-full items-center gap-3 rounded-2xl border border-indigo-100 bg-gradient-to-br from-surface via-surface to-violet-50 px-3 py-2.5 text-left shadow-card transition-shadow hover:shadow-pop focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
     >
-      <ManaMark />
+      <ManaAvatar size="md" />
       <span className="min-w-0 flex-1 leading-tight">
         <span className="block text-sm font-semibold text-ink">Mana</span>
-        <span className="block text-xs text-ink-muted">AI Assistant</span>
+        <span className="block text-xs text-ink-muted">Clinical AI assistant</span>
       </span>
       <AudioLines aria-hidden="true" className="size-4 text-ai/70 group-hover:text-ai" />
     </button>
@@ -96,9 +97,9 @@ export function GlobalMana({ floating = true }: { floating?: boolean }) {
         aria-expanded={open}
         data-testid="mana-launcher"
         style={{ bottom: 'calc(var(--action-bar-h, 0px) + 1rem)' }}
-        className="fixed right-4 z-20 inline-flex size-12 items-center justify-center rounded-full bg-gradient-to-br from-brand to-ai text-white shadow-pop ring-4 ring-surface hover:opacity-95 motion-safe:transition-opacity motion-safe:duration-150 print:hidden"
+        className="fixed right-4 z-20 inline-flex size-14 items-center justify-center rounded-full bg-surface shadow-pop ring-4 ring-surface hover:scale-[1.03] motion-safe:transition-transform motion-safe:duration-150 print:hidden"
       >
-        <Sparkles aria-hidden="true" className="size-5 shrink-0" />
+        <ManaAvatar size="lg" />
         <span className="sr-only">Mana</span>
       </button>
       )}

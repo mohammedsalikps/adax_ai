@@ -113,7 +113,7 @@ export function ConsultationHeader({ encounter, backTo, onOpenProfile, onViewHis
   return (
     <header
       ref={header}
-      className="-mx-4 -mt-6 mb-5 border-b border-line/70 bg-surface/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6 md:sticky md:top-topbar md:z-20 lg:-mx-8 lg:px-8 print:hidden"
+      className="-mx-4 -mt-6 mb-5 border-b border-line/60 bg-surface/85 px-4 py-3.5 backdrop-blur-md sm:-mx-6 sm:px-6 md:sticky md:top-topbar md:z-20 lg:-mx-8 lg:px-8 print:hidden"
       data-testid="consultation-header"
     >
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 max-md:items-start">
@@ -122,10 +122,10 @@ export function ConsultationHeader({ encounter, backTo, onOpenProfile, onViewHis
           <span className="max-sm:sr-only">Back</span>
           <span className="sr-only"> to My consultations</span>
         </Link>
-        <PatientAvatar name={p.fullName} />
+        <PatientAvatar name={p.fullName} size="lg" />
         <section aria-label="Patient" className="min-w-0 flex-1 basis-72" data-testid="patient-banner">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-            <h1 className="min-w-0 text-lg leading-6 font-semibold tracking-tight break-words">
+            <h1 className="min-w-0 text-2xl leading-7 font-semibold tracking-tight break-words">
               <span className="sr-only">Consultation: </span>
               {p.fullName}
             </h1>
@@ -177,7 +177,7 @@ export function ConsultationHeader({ encounter, backTo, onOpenProfile, onViewHis
           <button
             type="button"
             onClick={() => openMana()}
-            className="inline-flex min-h-control-sm items-center gap-1.5 rounded-lg bg-gradient-to-r from-ai to-brand px-3.5 text-sm font-semibold text-white shadow-sm hover:opacity-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ai"
+            className="inline-flex min-h-control-sm items-center gap-1.5 rounded-lg bg-brand-gradient px-3.5 text-sm font-semibold text-white shadow-[0_8px_18px_-10px_rgb(79_70_229/0.8)] hover:opacity-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ai"
             data-testid="header-mana"
           >
             <Sparkles aria-hidden="true" className="size-4" />

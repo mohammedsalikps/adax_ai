@@ -15,6 +15,7 @@ import { BottomBar } from '../../components/hero/BottomBar.tsx'
 import { Panel, PanelGroup } from '../../components/hero/Panel.tsx'
 import { Sheet } from '../../components/hero/Sheet.tsx'
 import { StatusPill } from '../../components/hero/StatusPill.tsx'
+import { WorkflowStepper } from '../../components/hero/WorkflowStepper.tsx'
 import { OrderServiceButton } from '../../components/orders/OrderServiceButton.tsx'
 import { ServiceOrdersList } from '../../components/orders/ServiceOrdersList.tsx'
 import { PatientHistoryPanel } from '../../components/patients/PatientHistoryPanel.tsx'
@@ -350,6 +351,8 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
           .
         </Alert>
       )}
+      {/* UI/UX redesign: where the consultation is in its workflow (a picture of the page's state, not a control). */}
+      <WorkflowStepper current={0} className="mb-5" />
       {/*
         The clinical cockpit (premium design): the live conversation, the important points found in it and the doctor's note side by side; under
         them the clinical signals (vitals, stethoscope, thermal) and the patient's context. Mana opens from the header and the sidebar.
@@ -531,6 +534,8 @@ export function EncounterReadView({ e }: { e: Encounter }) {
           )}
         </div>
       </div>
+      {/* UI/UX redesign: the doctor's own signed consultation shows where it is (Complete next, or all done). */}
+      {signed && own && <WorkflowStepper current={4} allDone={!!e.completedAt} className="mb-4" />}
       {signed && e.canComplete && (
         // Signed, and the visit is still with this doctor (DESIGN §5.6, §17B): printing never completes it; Complete consultation does.
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-brand/25 bg-brand-soft px-4 py-3" data-testid="signed-to-complete">

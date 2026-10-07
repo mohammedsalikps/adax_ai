@@ -8,7 +8,7 @@ import { CardFrameContext } from '../ui/Layout.tsx'
  */
 export const SECTION_LABEL = 'text-[0.6875rem] leading-4 font-semibold uppercase tracking-[0.08em] text-ink-muted'
 /** Card titles (jury design): normal case, semibold, in ink, as in the reference screens. */
-export const PANEL_TITLE = 'text-[0.9375rem] leading-5 font-semibold text-ink'
+export const PANEL_TITLE = 'text-base leading-6 font-semibold tracking-tight text-ink'
 export const GROUP_TITLE = 'text-sm leading-5 font-semibold text-ink'
 
 /** The heading level of the panel around a PanelGroup (its own heading is one below). */
@@ -41,7 +41,7 @@ export function Panel({ label, icon: Icon, actions, children, id, testId, classN
   const Heading = as
   return (
     <section id={id} aria-labelledby={headingId} data-testid={testId} className={`min-w-0 rounded-2xl border border-line/70 bg-surface shadow-card ${className}`}>
-      <header className="flex min-h-11 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 pt-3 xl:px-5">
+      <header className="flex min-h-12 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 pt-3.5 xl:px-5">
         <Heading id={headingId} className={`flex min-w-0 items-center gap-2 ${PANEL_TITLE}`}>
           {Icon && <Icon aria-hidden="true" className="size-[1.125rem] shrink-0 text-brand" />}
           <span className="min-w-0">{label}</span>

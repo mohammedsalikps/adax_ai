@@ -4,6 +4,7 @@ import { ArrowLeft, CircleCheck, FlaskConical, PenLine } from 'lucide-react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { BottomBar } from '../../components/hero/BottomBar.tsx'
+import { WorkflowStepper } from '../../components/hero/WorkflowStepper.tsx'
 import { StatusPill } from '../../components/hero/StatusPill.tsx'
 import { useAllergyNameCheck } from '../../components/rx/BeforeYouPrescribe.tsx'
 import { ClinicalNote } from '../../components/rx/ClinicalNote.tsx'
@@ -68,6 +69,7 @@ export function PrescriptionPage() {
 function Header({ e, state, onBack }: { e: Encounter; state: RxPageState; onBack?: (ev: MouseEvent<HTMLAnchorElement>) => void }) {
   const pill = rxStatusPill(state)
   return (
+    <>
     <header className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2" data-testid="prescription-header">
       <Link to={consultationUrl(e.id)} onClick={onBack} className="-ml-2 inline-flex min-h-control w-full items-center gap-2 rounded-md px-2 text-sm font-medium text-ink-muted hover:bg-surface hover:text-ink sm:w-auto">
         <ArrowLeft aria-hidden="true" className="size-4" />
@@ -75,12 +77,12 @@ function Header({ e, state, onBack }: { e: Encounter; state: RxPageState; onBack
       </Link>
       <span aria-hidden="true" className="hidden h-6 w-px bg-line sm:block" />
       <div className="flex min-w-0 flex-1 items-center gap-3">
-        <PatientAvatar name={e.patient.fullName} />
+        <PatientAvatar name={e.patient.fullName} size="lg" />
         <div className="min-w-0">
           <p className="text-xs font-medium text-ink-muted">
             <span className="font-semibold text-brand">Prescription</span> · AI-assisted draft · review and edit before signing
           </p>
-          <h1 className="text-xl font-semibold tracking-tight [overflow-wrap:anywhere]">
+          <h1 className="text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]">
             <span className="sr-only">Prescription · </span>
             {e.patient.fullName}
           </h1>
@@ -91,6 +93,9 @@ function Header({ e, state, onBack }: { e: Encounter; state: RxPageState; onBack
       </div>
       <StatusPill status={pill.status} label={pill.label} />
     </header>
+    {/* UI/UX redesign: where this consultation is (a picture of the page's state, not a control). */}
+    <WorkflowStepper current={state === 'draft' ? 2 : 3} allDone={state === 'completed'} className="mb-5" />
+    </>
   )
 }
 
@@ -222,7 +227,7 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
         <Button variant="secondary" disabled={d.locked || d.inserting} loading={preparing && !printAfter} onClick={() => void openReview(false)} data-testid="sign-only">
           Sign
         </Button>
-        <Button icon={<PenLine aria-hidden="true" className="size-4" />} disabled={d.locked || d.inserting} loading={preparing && printAfter} onClick={() => void openReview(true)} data-testid="sign-and-print">
+        <Button variant="cta" icon={<PenLine aria-hidden="true" className="size-4" />} disabled={d.locked || d.inserting} loading={preparing && printAfter} onClick={() => void openReview(true)} data-testid="sign-and-print">
           Sign & print
         </Button>
         <Button variant="secondary" icon={<CircleCheck aria-hidden="true" className="size-4" />} disabled title="Sign the prescription first" data-testid="complete-locked">

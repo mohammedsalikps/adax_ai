@@ -1,6 +1,6 @@
 import { type Observation, type PatientDetail, type PatientHistory, SEX_LABELS } from '@adaxai/contracts'
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ClipboardList, History, Droplet, FileText, FlaskConical, HeartPulse, IdCard, Images, Pill, Printer, Scissors, Stethoscope, Thermometer, TriangleAlert, Wind } from 'lucide-react'
+import { Activity, ClipboardList, History, Droplet, FileText, FlaskConical, HeartPulse, IdCard, Images, Phone, Pill, Printer, Scissors, Stethoscope, Thermometer, TriangleAlert, Wind } from 'lucide-react'
 import { type ComponentType, useState } from 'react'
 import { Link } from 'react-router'
 import { useMe } from '../../lib/auth.tsx'
@@ -287,38 +287,36 @@ function QuickCards({ patientId, h, onTab }: { patientId: string; h: PatientHist
   const dia = latest('diastolic_bp')
   const at = [sys, latest('heart_rate'), latest('spo2'), latest('temperature')].filter(Boolean).map((o) => o!.measuredAt).sort().at(-1)
   const vit: { key: string; label: string; icon: typeof Activity; tint: string; value: string | null; unit: string }[] = [
-    { key: 'bp', label: 'BP', icon: Activity, tint: 'text-brand bg-brand-soft', value: sys && dia ? `${Math.round(sys.value)}/${Math.round(dia.value)}` : null, unit: 'mmHg' },
-    { key: 'hr', label: 'HR', icon: HeartPulse, tint: 'text-rose-500 bg-rose-50', value: latest('heart_rate') ? String(Math.round(latest('heart_rate')!.value)) : null, unit: 'bpm' },
-    { key: 'spo2', label: 'SpO₂', icon: Droplet, tint: 'text-sky-600 bg-sky-50', value: latest('spo2') ? String(Math.round(latest('spo2')!.value)) : null, unit: '%' },
-    { key: 'temp', label: 'Temp', icon: Thermometer, tint: 'text-orange-500 bg-orange-50', value: latest('temperature') ? latest('temperature')!.value.toFixed(1) : null, unit: '°C' },
+    { key: 'bp', label: 'Blood pressure', icon: Activity, tint: 'text-rose-500 bg-rose-50', value: sys && dia ? `${Math.round(sys.value)}/${Math.round(dia.value)}` : null, unit: 'mmHg' },
+    { key: 'hr', label: 'Heart rate', icon: HeartPulse, tint: 'text-emerald-600 bg-emerald-50', value: latest('heart_rate') ? String(Math.round(latest('heart_rate')!.value)) : null, unit: 'bpm' },
+    { key: 'spo2', label: 'Oxygen saturation (SpO₂)', icon: Droplet, tint: 'text-sky-600 bg-sky-50', value: latest('spo2') ? String(Math.round(latest('spo2')!.value)) : null, unit: '%' },
+    { key: 'temp', label: 'Temperature', icon: Thermometer, tint: 'text-violet-600 bg-violet-50', value: latest('temperature') ? latest('temperature')!.value.toFixed(1) : null, unit: '°C' },
   ]
   const meds = (h?.medications ?? []).filter((m) => m.status === 'current').slice(0, 3)
   const labs = (h?.investigations ?? []).slice(0, 3)
-  const card = 'min-w-0 rounded-2xl border border-line/80 bg-surface p-4 shadow-card'
+  const card = 'min-w-0 rounded-2xl border border-line/70 bg-surface p-4 shadow-card xl:p-5'
   return (
-    <div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)]" data-testid="record-quick-cards">
-      <section className={card} aria-label="Last recorded vitals">
-        <p className="text-sm font-semibold">Last recorded vitals</p>
-        <p className="text-xs text-ink-muted">{at ? fmtDateTime(at) : 'None recorded by staff yet'}</p>
-        <ul className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2" data-testid="record-quick-cards">
+      {/* UI/UX redesign: the last vitals as the reference's row of tiles (one per sign), dated under them. */}
+      <section className="min-w-0 lg:col-span-2" aria-label="Last recorded vitals">
+        <ul className="grid grid-cols-2 gap-4 xl:grid-cols-4">
           {vit.map((v) => {
             const I = v.icon
             return (
-              <li key={v.key} className="flex items-center gap-2.5">
-                <span className={`inline-flex size-9 shrink-0 items-center justify-center rounded-xl ${v.tint}`}>
-                  <I aria-hidden="true" className="size-4" />
+              <li key={v.key} className="flex items-center gap-3.5 rounded-2xl border border-line/70 bg-surface px-4 py-3.5 shadow-card">
+                <span className={`inline-flex size-12 shrink-0 items-center justify-center rounded-full ${v.tint}`}>
+                  <I aria-hidden="true" className="size-5" />
                 </span>
                 <span className="min-w-0 leading-tight">
-                  <span className="block text-[0.6875rem] text-ink-muted">{v.label}</span>
-                  <span className="block font-semibold tabular-nums">
-                    {v.value ?? '—'}
-                  </span>
-                  {v.value && <span className="block text-[0.6875rem] text-ink-muted">{v.unit}</span>}
+                  <span className="block text-xl font-semibold tracking-tight tabular-nums">{v.value ?? '—'}</span>
+                  {v.value && <span className="block text-xs text-ink-muted">{v.unit}</span>}
+                  <span className="mt-0.5 block text-sm text-ink-muted">{v.label}</span>
                 </span>
               </li>
             )
           })}
         </ul>
+        <p className="mt-2 text-xs text-ink-muted">Last recorded vitals · {at ? fmtDateTime(at) : 'None recorded by staff yet'}</p>
       </section>
       <section className={card} aria-label="Current medications">
         <p className="text-sm font-semibold">Current medications</p>
@@ -499,11 +497,11 @@ function Header({ p, h, embedded }: { p: PatientDetail; h: PatientHistory | unde
   const conditions = [...new Set((h?.conditions ?? []).filter((c) => c.status === 'active' || c.status === 'controlled').map((c) => conditionBadge(c.name)))].slice(0, 3)
   const Title = embedded ? 'h2' : 'h1'
   return (
-    <header className="mb-4 flex flex-wrap items-start gap-4 rounded-2xl border border-line/80 bg-surface p-5 shadow-card" data-testid="patient-header">
-      <PatientAvatar name={p.fullName} size="lg" />
-      <div className="min-w-0 flex-1 space-y-1.5">
+    <header className="mb-5 flex flex-wrap items-center gap-5 rounded-2xl border border-line/70 bg-surface p-5 shadow-card xl:p-6" data-testid="patient-header">
+      <PatientAvatar name={p.fullName} size={embedded ? 'lg' : 'xl'} />
+      <div className="min-w-0 flex-1 space-y-2">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          <Title className="text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]">{p.fullName}</Title>
+          <Title className="text-[1.75rem] leading-tight font-semibold tracking-tight [overflow-wrap:anywhere]">{p.fullName}</Title>
           <ul aria-label="Allergies" className="flex flex-wrap gap-1.5">
             {active.map((a) => (
               <li key={a.id} className="inline-flex items-center gap-1 rounded-full border border-down/25 bg-down-soft px-2 py-0.5 text-xs font-semibold text-down">
@@ -525,9 +523,18 @@ function Header({ p, h, embedded }: { p: PatientDetail; h: PatientHistory | unde
             </ul>
           )}
         </div>
-        <p className="text-sm text-ink-muted">
-          {ageSex(p)} · MRN <span className="font-mono text-ink">{p.mrn}</span>
-          {p.phone && <> · {p.phone}</>}
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.9375rem] text-ink-muted">
+          <span>{ageSex(p)}</span>
+          <span aria-hidden="true">·</span>
+          <span>
+            MRN <span className="font-medium text-ink">{p.mrn}</span>
+          </span>
+          {p.phone && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-canvas px-2.5 py-0.5 text-sm text-ink">
+              <Phone aria-hidden="true" className="size-3.5 text-brand" />
+              {p.phone}
+            </span>
+          )}
         </p>
       </div>
       {row && (

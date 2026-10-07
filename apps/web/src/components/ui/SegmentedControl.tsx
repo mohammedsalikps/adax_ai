@@ -12,14 +12,14 @@ export interface Segment<T extends string> {
  */
 export function SegmentedControl<T extends string>({ label, value, onChange, options, className = '' }: { label: string; value: T; onChange: (v: T) => void; options: Segment<T>[]; className?: string }) {
   return (
-    <div role="group" aria-label={label} className={`inline-flex max-w-full flex-wrap rounded-lg border border-line bg-surface p-1 shadow-card ${className}`}>
+    <div role="group" aria-label={label} className={`inline-flex max-w-full flex-wrap gap-2 ${className}`}>
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           aria-pressed={value === o.value}
           onClick={() => onChange(o.value)}
-          className={`min-h-9 rounded-md px-3 text-sm font-medium whitespace-nowrap transition-colors ${value === o.value ? 'bg-brand-soft text-brand-strong' : 'text-ink-muted hover:bg-canvas hover:text-ink'}`}
+          className={`min-h-10 rounded-xl border px-4 text-sm font-medium whitespace-nowrap transition-[background-color,color,border-color,box-shadow] duration-150 ${value === o.value ? 'border-brand bg-brand text-white shadow-[0_6px_14px_-8px_rgb(37_99_235/0.9)]' : 'border-line bg-surface text-ink shadow-card hover:border-brand/40 hover:bg-brand-soft/50'}`}
         >
           {o.label}
         </button>

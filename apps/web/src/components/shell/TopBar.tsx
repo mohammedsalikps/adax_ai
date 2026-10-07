@@ -5,6 +5,7 @@ import { Link, useLocation, useNavigate } from 'react-router'
 import { Menu } from '../ui/Menu.tsx'
 import { plainName } from '../../lib/displayName.ts'
 import { PatientAvatar } from '../ui/PatientAvatar.tsx'
+import { AdaxaiMark } from '../brand/Brand.tsx'
 
 /**
  * Find a patient from anywhere. Offered only to roles that may look patients
@@ -32,7 +33,7 @@ function PatientSearch({ base }: { base: string }) {
       <label htmlFor="global-patient-search" className="sr-only">
         Search patients by name, MRN or phone number
       </label>
-      <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3 size-5 -translate-y-1/2 text-ink-muted" />
+      <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-4 size-5 -translate-y-1/2 text-brand" />
       <input
         id="global-patient-search"
         type="search"
@@ -45,7 +46,7 @@ function PatientSearch({ base }: { base: string }) {
         minLength={2}
         pattern=".*\S.*\S.*"
         title="Type at least 2 characters (not spaces), then press Enter"
-        className="block min-h-control w-full rounded-lg border border-control bg-canvas pr-3 pl-10 text-sm placeholder:text-ink-muted focus:bg-surface"
+        className="block min-h-control w-full rounded-full border border-control bg-surface/90 pr-4 pl-11 text-sm shadow-card placeholder:text-ink-muted focus:border-brand focus:bg-surface"
       />
     </form>
   )
@@ -66,14 +67,14 @@ export function TopBar({ me, base, menuOpen, onMenu, menuRef, navId, onSignOut, 
   // Jury polish: the doctor sees their department; names are shown without the data's "(synthetic)" mark (said once in the sidebar).
   const where = me?.role === 'doctor' ? (me?.departmentName ?? '') : [me?.departmentName, plainName(me?.facilityName)].filter(Boolean).join(' · ')
   return (
-    <header className="sticky top-0 z-20 border-b border-line bg-surface/95 backdrop-blur print:hidden">
+    <header className="sticky top-0 z-20 border-b border-line/60 bg-surface/80 backdrop-blur-md print:hidden">
       <div className="flex min-h-topbar flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 sm:px-6 lg:px-8">
         <button ref={menuRef} type="button" className={`-ml-2 rounded-md p-2 text-ink-muted hover:bg-canvas ${menuSize} ${drawerOnly}`} aria-expanded={menuOpen} aria-controls={navId} onClick={onMenu}>
           <MenuIcon aria-hidden="true" className="size-6" />
           <span className="sr-only">Open menu</span>
         </button>
         <Link to="/" className={`flex items-center gap-2 rounded-md ${drawerOnly}`}>
-          <img src="/favicon.svg" alt="" className="size-7" />
+          <AdaxaiMark size="sm" />
           <span className="font-semibold tracking-tight">ADAXAI</span>
         </Link>
         {canSearch && (
@@ -87,10 +88,10 @@ export function TopBar({ me, base, menuOpen, onMenu, menuRef, navId, onSignOut, 
             <Menu
               label={`Account: ${me.fullName}`}
               align="end"
-              triggerClassName="flex min-h-control min-w-0 items-center gap-3 rounded-lg px-1.5 text-left hover:bg-canvas sm:px-2"
+              triggerClassName="flex min-h-control min-w-0 items-center gap-3 rounded-xl px-1.5 text-left hover:bg-brand-soft/60 sm:px-2"
               trigger={
                 <>
-                  <PatientAvatar name={plainName(me.fullName).replace(/^Dr.?s+/i, '')} size="md" />
+                  <PatientAvatar name={plainName(me.fullName).replace(/^Dr.?s+/i, '')} size="md" className="ring-2 ring-surface" />
                   <span className="hidden min-w-0 leading-tight sm:block">
                     <span className="block max-w-56 truncate text-sm font-semibold" data-testid="signed-in-user">
                       {plainName(me.fullName)}

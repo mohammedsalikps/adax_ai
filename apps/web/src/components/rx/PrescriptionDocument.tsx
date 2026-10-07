@@ -1,4 +1,5 @@
 import { type Encounter, type NoteFields, SEX_LABELS } from '@adaxai/contracts'
+import { AdaxaiMark } from '../brand/Brand.tsx'
 import { Check, Lightbulb, Pencil } from 'lucide-react'
 import { type ReactNode, useId, useState } from 'react'
 import type { Draft } from '../../lib/draftSaver.ts'
@@ -111,9 +112,7 @@ export function PrescriptionDocument({
     <article className="overflow-hidden rounded-2xl border border-line/80 bg-surface shadow-card" data-testid="prescription-document" aria-label="Prescription">
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-line/70 bg-gradient-to-br from-brand-soft/60 to-surface px-6 py-5" data-testid="prescription-header-block">
         <div className="flex min-w-0 items-center gap-3">
-          <span aria-hidden="true" className="inline-flex size-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-brand to-indigo-600 text-lg font-bold text-white">
-            A
-          </span>
+          <AdaxaiMark size="lg" />
           <div className="min-w-0 leading-tight">
             <p className="text-sm font-bold tracking-wide uppercase">{plainName(e.facilityName)}</p>
             <p className="mt-0.5 text-sm font-medium">{plainName(e.doctor.fullName)}</p>

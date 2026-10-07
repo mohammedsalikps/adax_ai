@@ -35,16 +35,17 @@ export function Tabs<T extends string>({ label, prefix, tabs, value, onChange, v
     else return
     e.preventDefault()
   }
-  const wrap = variant === 'underline' ? 'flex flex-wrap gap-x-0.5 border-b border-line' : 'flex flex-wrap gap-2'
+  const wrap = variant === 'underline' ? 'flex flex-wrap gap-x-1 border-b border-line' : 'inline-flex flex-wrap gap-1 rounded-xl border border-line bg-canvas/70 p-1'
   return (
     <div role="tablist" aria-label={label} className={`${wrap} ${className}`}>
       {tabs.map((t, i) => {
         const selected = t.id === value
         const base = 'inline-flex min-h-control-sm items-center gap-1.5 whitespace-nowrap text-sm font-medium transition-colors'
+        // UI/UX redesign: underline tabs read like the reference's record tabs; pill tabs are a quiet track with the choice filled in blue.
         const look =
           variant === 'underline'
-            ? `-mb-px border-b-2 px-2.5 ${selected ? 'border-brand text-brand-strong' : 'border-transparent text-ink-muted hover:text-ink'}`
-            : `rounded-full border px-4 ${selected ? 'border-brand/30 bg-brand-soft text-brand-strong' : 'border-line bg-surface text-ink-muted hover:bg-canvas hover:text-ink'}`
+            ? `-mb-px border-b-2 px-3 text-[0.9375rem] ${selected ? 'border-brand font-semibold text-brand-strong' : 'border-transparent text-ink-muted hover:border-line-strong hover:text-ink'}`
+            : `rounded-lg border px-3.5 ${selected ? 'border-brand bg-brand text-white shadow-[0_4px_12px_-6px_rgb(37_99_235/0.8)]' : 'border-transparent text-ink-muted hover:bg-surface hover:text-ink'}`
         return (
           <button
             key={t.id}
@@ -63,7 +64,7 @@ export function Tabs<T extends string>({ label, prefix, tabs, value, onChange, v
             className={`${base} ${look}`}
           >
             {t.label}
-            {t.count !== undefined && <span className={`rounded-full px-1.5 text-xs tabular-nums ${selected ? 'bg-brand/10' : 'bg-canvas'}`}>{t.count}</span>}
+            {t.count !== undefined && <span className={`rounded-full px-1.5 text-xs tabular-nums ${selected ? (variant === 'pill' ? 'bg-white/20' : 'bg-brand/10') : 'bg-canvas'}`}>{t.count}</span>}
           </button>
         )
       })}

@@ -27,6 +27,7 @@ import { type ManaChip, type ManaContextKind, manaSuggestions, NO_LOCAL_VOICE, s
 import { useLocalSpeech } from '../../lib/manaSpeech.ts'
 import { Button } from '../ui/Button.tsx'
 import { Alert, Badge, type BadgeTone } from '../ui/Feedback.tsx'
+import { ManaAvatar } from '../brand/Brand.tsx'
 import { ManaProposalCard } from './ManaProposalCard.tsx'
 import { ManaVoiceButton } from './ManaVoiceButton.tsx'
 
@@ -484,13 +485,8 @@ type Panel = ReturnType<typeof useManaPanel>
 
 /** Mana's mark: a soft gradient disc with the spark (the assistant, not a person). */
 export function ManaMark({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {
-  const box = size === 'lg' ? 'size-11' : size === 'sm' ? 'size-7' : 'size-8'
-  const icon = size === 'lg' ? 'size-5' : 'size-4'
-  return (
-    <span aria-hidden="true" className={`inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand to-ai text-white shadow-[0_4px_14px_-4px_rgb(79_70_229/0.55)] ${box}`}>
-      <Sparkles className={icon} />
-    </span>
-  )
+  // UI/UX redesign: Mana is shown with the owner's Mana image (components/brand), decorative (Mana's name is always written beside it).
+  return <ManaAvatar size={size === 'lg' ? 'lg' : size === 'sm' ? 'xs' : 'sm'} />
 }
 
 /** The conversation's messages (the doctor's questions, Mana's answers). */
