@@ -7,6 +7,9 @@ import { CardFrameContext } from '../ui/Layout.tsx'
  * in sentence case in the source ("Live transcription"): the capitals are CSS only, so a screen reader reads words, not letters.
  */
 export const SECTION_LABEL = 'text-[0.6875rem] leading-4 font-semibold uppercase tracking-[0.08em] text-ink-muted'
+/** Card titles (jury design): normal case, semibold, in ink, as in the reference screens. */
+export const PANEL_TITLE = 'text-[0.9375rem] leading-5 font-semibold text-ink'
+export const GROUP_TITLE = 'text-sm leading-5 font-semibold text-ink'
 
 /** The heading level of the panel around a PanelGroup (its own heading is one below). */
 const PanelLevelContext = createContext<2 | 3 | null>(null)
@@ -37,10 +40,10 @@ export function Panel({ label, icon: Icon, actions, children, id, testId, classN
   const headingId = useId()
   const Heading = as
   return (
-    <section id={id} aria-labelledby={headingId} data-testid={testId} className={`min-w-0 rounded-xl border border-line bg-surface ${className}`}>
+    <section id={id} aria-labelledby={headingId} data-testid={testId} className={`min-w-0 rounded-xl border border-line/80 bg-surface shadow-card ${className}`}>
       <header className="flex min-h-11 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 pt-3 xl:px-5">
-        <Heading id={headingId} className={`flex min-w-0 items-center gap-2 ${SECTION_LABEL}`}>
-          {Icon && <Icon aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />}
+        <Heading id={headingId} className={`flex min-w-0 items-center gap-2 ${PANEL_TITLE}`}>
+          {Icon && <Icon aria-hidden="true" className="size-[1.125rem] shrink-0 text-brand" />}
           <span className="min-w-0">{label}</span>
         </Heading>
         {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -77,8 +80,8 @@ export function PanelGroup({ label, icon: Icon, actions, children, className = '
       {(label || actions) && (
         <div className="mb-2 flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-1">
           {label && (
-            <Heading id={headingId} className={`flex min-w-0 items-center gap-2 ${SECTION_LABEL}`}>
-              {Icon && <Icon aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />}
+            <Heading id={headingId} className={`flex min-w-0 items-center gap-2 ${GROUP_TITLE}`}>
+              {Icon && <Icon aria-hidden="true" className="size-4 shrink-0 text-brand" />}
               <span className="min-w-0">{label}</span>
             </Heading>
           )}

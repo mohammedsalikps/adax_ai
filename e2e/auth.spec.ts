@@ -64,7 +64,8 @@ test('admin creates a doctor, who must replace the temporary password before usi
   await page.getByLabel('New password').fill('A-new-e2e-passphrase-1')
   await page.getByRole('button', { name: 'Change password' }).click()
   await expect(page).toHaveURL(/\/doctor$/)
-  await expect(page.getByTestId('signed-in-user')).toHaveText('Dr. E2E Test (synthetic)')
+  // Jury polish: the top bar shows the plain name; the data's "(synthetic)" mark is said once, subtly, in the sidebar.
+  await expect(page.getByTestId('signed-in-user')).toHaveText('Dr. E2E Test')
 })
 
 test('a doctor cannot reach admin screens, and the API refuses admin data', async ({ page }) => {

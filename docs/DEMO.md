@@ -69,6 +69,78 @@ file), `npm run dev` starts a local language model on `127.0.0.1:8081`; a draft 
 on a laptop CPU. Without the download the *Consultation intelligence* card says **"Local AI
 unavailable."** and makes nothing up.
 
+## The jury demonstration (ADAXAI Clinic · Dr. Meera Iyer · Ramesh Kumar)
+
+A coherent synthetic clinic for one doctor, made for a fresh **development** database (it refuses to run
+twice on the same day and never runs in production):
+
+```bash
+npm run db:provision
+```
+
+```bash
+npm run db:migrate
+```
+
+```bash
+npm run db:seed
+```
+
+```bash
+npm run demo:jury
+```
+
+Then `npm run dev` and open `http://127.0.0.1:5173` → **Doctor App** → `dr.meera`.
+
+What `demo:jury` makes (all fictional, marked synthetic; display names changed in this database only):
+
+- **ADAXAI Clinic** (General Medicine), **Dr. Meera Iyer** with a registration number; 20 patients with
+  Indian names and 103 earlier signed and completed consultations over four weeks (so Week and Month have a trend).
+- **Ramesh Kumar**, 45 M, MRN **ADX-001245**: hypertension (2019) and type 2 diabetes (2020), a penicillin
+  allergy (moderate, rash), Metformin · Amlodipine · Atorvastatin, an appendectomy (2015), four earlier
+  consultations over six months with staff vitals at each (the profile's averages come from them),
+  eight results (HbA1c, fasting sugar, CBC, lipids, creatinine) and two small synthetic PDF reports (a CBC and a
+  chest X-ray). Today he is **ready for the doctor** with the nurse's vitals (T 37.8, HR 92, BP 128/84, SpO₂ 98,
+  RR 18, RBS 146) and a triage note.
+- **Today's queue, counted by the server:** 5 completed · 1 in consultation (Abdul Rahman, with a simulated lab
+  order) · 6 waiting (Ramesh first) · 8 booked → **20**. (Every tile on Home is the server's own count; numbers are
+  never typed into the page.) The times are relative to when the seed ran.
+- A simulator band attached to Ramesh for today and a simulator stethoscope (**SIMULATORS**, labelled so).
+- The patient-app activation for Ramesh is written to `.data/sim/jury-portal.txt` (git-ignored; never printed).
+
+**The walk-through (about 5 minutes on this computer):**
+
+1. **Home** — Today | Week | Month tiles, the current patient, the week's consultations, today's patients.
+2. **Patient profile** (Ramesh's name anywhere) — allergy and condition badges; *Average / Recent Vitals* (averages
+   of staff measurements; device and simulated readings are left out); the record summary (fixed rules, not AI);
+   recent consultations; active medications; tabs Consultations · Prescriptions · Lab Reports · Imaging ·
+   Documents · Surgeries · Allergies & Medications.
+3. **Start consultation** (My consultations) — recording starts by itself when the recording consent is on record.
+   For the demo, **Stop**, then ⋯ → **Play demo consultation**: computer voices (SYNTHETIC AUDIO) read an adult fever
+   consultation through the real local speech model (faster-whisper). The speech model identifies nobody: lines
+   nobody assigned show a dashed **Speaker assignment — demo fallback** (Doctor / Patient alternating by recorded
+   part; display only, nothing stored); the doctor can correct any line.
+4. **Important points** appear (fixed rules); **Confirm** one, then **Add to …** puts it in the note.
+5. **Clinical inputs** (staff vitals with time and source), **Stethoscope** (recorded, never analysed), **Thermal** →
+   *Open thermal imaging* → Simulator → Connect → Capture: the tile then says **SIMULATED THERMAL CAPTURE**.
+6. **Mana** (docked) — *Summarize this patient's previous history*, *Summarize today's consultation*, *Show recent lab
+   reports*, *Any pending orders?*: each answered at once by fixed rules, with its source ("From the patient record",
+   "From this consultation", "From service orders"). Mana never signs or completes.
+7. **Doctor's note** — Chief complaint · History of present illness · Clinical findings · Assessment · Plan (autosaved;
+   Handwriting is the second tab).
+8. **Analyze & Generate Prescription** — the inputs light up as the server reports them, then *ADAXAI Clinical Context*
+   → *Mana AI* (the local Qwen model's real token count and time; about 40–50 s here) → *Clinical summary* →
+   *Prescription draft*; the prescription page opens when the draft is ready (at once if the model is down).
+9. **Review and sign prescription** — the document (patient, allergies, diagnosis, medicines, advice, follow-up) and
+   the **PDF preview**: a real PDF made by the server from what is saved (`GET /api/encounters/:id/prescription.pdf`,
+   marked *DRAFT — NOT SIGNED* until signed). **Open PDF**, **Print**, **Sign** or **Sign & print** (the review asks for
+   the attestation). Signing does **not** complete the consultation.
+10. **Complete consultation** (confirmed) → My consultations, marked Completed; Home counts one more seen; the profile
+    shows today's consultation; the patient app shows the course ("Day 1 of 5").
+
+To run it again, recreate the development database (back it up first with `npm run backup`), then repeat the four
+commands above.
+
 ## 0. The doctor's day and the patient's history (dr.meera)
 
 1. **Home** greets the doctor and shows how today stands from the queue and the schedule, then

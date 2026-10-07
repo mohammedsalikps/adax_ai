@@ -2,6 +2,7 @@ import { type Encounter, type NoteFields, SEX_LABELS } from '@adaxai/contracts'
 import { FileText } from 'lucide-react'
 import { useId } from 'react'
 import type { Draft } from '../../lib/draftSaver.ts'
+import { plainName } from '../../lib/displayName.ts'
 import { ageFrom, fmtDate } from '../../lib/format.ts'
 import { AllergyItems } from '../clinical/AllergyItems.tsx'
 import { Panel, PanelGroup, SECTION_LABEL } from '../hero/Panel.tsx'
@@ -47,8 +48,8 @@ export function PrescriptionDocument({
       <div className="space-y-3 text-sm" data-testid="prescription-header-block">
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
           <div className="min-w-0">
-            <p className="text-base font-semibold">{e.facilityName}</p>
-            <p>{e.doctor.fullName}</p>
+            <p className="text-base font-semibold">{plainName(e.facilityName)}</p>
+            <p>{plainName(e.doctor.fullName)}</p>
             <p className="text-ink-muted">{e.doctor.registrationNumber ? `Registration no. ${e.doctor.registrationNumber}` : 'Registration no. not recorded'}</p>
           </div>
           <p className="tabular-nums">

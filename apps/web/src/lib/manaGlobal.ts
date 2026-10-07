@@ -57,13 +57,15 @@ export interface ManaChip {
  * Summarize history. The patient's questions only when the conversation is about one patient; "Summarize history" asks the brief suggestion (the
  * model writes it, so it is offered only while the model is there).
  */
-export function manaChips(o: { hasPatient: boolean; modelAvailable: boolean }): ManaChip[] {
+export function manaChips(o: { hasPatient: boolean; modelAvailable: boolean; inConsultation?: boolean }): ManaChip[] {
   const q = MANA_RULES_QUESTIONS
   const rules = (key: keyof typeof q): ManaChip => ({ key, label: q[key].chip, text: q[key].text, rules: true })
   const chips: ManaChip[] = [rules('next_patient'), rules('seen_today'), rules('waiting_longest')]
   if (o.hasPatient) chips.push(rules('allergies'), rules('nurse_triage'))
   chips.push(rules('orders_status'))
-  if (o.hasPatient && o.modelAvailable) chips.push({ key: 'brief_current', label: 'Summarize history', text: MANA_QUESTIONS.brief_current.label, suggestion: 'brief_current', rules: false })
+  // Jury polish: the history summary, the recent results and today's consultation are answered by fixed rules too (instant; no model needed).
+  if (o.hasPatient) chips.push({ key: 'history_summary', label: 'Summarize history', text: 'Summarize this patient’s previous history.', rules: true }, { key: 'recent_labs', label: 'Recent lab reports', text: 'Show recent lab reports', rules: true })
+  if (o.hasPatient && o.inConsultation) chips.push({ key: 'today_consultation', label: 'Today’s consultation', text: 'Summarize today’s consultation', rules: true })
   return chips
 }
 

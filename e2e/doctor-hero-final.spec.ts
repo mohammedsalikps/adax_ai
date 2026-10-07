@@ -99,6 +99,8 @@ test('the final Doctor HERO journey: Home → My consultations → Start (record
 
   // ---- INPUT 4, DIGITAL NOTES: the pen writes and the strokes are saved by themselves. ----
   const notes = page.getByTestId('doctor-notes')
+  // Jury polish: the typed note (Keyboard) is the default tab; the pen is the "Handwriting" tab beside it.
+  await notes.getByRole('tab', { name: /Handwriting/ }).click()
   const surface = notes.getByTestId('handwriting-surface')
   await expect(surface).toBeVisible()
   // The pad is taller than the screen: the pointer is brought onto the writing surface itself (scrolled into view, not under the sticky header
@@ -129,7 +131,7 @@ test('the final Doctor HERO journey: Home → My consultations → Start (record
 
   // ---- GENERATE PRESCRIPTION: one primary action; the checklist reflects real steps; the prescription page opens when the draft is ready. ----
   const generate = page.getByTestId('analyze-mana')
-  await expect(generate).toHaveText(/Generate prescription/)
+  await expect(generate).toHaveText(/Analyze & Generate Prescription/)
   await generate.click()
   const preparing = page.getByTestId('preparing-consultation')
   await expect(preparing).toBeVisible()

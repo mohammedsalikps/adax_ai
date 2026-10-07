@@ -32,7 +32,7 @@ const SUMMARY_CONSULTATIONS = 3
 
 const linkClass = 'inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-sm font-medium text-brand-strong hover:bg-canvas'
 
-function ConsultationSummary({ c }: { c: PriorConsultation }) {
+export function ConsultationSummary({ c }: { c: PriorConsultation }) {
   return (
     <li className="py-3 first:pt-0" data-testid="summary-consultation">
       <div className="flex flex-wrap items-start justify-between gap-x-3">
@@ -110,7 +110,7 @@ export function PatientSummaryTab({ patientId, onShowDetails }: { patientId: str
 }
 
 /** The consultation timeline: every visit, newest first, with its signed consultation's diagnoses and medicines and a link to open it. */
-function ConsultationTimeline({ patientId }: { patientId: string }) {
+export function ConsultationTimeline({ patientId }: { patientId: string }) {
   const q = useTimeline(patientId)
   return (
     <Panel label="Consultation timeline" icon={CalendarClock} testId="patient-timeline">

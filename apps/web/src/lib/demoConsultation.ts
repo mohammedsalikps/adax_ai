@@ -1,5 +1,5 @@
 /*
- * The demo consultation (Doctor HERO §3): a written consultation about a fictional child, read by two of Windows' built-in computer voices
+ * The demo consultation (Doctor HERO §3): a written consultation with a fictional adult patient (fever and cough), read by two of Windows' built-in computer voices
  * (scripts/demo-audio.ps1, files in apps/web/public/demo/consultation), played through this computer's speakers and sent, part by part as each
  * ends, to the REAL local speech model as the parts of a live recording whose audio is recorded as synthetic demo audio. Offered only where
  * simulators are allowed (the gate of the device and thermal simulators) and the patient's recording consent is present. What appears is what the

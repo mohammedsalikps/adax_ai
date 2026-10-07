@@ -97,7 +97,8 @@ test('the list names the keys as this computer does and says when a key is not t
     rows.map((r) => [r.keys.map((k) => k.join('+')).join(' or '), r.does]),
     [
       ['Ctrl+S', 'Save now'],
-      ['Ctrl+Enter', 'Generate prescription'],
+      // Jury polish: the button reads as in the reference screens.
+      ['Ctrl+Enter', 'Analyze & Generate Prescription'],
       ['Alt+1', 'Go to Live transcription'],
       ['Alt+2', 'Go to Clinical inputs'],
       ['Alt+3', 'Go to Stethoscope'],

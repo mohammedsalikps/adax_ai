@@ -1,13 +1,13 @@
 # SYNTHETIC demo consultation audio for the Doctor App's "Play demo consultation" (docs/adr/0022). Computer voices, not a real consultation:
-# Windows' built-in text-to-speech (System.Speech) reads a short scripted consultation about a fictional child (Anaya Demo-Synthetic, the
-# patient of `npm run demo:hero`), one WAV file per utterance, with one installed voice for the doctor and another for the parent. No person
+# Windows' built-in text-to-speech (System.Speech) reads a short scripted consultation about a fictional adult patient (Ramesh Kumar, the
+# primary patient of `npm run demo:jury`), one WAV file per utterance, with one installed voice for the doctor and another for the patient. No person
 # is recorded and nothing is downloaded.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/demo-audio.ps1                     (writes apps/web/public/demo/consultation/)
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/demo-audio.ps1 -OutDir <folder>
 #   node scripts/demo-audio.mjs                                                                     (runs this, then checks every file)
 #
-# Output: 01-doctor.wav ... 08-parent.wav (16 kHz, mono, 16-bit PCM, a plain 44-byte header, a short silence before and after the speech) and
+# Output: 01-doctor.wav ... 08-patient.wav (16 kHz, mono, 16-bit PCM, a plain 44-byte header, a short silence before and after the speech) and
 # manifest.json (order, speaker role, voice, the script text, duration, size, SHA-256). Nothing in the output depends on the time it was made, so
 # the same machine and voices give the same bytes; another Windows build may voice the text differently, which is why the files are committed and
 # the manifest records their hashes. The script text in the manifest is documentation and test data only: what the application shows is what the
@@ -19,16 +19,16 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3
 
 # One voice per role. Both are installed with Windows (en-US); a missing one is an error, never a silent substitute.
-$Voices = [ordered]@{ doctor = 'Microsoft Zira Desktop'; parent = 'Microsoft David Desktop' }
+$Voices = [ordered]@{ doctor = 'Microsoft Zira Desktop'; patient = 'Microsoft David Desktop' }
 $Lines = @(
-  @{ speaker = 'doctor'; text = 'Good morning. What brings you in today?' },
-  @{ speaker = 'parent'; text = 'My daughter has had a fever for three days and a mild cough.' },
-  @{ speaker = 'doctor'; text = 'Has she had any breathing difficulty or wheezing?' },
-  @{ speaker = 'parent'; text = 'A little wheezing at night. She had a similar chest infection two months ago.' },
-  @{ speaker = 'doctor'; text = 'Is she taking any medicines at the moment?' },
-  @{ speaker = 'parent'; text = 'She uses her salbutamol inhaler when she wheezes.' },
-  @{ speaker = 'doctor'; text = 'Does she have any allergies to medicines?' },
-  @{ speaker = 'parent'; text = 'Yes, she gets a rash with amoxicillin.' }
+  @{ speaker = 'doctor'; text = 'Good morning, Mr. Kumar. What brings you in today?' },
+  @{ speaker = 'patient'; text = 'Doctor, I have had a fever for three days and a mild cough.' },
+  @{ speaker = 'doctor'; text = 'Any breathlessness or chest pain?' },
+  @{ speaker = 'patient'; text = 'No chest pain. Slight breathlessness when I climb stairs.' },
+  @{ speaker = 'doctor'; text = 'Are you taking your regular medicines?' },
+  @{ speaker = 'patient'; text = 'Yes, I take my diabetes and blood pressure medicines regularly.' },
+  @{ speaker = 'doctor'; text = 'Do you have any allergies to medicines?' },
+  @{ speaker = 'patient'; text = 'Yes, I am allergic to penicillin. I get a rash.' }
 )
 $SampleRate = 16000
 $BytesPerSample = 2
@@ -131,10 +131,10 @@ $json = @(
   '  "version": 1,'
   '  "synthetic": true,'
   '  "label": "SYNTHETIC AUDIO ' + [char]0x2014 + ' computer voices, not a real consultation",'
-  '  "about": "Windows text-to-speech reading a scripted consultation about a fictional child (the synthetic patient of npm run demo:hero). No person was recorded. The text below is the script, for documentation and tests; the application shows only what the speech model transcribes from the audio.",'
+  '  "about": "Windows text-to-speech reading a scripted consultation about a fictional adult patient (Ramesh Kumar, the primary patient of npm run demo:jury). No person was recorded. The text below is the script, for documentation and tests; the application shows only what the speech model transcribes from the audio.",'
   '  "generator": "scripts/demo-audio.ps1 (Windows System.Speech text-to-speech)",'
   '  "format": { "container": "wav", "codec": "pcm_s16le", "sampleRateHz": ' + $SampleRate + ', "channels": 1, "bitsPerSample": 16, "leadSilenceMs": ' + $LeadMs + ', "tailSilenceMs": ' + $TailMs + ' },'
-  '  "voices": { "doctor": ' + (ConvertTo-JsonString $Voices.doctor) + ', "parent": ' + (ConvertTo-JsonString $Voices.parent) + ' },'
+  '  "voices": { "doctor": ' + (ConvertTo-JsonString $Voices.doctor) + ', "patient": ' + (ConvertTo-JsonString $Voices.patient) + ' },'
   '  "totalDurationMs": ' + $total + ','
   '  "utterances": ['
   ($u -join ",`n")

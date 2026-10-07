@@ -305,6 +305,8 @@ export const ManaAnswerBody = z.object({
   removed: z.number().int(),
   /** HERO final: what wrote the answer (absent: the model, as before). */
   engine: ManaAnswerEngine.optional(),
+  /** Jury polish: where a fixed-rule answer comes from, in plain words ("From the patient record", "From today's queue", "From service orders"). */
+  basis: z.string().max(80).optional(),
   /** HERO final: an action the doctor may approve or decline (absent or null: none). */
   action: ManaActionProposal.nullable().optional(),
 })

@@ -23,13 +23,14 @@ import { audit } from '../audit/audit.ts'
 import { currentUser } from '../auth/plugin.ts'
 import type { Db } from '../db/client.ts'
 import { setLifecycleContext } from '../db/lifecycle.ts'
-import { appointments, departments, diagnoses, encounterAmendments, encounters, encounterStatusEvents, patients, prescriptionItems, users, visits, visitStatusEvents } from '../db/schema.ts'
+import { appointments, departments, diagnoses, encounterAmendments, encounters, encounterStatusEvents, facilities, patients, prescriptionItems, users, visits, visitStatusEvents } from '../db/schema.ts'
 import { badRequest, conflict, forbidden, HttpError } from '../http/errors.ts'
 import { parse } from '../http/validate.ts'
 import { facilityToday, fullName, getPatientOr404 } from '../patients/service.ts'
 import { patientPortalAccess } from '../portal/access.ts'
 import { getVisitOr404 } from '../visits/service.ts'
 import { activeEncounterForVisit, assertOwnDraft, assertWithDoctor, getEncounterOr404, loadEncounter, PAUSED_MESSAGE, sha256 } from './service.ts'
+import { prescriptionPdf } from './pdf.ts'
 import { canonicalJsonStrict, verifyEncounterById } from './verify.ts'
 
 const IdParams = z.object({ id: z.uuid() })
@@ -153,6 +154,26 @@ export function registerEncounterRoutes(app: FastifyInstance, { db }: { db: Db }
     const e = await getEncounterOr404(db, me, id)
     await audit(db, req, { action: 'encounter.read', entityType: 'encounter', entityId: id, patientId: e.patientId })
     return loadEncounter(db, me, e)
+  })
+
+  /**
+   * The prescription as a PDF (jury design, screen 4), made from the record as stored: a draft is marked "DRAFT — not signed" on every page, a
+   * signed one says who signed it and when. Audited as a read of the consultation. `inline`, so the browser shows it (and prints it from there).
+   */
+  app.get('/api/encounters/:id/prescription.pdf', { config: { permission: 'encounters:read' } }, async (req, reply) => {
+    const me = currentUser(req)
+    const { id } = parse(IdParams, req.params)
+    const e = await getEncounterOr404(db, me, id)
+    const encounter = await loadEncounter(db, me, e)
+    const [fac] = await db.select({ timezone: facilities.timezone }).from(facilities).where(eq(facilities.id, me.facilityId))
+    const pdf = prescriptionPdf(encounter, { timeZone: fac?.timezone ?? 'UTC' })
+    await audit(db, req, { action: 'encounter.read', entityType: 'encounter', entityId: id, patientId: e.patientId, details: { via: 'prescription_pdf', signed: !!encounter.signedAt } })
+    return reply
+      .header('content-type', 'application/pdf')
+      .header('content-length', String(pdf.length))
+      .header('content-disposition', `inline; filename="prescription-${encounter.patient.mrn.replace(/[^\w.-]/g, '_')}-${encounter.visit.visitDate}.pdf"`)
+      .header('cache-control', 'private, no-store')
+      .send(pdf)
   })
 
   /** Status history of the consultation and its visit, with who, when, how and why. */

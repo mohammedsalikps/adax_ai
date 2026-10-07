@@ -175,7 +175,7 @@ export async function openMoreTools(page: Page) {
  * argument ("Analyze again") names the same one button; it is accepted only so older calls still compile.
  */
 export const analyzeButton = (page: Page, _formerLabel?: 'Analyze with Mana' | 'Analyze again') =>
-  page.getByTestId('consultation-actions').getByRole('button', { name: 'Generate prescription', exact: true })
+  page.getByTestId('consultation-actions').getByRole('button', { name: 'Analyze & Generate Prescription', exact: true })
 
 /**
  * Generate prescription from the workspace: the click opens "Preparing the consultation" (the checklist of real steps), which is returned. The

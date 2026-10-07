@@ -57,13 +57,23 @@ function SpeakerControl({ segment, canAssign, busy, onPick }: { segment: Transcr
  * Who spoke a line, the calm way (the consultation's live transcription): a coloured chip only when somebody said who it was (the doctor, or a
  * typed "Doctor:" label), otherwise a neutral "Speaker" that the doctor can assign. The speech model identifies nobody, and nothing here does.
  */
-function SpeakerChip({ segment, canAssign, busy, onPick }: { segment: TranscriptSegment; canAssign: boolean; busy: boolean; onPick: (speaker: string) => void }) {
-  const who = segment.speaker
-  const cls = who ? (SPEAKER_CHIP[who] ?? CHIP_DEFAULT) : 'border-line bg-surface text-ink-muted'
+/**
+ * The demo fallback for lines nobody assigned (jury polish, the owner's explicit choice): lines alternate Doctor / Patient by the recorded part they came
+ * from (each part of the demo is one speaker’s turn), or by their order when they have no part. Display only — nothing is stored, no model identified anyone — drawn dashed, and said once under the conversation.
+ */
+export const demoFallbackSpeaker = (order: number): 'Doctor' | 'Patient' => (order % 2 === 0 ? 'Doctor' : 'Patient')
+export const DEMO_FALLBACK_NOTE = 'Speaker assignment — demo fallback: lines nobody assigned alternate Doctor / Patient by recorded part; no model identified the speakers. Choose a speaker to correct a line.'
+
+function SpeakerChip({ segment, canAssign, busy, onPick, fallback }: { segment: TranscriptSegment; canAssign: boolean; busy: boolean; onPick: (speaker: string) => void; fallback?: 'Doctor' | 'Patient' | null }) {
+  const assigned = segment.speaker
+  const who = assigned ?? fallback ?? null
+  const cls = assigned ? (SPEAKER_CHIP[assigned] ?? CHIP_DEFAULT) : fallback ? `${SPEAKER_CHIP[fallback] ?? CHIP_DEFAULT} border-dashed` : 'border-line bg-surface text-ink-muted'
   const at = segment.startMs != null ? `the line at ${fmtOffset(segment.startMs)}` : `line ${segment.id.replace(/^S/, '')}`
   const body = (
     <>
-      <span>{who ?? 'Speaker'}</span>
+      <span title={!assigned && fallback ? 'Speaker assignment — demo fallback (not identified by any model)' : undefined} data-speaker-fallback={!assigned && fallback ? 'true' : undefined}>
+        {who ?? 'Speaker'}
+      </span>
       {canAssign && <ChevronDown aria-hidden="true" className="size-3 shrink-0 opacity-60" />}
     </>
   )
@@ -71,13 +81,13 @@ function SpeakerChip({ segment, canAssign, busy, onPick }: { segment: Transcript
   if (!canAssign) return <span className={chip}>{body}</span>
   return (
     <Menu
-      label={`Speaker of ${at}: ${who ?? 'not assigned'}. Change`}
+      label={`Speaker of ${at}: ${assigned ?? (fallback ? `${fallback} (demo fallback, not assigned)` : 'not assigned')}. Change`}
       align="start"
       trigger={body}
       triggerClassName={`${chip} hover:bg-canvas disabled:opacity-60`}
       items={[
-        ...SPEAKER_LABELS.map((l) => ({ label: l, onSelect: () => onPick(l), disabled: busy || l === who })),
-        ...(who ? [{ label: 'Not assigned', onSelect: () => onPick('Unknown'), disabled: busy }] : []),
+        ...SPEAKER_LABELS.map((l) => ({ label: l, onSelect: () => onPick(l), disabled: busy || l === assigned })),
+        ...(assigned ? [{ label: 'Not assigned', onSelect: () => onPick('Unknown'), disabled: busy }] : []),
       ]}
     />
   )
@@ -119,6 +129,9 @@ export function ConversationView({
   ]
   rows.sort((a, b) => a.at - b.at)
   const count = rows.length
+  // Each line's order in the recording, for the demo speaker fallback (display only).
+  const lineIndex = new Map(transcript.segments.map((seg, i) => [seg.id, i] as const))
+  const usesFallback = transcript.segments.some((seg) => !seg.speaker)
   const toEnd = () => {
     const el = box.current
     if (el) el.scrollTop = el.scrollHeight
@@ -170,7 +183,7 @@ export function ConversationView({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <SpeakerChip segment={r.s} canAssign={canAssign} busy={assigning} onPick={(speaker) => onAssign(r.s.id, speaker)} />
+                  <SpeakerChip segment={r.s} canAssign={canAssign} busy={assigning} onPick={(speaker) => onAssign(r.s.id, speaker)} fallback={r.s.speaker ? null : demoFallbackSpeaker(r.s.chunkIndex ?? lineIndex.get(r.s.id) ?? 0)} />
                   {r.s.language && r.s.language !== transcript.language && <span className="text-xs text-ink-muted">{languageName(r.s.language)}</span>}
                   {r.s.confidence != null && r.s.confidence < LOW_SCORE && (
                     <span className="inline-flex items-center gap-1 text-xs font-medium text-pending" title="The speech model was unsure of its own words here. Check this line against what was said.">
@@ -206,6 +219,11 @@ export function ConversationView({
           ),
         )}
       </ol>
+      {usesFallback && (
+        <p className="mt-1 text-[0.6875rem] text-ink-muted" data-testid="speaker-demo-fallback">
+          {DEMO_FALLBACK_NOTE}
+        </p>
+      )}
       {behind && (
         <div className="pointer-events-none absolute inset-x-0 bottom-1 flex justify-center">
           <Button size="sm" variant="secondary" className="pointer-events-auto shadow-pop" icon={<ArrowDown aria-hidden="true" className="size-4" />} onClick={toEnd}>

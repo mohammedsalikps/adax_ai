@@ -103,7 +103,7 @@ describe('the questions fixed rules answer', () => {
       'Add a note that the patient is better',
       'What was the reason for this visit?',
       'Is the patient ready?',
-      'Summarize the patient’s previous history.',
+      // Jury polish: "Summarize the patient's previous history." is now answered by fixed rules (asserted in its own test below).
       // Fix pass: other things that have a report, a patient's name where a service would be, two services at once, a request that is not an order.
       'Is the thermal report ready?',
       'Is the AI draft report ready?',
@@ -125,6 +125,20 @@ describe('the questions fixed rules answer', () => {
       expect(matchRulesIntent(q), q).toBeNull()
       expect(matchRulesIntent(q, ORDER_WORDS), q).toBeNull()
     }
+  })
+
+  it('answers the jury questions about the conversation’s patient by fixed rules, and leaves a named patient to the planner (except the history summary)', () => {
+    const current = { by: 'current' }
+    expect(matchRulesIntent('Summarize the patient’s previous history.')).toEqual({ kind: 'record_topic', who: current, topic: 'history' })
+    expect(matchRulesIntent('Summarize this patient’s previous history.')).toEqual({ kind: 'record_topic', who: current, topic: 'history' })
+    expect(matchRulesIntent('Summarize Ramesh Kumar’s history.')).toEqual({ kind: 'record_topic', who: { by: 'name', name: 'Ramesh Kumar' }, topic: 'history' })
+    expect(matchRulesIntent('What are his allergies?')).toEqual({ kind: 'allergies', who: current })
+    expect(matchRulesIntent('What medicines is he currently taking?')).toEqual({ kind: 'record_topic', who: current, topic: 'medicines' })
+    expect(matchRulesIntent('What happened in the last consultation?')).toEqual({ kind: 'last_consultation', who: current })
+    expect(matchRulesIntent('Show recent lab reports')).toEqual({ kind: 'record_topic', who: current, topic: 'investigations' })
+    expect(matchRulesIntent('What surgeries has he had?')).toEqual({ kind: 'surgeries', who: current })
+    expect(matchRulesIntent('Summarize today’s consultation')).toEqual({ kind: 'today_consultation' })
+    for (const q of ['What are Meena’s allergies?', 'What medicines is Rahul Sharma on?', 'What are the allergies of Zara Khan?', 'What are the allergies?', 'What did the last consultation of Omkar say?', 'Brief me on this patient']) expect(matchRulesIntent(q), q).toBeNull()
   })
 
   it('reads who a question is about without guessing: the current patient, a handle, a name, a check-in time, or nobody', () => {

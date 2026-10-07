@@ -43,6 +43,7 @@
     "demo:hospital": "npm run demo:hospital --workspace @adaxai/api --",
     "demo:devices": "npm run demo:devices --workspace @adaxai/api --",
     "demo:hero": "npm run demo:hero --workspace @adaxai/api --",
+    "demo:jury": "npm run demo:jury --workspace @adaxai/api --",
     "devices:simulate": "npm run devices:simulate --workspace @adaxai/api --",
     "user:reset-password": "npm run user:reset-password --workspace @adaxai/api --",
     "audit:verify": "npm run audit:verify --workspace @adaxai/api --",

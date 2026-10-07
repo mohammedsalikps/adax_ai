@@ -65,7 +65,8 @@ const states = (f: PreparingFacts) => Object.fromEntries(preparingChecklist(f).l
 const line = (f: PreparingFacts, key: string) => preparingChecklist(f).lines.find((l) => l.key === key)!
 
 test('Generate prescription is always on, busy while a run or a draft is under way, and off (with the reason) only while the note cannot be saved', () => {
-  assert.deepEqual(generateControl({ ai: ai(), save: 'saved' }), { label: 'Generate prescription', state: 'ready', disabled: false, busy: false, reason: null })
+  // Jury polish: the button reads as in the reference screens.
+  assert.deepEqual(generateControl({ ai: ai(), save: 'saved' }), { label: 'Analyze & Generate Prescription', state: 'ready', disabled: false, busy: false, reason: null })
   // Not known yet, or the model down: still on (the page opens and the doctor writes the prescription).
   assert.equal(generateControl({ ai: undefined, save: 'dirty' }).state, 'checking')
   assert.equal(generateControl({ ai: undefined, save: 'dirty' }).disabled, false)
@@ -76,7 +77,7 @@ test('Generate prescription is always on, busy while a run or a draft is under w
     assert.equal(c.busy, true)
     assert.equal(c.disabled, false)
   }
-  for (const save of ['conflict', 'blocked'] as const) assert.deepEqual(generateControl({ ai: ai(), save }), { label: 'Generate prescription', state: 'blocked', disabled: true, busy: false, reason: NOTE_LOCKED })
+  for (const save of ['conflict', 'blocked'] as const) assert.deepEqual(generateControl({ ai: ai(), save }), { label: 'Analyze & Generate Prescription', state: 'blocked', disabled: true, busy: false, reason: NOTE_LOCKED })
 })
 
 test('the model is not asked when the server already said it cannot be: the model down is "Mana is unavailable"; otherwise the server’s words', () => {

@@ -105,7 +105,7 @@ export function shortcutRows(mac: boolean): ShortcutRow[] {
   const whileTyping = mac ? 'Not while typing in a field (Option with a letter or a digit types a character there).' : null
   return [
     { keys: [[primary, 'S']], does: 'Save now', note: null },
-    { keys: [[primary, 'Enter']], does: 'Generate prescription', note: null },
+    { keys: [[primary, 'Enter']], does: 'Analyze & Generate Prescription', note: null },
     ...PANEL_NAMES.map((name, i) => ({ keys: [[alt, String(i + 1)]], does: `Go to ${name}`, note: whileTyping })),
     { keys: [[alt, 'N']], does: 'Write in the typed note', note: whileTyping },
     { keys: [['Shift', '?']], does: 'Show these shortcuts', note: 'Not while typing in a field.' },

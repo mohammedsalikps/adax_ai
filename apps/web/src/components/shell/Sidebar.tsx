@@ -1,7 +1,9 @@
 import { ROLE_LABELS, type Role } from '@adaxai/contracts'
-import { X } from 'lucide-react'
+import { Sparkles, X } from 'lucide-react'
 import type { Ref } from 'react'
 import { Link, NavLink, useLocation } from 'react-router'
+import { isSyntheticName, plainName } from '../../lib/displayName.ts'
+import { openMana } from '../../lib/manaLauncher.ts'
 import { NAV } from '../../lib/nav.ts'
 
 const navClass = (active: boolean) =>
@@ -28,7 +30,7 @@ export function Sidebar({ role, id, facilityName, className = '', onClose, onNav
           <img src="/favicon.svg" alt="" className="size-8" />
           <span className="leading-tight">
             <span className="block text-base font-semibold tracking-tight">ADAXAI</span>
-            {facilityName && <span className="block max-w-40 truncate text-xs text-ink-muted">{facilityName}</span>}
+            {role === 'doctor' ? <span className="block text-xs font-medium text-ink-muted">Doctor HERO</span> : facilityName && <span className="block max-w-40 truncate text-xs text-ink-muted">{plainName(facilityName)}</span>}
           </span>
         </Link>
         {/* The drawer covers the top bar's menu button, so it has its own way out (phones only). */}
@@ -47,8 +49,23 @@ export function Sidebar({ role, id, facilityName, className = '', onClose, onNav
               </NavLink>
             </li>
           ))}
+          {role === 'doctor' && (
+            // Mana is not a page: it opens the doctor's assistant over whatever page is open (jury design).
+            <li>
+              <button type="button" className={`${navClass(false)} w-full`} onClick={() => { onNavigate(); openMana() }} data-testid="nav-mana">
+                <Sparkles aria-hidden="true" className="size-5 shrink-0" />
+                Mana
+              </button>
+            </li>
+          )}
         </ul>
       </nav>
+      {role === 'doctor' && (facilityName || isSyntheticName(facilityName)) && (
+        <p className="border-t border-line px-5 py-3 text-xs text-ink-muted">
+          {plainName(facilityName)}
+          {isSyntheticName(facilityName) && <span className="mt-1 block w-fit rounded border border-dashed border-ink-muted/50 px-1.5 text-[0.6875rem]">Synthetic data</span>}
+        </p>
+      )}
     </aside>
   )
 }

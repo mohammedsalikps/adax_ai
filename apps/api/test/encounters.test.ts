@@ -194,6 +194,54 @@ describe('amendments', () => {
   })
 })
 
+describe('the prescription PDF', () => {
+  /** The PDF's bytes as text (WinAnsi is one byte per character), checked for a valid cross-reference table. */
+  const pdfText = (raw: Buffer) => {
+    const s = raw.toString('latin1')
+    expect(s.startsWith('%PDF-1.4')).toBe(true)
+    expect(s.trimEnd().endsWith('%%EOF')).toBe(true)
+    const xref = Number(/startxref\n(\d+)\n%%EOF/.exec(s)![1])
+    expect(s.slice(xref, xref + 4)).toBe('xref')
+    const offsets = [...s.slice(xref).matchAll(/^(\d{10}) 00000 n $/gm)].map((m) => Number(m[1]))
+    offsets.forEach((o, i) => expect(s.slice(o, o + `${i + 1} 0 obj`.length)).toBe(`${i + 1} 0 obj`))
+    return s
+  }
+
+  it('is made from the record: a draft is marked not signed, a signed one says who signed it; each is audited as a read', async () => {
+    const e = Encounter.parse((await start((await readyVisit()).id)).json())
+    const saved = Encounter.parse((await call(ctx.app, 'PUT', `/api/encounters/${e.id}/draft`, { cookie: doctor, body: fullDraft(1) })).json())
+    const draft = await call(ctx.app, 'GET', `/api/encounters/${e.id}/prescription.pdf`, { cookie: doctor })
+    expect(draft.statusCode).toBe(200)
+    expect(draft.headers['content-type']).toBe('application/pdf')
+    expect(draft.headers['content-disposition']).toMatch(/^inline; filename="prescription-[\w.-]+\.pdf"$/)
+    expect(draft.headers['cache-control']).toBe('private, no-store')
+    const d = pdfText(draft.rawPayload)
+    expect(d).toContain('NOT SIGNED')
+    expect(d).toContain('(Paracetamol 500 mg Tablet)')
+    expect(d).toContain('Acute upper respiratory infection')
+    expect(d).toContain('Not signed')
+    expect(d).not.toContain('Signed electronically')
+    expect(d).toContain('not a valid prescription')
+
+    // A nurse may read the consultation, so may read its prescription; signed, it carries the signature and no draft mark.
+    expect((await call(ctx.app, 'GET', `/api/encounters/${e.id}/prescription.pdf`, { cookie: nurse })).statusCode).toBe(200)
+    expect((await call(ctx.app, 'POST', `/api/encounters/${e.id}/sign`, { cookie: doctor, body: { version: saved.version, attestation: true } })).statusCode).toBe(200)
+    const s = pdfText((await call(ctx.app, 'GET', `/api/encounters/${e.id}/prescription.pdf`, { cookie: doctor })).rawPayload)
+    expect(s).toContain('Signed electronically on')
+    expect(s).not.toContain('NOT SIGNED')
+    expect(s).toContain('(Paracetamol 500 mg Tablet)')
+
+    const { rows } = await adminQuery("SELECT details FROM audit_events WHERE action = 'encounter.read' AND entity_id = $1 AND details->>'via' = 'prescription_pdf' ORDER BY id", [e.id])
+    expect(rows.map((r: { details: { signed: boolean } }) => r.details.signed)).toEqual([false, false, true])
+  })
+
+  it('is refused without a session and for an unknown consultation', async () => {
+    const e = Encounter.parse((await start((await readyVisit()).id)).json())
+    expect((await call(ctx.app, 'GET', `/api/encounters/${e.id}/prescription.pdf`)).statusCode).toBe(401)
+    expect((await call(ctx.app, 'GET', '/api/encounters/00000000-0000-4000-8000-000000000000/prescription.pdf', { cookie: doctor })).statusCode).toBe(404)
+  })
+})
+
 describe('timeline and persistence', () => {
   it('shows consultations with diagnoses and medicines, plus other visits', async () => {
     const v = await readyVisit()

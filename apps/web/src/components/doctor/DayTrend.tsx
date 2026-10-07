@@ -15,7 +15,7 @@ import { Panel } from '../hero/Panel.tsx'
  * day (WCAG 2.1.1; axe scrollable-region-focusable), and it opens scrolled to today, the last column. When it fits it is a plain box: no extra
  * tab stop.
  */
-export function DayTrend({ period, points, today }: { period: Exclude<DoctorDayPeriod, 'today'>; points: readonly DoctorDayTrendPoint[]; today: string }) {
+export function DayTrend({ period, points, today, className = 'mb-6' }: { period: Exclude<DoctorDayPeriod, 'today'>; points: readonly DoctorDayTrendPoint[]; today: string; className?: string }) {
   const bars = trendBars(points, 'consultations')
   const label = period === 'week' ? 'Consultations this week' : 'Consultations this month'
   const scroller = useRef<HTMLDivElement>(null)
@@ -34,7 +34,7 @@ export function DayTrend({ period, points, today }: { period: Exclude<DoctorDayP
     return () => observer.disconnect()
   }, [days])
   return (
-    <Panel label={label} icon={ChartColumn} className="mb-6" testId="doctor-day-trend">
+    <Panel label={label} icon={ChartColumn} className={className} testId="doctor-day-trend">
       <div
         ref={scroller}
         className="-mx-1 overflow-x-auto rounded-md px-1 pb-1"
@@ -63,28 +63,31 @@ export function DayTrend({ period, points, today }: { period: Exclude<DoctorDayP
           })}
         </ol>
       </div>
-      <table className="sr-only">
-        <caption>{label}, per day</caption>
-        <thead>
-          <tr>
-            <th scope="col">Day</th>
-            <th scope="col">Consultations</th>
-            <th scope="col">Patients seen (completed)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {points.map((p) => (
-            <tr key={p.date}>
-              <th scope="row">
-                {longDay(p.date)}
-                {p.date === today ? ' (today)' : ''}
-              </th>
-              <td>{p.consultations}</td>
-              <td>{p.seen}</td>
+      {/* A table cannot be narrower than its content: the clipped box around it keeps it from widening the page. */}
+      <div className="sr-only">
+        <table>
+          <caption>{label}, per day</caption>
+          <thead>
+            <tr>
+              <th scope="col">Day</th>
+              <th scope="col">Consultations</th>
+              <th scope="col">Patients seen (completed)</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {points.map((p) => (
+              <tr key={p.date}>
+                <th scope="row">
+                  {longDay(p.date)}
+                  {p.date === today ? ' (today)' : ''}
+                </th>
+                <td>{p.consultations}</td>
+                <td>{p.seen}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Panel>
   )
 }

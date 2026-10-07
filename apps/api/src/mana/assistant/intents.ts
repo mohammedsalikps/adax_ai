@@ -15,6 +15,8 @@ export const RULES_VERSION = 'mana-rules-v1'
 /** Who a question is about. `arrived`: "the patient who arrived an hour ago", found among today's check-ins. */
 export type PatientRef = { by: 'current' } | { by: 'name'; name: string } | { by: 'alias'; alias: string } | { by: 'arrived'; minutes: number } | { by: 'none' }
 
+/** The record topics a fixed-rule question may ask for (the record tool's own topics). */
+export type RecordTopic = 'history' | 'medicines' | 'investigations' | 'diagnoses'
 export type ImagingModality = 'mri' | 'ct' | 'xray' | 'ultrasound'
 export type OrdersAsk = 'ready' | 'received' | 'pending'
 
@@ -27,6 +29,11 @@ export type RulesIntent =
   | { kind: 'orders'; who: PatientRef; ask: OrdersAsk; service: string | null }
   | { kind: 'imaging'; who: PatientRef; modality: ImagingModality }
   | { kind: 'allergies'; who: PatientRef }
+  // Jury polish: the patient's record answered by the record's own fixed rules (no model), and two small readers.
+  | { kind: 'record_topic'; who: PatientRef; topic: RecordTopic }
+  | { kind: 'last_consultation'; who: PatientRef }
+  | { kind: 'surgeries'; who: PatientRef }
+  | { kind: 'today_consultation' }
   | { kind: 'add_medicine'; command: PrescriptionCommand }
 
 export type RulesIntentKind = RulesIntent['kind']
@@ -150,6 +157,39 @@ const IMAGING = [
   new RegExp(String.raw`^what\s+(?:did|does|do)\s+${IMAGING_DETERMINER}${WHEN_WORD}${MODALITY}(?:\s+(?:reports?|scans?|study))?\s+(?:show|say)${OF_WHOM}$`, 'i'),
   new RegExp(String.raw`^(?:is|are)\s+there\s+(?:an?|any)\s+${WHEN_WORD}${MODALITY}(?:\s+(?:reports?|scans?|study|studies|images?))?${OF_WHOM}(?:\s+on\s+record)?$`, 'i'),
 ]
+/** Whose: "his", "her", "this patient's", "the patient's", "Ramesh Kumar's" (or nobody: the current patient). Jury polish. */
+const OWNER = String.raw`(?:the\s+|his\s+|her\s+|their\s+|(?:this|the)\s+patient(?:'|’)s\s+|(?<owner>[\p{L}][\p{L}.' -]{0,58}?)(?:'|’)s\s+)?`
+const OF_WHO = String.raw`(?:\s+(?:of|for|on\s+record\s+for)\s+(?<of>.+?))?`
+/** OWNER without a bare "the": "What are the allergies?" names nobody, and the planner asks which patient. */
+const POSSESSIVE = String.raw`(?:his\s+|her\s+|their\s+|(?:this|the)\s+patient(?:'|’)s\s+|(?<owner>[\p{L}][\p{L}.' -]{0,58}?)(?:'|’)s\s+)`
+const ALLERGIES_OWNED = [
+  new RegExp(String.raw`^(?:what\s+are|show(?:\s+me)?|list|tell\s+me)\s+${POSSESSIVE}(?:known\s+|recorded\s+|drug\s+)?allergies${OF_WHO}$`, 'iu'),
+  new RegExp(String.raw`^(?:any|known)\s+allergies${OF_WHO}$`, 'iu'),
+  /^what\s+is\s+(?<who>.+?)\s+allergic\s+to$/iu,
+]
+const MEDICINES = [
+  /^what\s+(?:medicines?|medications?|drugs|tablets|pills)\s+(?:is|are|does|do)\s+(?<who>.+?)\s+(?:currently\s+|presently\s+|now\s+|regularly\s+)?(?:taking|take|on|using)(?:\s+(?:now|currently|at\s+present|regularly))?$/iu,
+  new RegExp(String.raw`^(?:what\s+are|show(?:\s+me)?|list|tell\s+me)\s+${OWNER}(?:current\s+|active\s+|regular\s+|present\s+)?(?:medicines?|medications?|drugs|medicine\s+list)${OF_WHO}$`, 'iu'),
+  new RegExp(String.raw`^(?:current|active|regular)\s+(?:medicines?|medications?)${OF_WHO}$`, 'iu'),
+]
+const LAST_CONSULTATION = [
+  new RegExp(String.raw`^what\s+happened\s+(?:in|during|at)\s+${OWNER}(?:last|previous|most\s+recent|earlier|prior)\s+(?:consultation|visit)${OF_WHO}$`, 'iu'),
+  new RegExp(String.raw`^(?:summari[sz]e|show(?:\s+me)?|tell\s+me\s+about|what\s+was)\s+${OWNER}(?:last|previous|most\s+recent|prior)\s+(?:consultation|visit)${OF_WHO}$`, 'iu'),
+]
+const HISTORY = [
+  new RegExp(String.raw`^(?:summari[sz]e|give\s+me\s+(?:a\s+)?summary\s+of|what\s+is|show(?:\s+me)?|tell\s+me)\s+${OWNER}(?:previous\s+|past\s+|medical\s+|clinical\s+|patient\s+)?(?:history|record|records)${OF_WHO}$`, 'iu'),
+  /^(?:summari[sz]e|brief\s+me\s+on)\s+(?<who>(?!this\b|the\b|today)[\p{L}][\p{L}.' -]{1,58})$/iu,
+]
+const LABS = [
+  new RegExp(String.raw`^(?:show(?:\s+me)?|what\s+are|list|any|give\s+me)\s+${OWNER}(?:recent\s+|latest\s+|last\s+|previous\s+)?(?:lab(?:oratory)?\s+)?(?:reports|results|investigations|labs|blood\s+tests)${OF_WHO}$`, 'iu'),
+]
+const SURGERIES = [
+  /^(?:what|which|any)\s+(?:surgeries|operations|procedures)\s+(?:has|did|have)\s+(?<who>.+?)\s+(?:had|undergone|undergo|have)$/iu,
+  new RegExp(String.raw`^(?:show(?:\s+me)?|list|what\s+(?:is|are))\s+${OWNER}(?:surgical\s+history|surgeries|past\s+surgeries|operations)${OF_WHO}$`, 'iu'),
+]
+const TODAY_CONSULTATION = [
+  /^(?:summari[sz]e|recap|give\s+me\s+(?:a\s+)?summary\s+of|what\s+(?:has|have)\s+we\s+(?:got|recorded)\s+(?:in|from))\s+(?:today'?s|this|the\s+current|the\s+present|the)\s+(?:consultation|visit)(?:\s+so\s+far)?$/iu,
+]
 const ALLERGIES = [
   /^(?:what|which)\s+allergies\s+(?:does|do)\s+(.+?)\s+have(?:\s+on\s+record)?$/i,
   /^does\s+(.+?)\s+have\s+(?:any\s+)?(?:known\s+|recorded\s+)?allergies$/i,
@@ -263,6 +303,30 @@ export function matchRulesIntent(text: string, orderWords: ReadonlySet<string> =
   if (allergies) {
     const who = parseWho(allergies[1])
     return who.by === 'none' ? null : { kind: 'allergies', who }
+  }
+  if (first(TODAY_CONSULTATION, t)) return { kind: 'today_consultation' }
+  // Jury polish: questions about one patient's record, the patient named ("Ramesh Kumar's"), or the conversation's patient ("his", "this patient's").
+  const owned = (m: RegExpExecArray): PatientRef => {
+    const named = m.groups?.owner ?? m.groups?.of ?? m.groups?.who
+    return named ? parseWho(named) : { by: 'current' }
+  }
+  // A named patient ("Meena's allergies", "the allergies of Zara Khan", "what medicines is Rahul on") stays with the planner, whose name checks
+  // (the same words of the name, ambiguity, a second plan) are the safety net for names; only the history summary resolves a name here.
+  const tries: [RegExp[], (who: PatientRef) => RulesIntent, boolean][] = [
+    [ALLERGIES_OWNED, (who) => ({ kind: 'allergies', who }), false],
+    [MEDICINES, (who) => ({ kind: 'record_topic', who, topic: 'medicines' }), false],
+    [LAST_CONSULTATION, (who) => ({ kind: 'last_consultation', who }), false],
+    [LABS, (who) => ({ kind: 'record_topic', who, topic: 'investigations' }), false],
+    [SURGERIES, (who) => ({ kind: 'surgeries', who }), false],
+    [HISTORY, (who) => ({ kind: 'record_topic', who, topic: 'history' }), true],
+  ]
+  for (const [patterns, make, namesToo] of tries) {
+    const m = first(patterns, t)
+    if (!m) continue
+    if (!namesToo && m.groups?.of) return null
+    const who = owned(m)
+    if (who.by === 'none' || (!namesToo && who.by !== 'current')) return null
+    return make(who)
   }
   return null
 }

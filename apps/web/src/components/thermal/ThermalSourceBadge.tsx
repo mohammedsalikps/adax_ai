@@ -14,7 +14,7 @@ const STYLE: Record<Exclude<ThermalCaptureSource, 'simulator'>, string> = {
  * simulator's numbers never pass for a measurement anywhere. Live and imported are what the sending screen said; every stored file was checked
  * to be radiometric. A capture whose source is not known (an older list row) shows nothing rather than a guess.
  */
-export function ThermalSourceBadge({ capture, compact = false }: { capture: { captureSource?: ThermalCaptureSource | null | undefined; simulated?: boolean | null | undefined }; compact?: boolean }) {
+export function ThermalSourceBadge({ capture, compact = false, simulatedLabel }: { capture: { captureSource?: ThermalCaptureSource | null | undefined; simulated?: boolean | null | undefined }; compact?: boolean; simulatedLabel?: string }) {
   const label = thermalSourceLabel(capture)
   if (!label) return null
   const simulated = !!capture.simulated || capture.captureSource === 'simulator'
@@ -22,7 +22,7 @@ export function ThermalSourceBadge({ capture, compact = false }: { capture: { ca
     <span data-testid="thermal-source" data-source={simulated ? 'simulator' : capture.captureSource} className="relative inline-flex max-w-full">
       <span className="sr-only">Source: </span>
       {simulated ? (
-        <SimulatedBadge compact={compact} />
+        <SimulatedBadge compact={compact} {...(simulatedLabel && { what: simulatedLabel })} />
       ) : (
         <span className={`inline-flex items-center rounded-md border font-semibold tracking-wide whitespace-nowrap ${compact ? 'px-1.5 py-px text-[0.6875rem] leading-4' : 'px-2 py-0.5 text-xs'} ${STYLE[capture.captureSource as Exclude<ThermalCaptureSource, 'simulator'>]}`}>
           {label}

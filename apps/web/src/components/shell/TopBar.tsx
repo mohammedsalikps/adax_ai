@@ -3,6 +3,7 @@ import { ChevronDown, KeyRound, LogOut, Menu as MenuIcon, Search } from 'lucide-
 import { type FormEvent, type Ref, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 import { Menu } from '../ui/Menu.tsx'
+import { plainName } from '../../lib/displayName.ts'
 import { PatientAvatar } from '../ui/PatientAvatar.tsx'
 
 /**
@@ -62,7 +63,8 @@ export function TopBar({ me, base, menuOpen, onMenu, menuRef, navId, onSignOut, 
   // On a workspace the menu button is the way to the navigation on a tablet held sideways too: a full-size target there.
   const menuSize = drawerUntil === 'xl' ? 'inline-flex size-control items-center justify-center' : ''
   const canSearch = me?.role === 'doctor' || me?.role === 'nurse'
-  const where = [me?.departmentName, me?.facilityName].filter(Boolean).join(' · ')
+  // Jury polish: the doctor sees their department; names are shown without the data's "(synthetic)" mark (said once in the sidebar).
+  const where = me?.role === 'doctor' ? (me?.departmentName ?? '') : [me?.departmentName, plainName(me?.facilityName)].filter(Boolean).join(' · ')
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-surface/95 backdrop-blur print:hidden">
       <div className="flex min-h-topbar flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 sm:px-6 lg:px-8">
@@ -88,14 +90,13 @@ export function TopBar({ me, base, menuOpen, onMenu, menuRef, navId, onSignOut, 
               triggerClassName="flex min-h-control min-w-0 items-center gap-3 rounded-lg px-1.5 text-left hover:bg-canvas sm:px-2"
               trigger={
                 <>
-                  <PatientAvatar name={me.fullName} size="md" />
+                  <PatientAvatar name={plainName(me.fullName).replace(/^Dr.?s+/i, '')} size="md" />
                   <span className="hidden min-w-0 leading-tight sm:block">
                     <span className="block max-w-56 truncate text-sm font-semibold" data-testid="signed-in-user">
-                      {me.fullName}
+                      {plainName(me.fullName)}
                     </span>
                     <span className="block max-w-56 truncate text-xs text-ink-muted">
-                      {ROLE_LABELS[me.role]}
-                      {where ? ` · ${where}` : ''}
+                      {me.role === 'doctor' ? where || ROLE_LABELS[me.role] : `${ROLE_LABELS[me.role]}${where ? ` · ${where}` : ''}`}
                     </span>
                   </span>
                   <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-muted" />

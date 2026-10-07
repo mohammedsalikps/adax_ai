@@ -10,6 +10,7 @@ import { handwritingQueryKey } from '../../lib/handwritingApi.ts'
 import { Sheet } from '../hero/Sheet.tsx'
 import { Button } from '../ui/Button.tsx'
 import { runAnalysis, useAnalysis, useAnalysisInputFacts, useForgetEndedRun } from './analysisRun.ts'
+import { MultimodalFlow } from './MultimodalFlow.tsx'
 
 /*
  * "Generate prescription" (DESIGN §5.5), the workspace's one primary action, in its bottom bar. A click saves the doctor's notes (the page's
@@ -135,8 +136,9 @@ export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, 
       <Sheet
         open={open}
         onClose={() => setOpen(false)}
-        title="Preparing the consultation"
+        title="Analyzing the consultation"
         placement="center"
+        width="wide"
         testId="preparing-consultation"
         footer={
           <>
@@ -149,7 +151,8 @@ export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, 
           </>
         }
       >
-        <ol aria-label="What Mana is given" className="divide-y divide-line/60" data-testid="preparing-checklist">
+        <MultimodalFlow prep={prep} />
+        <ol aria-label="What Mana is given" className="mt-4 divide-y divide-line/60 border-t border-line" data-testid="preparing-checklist">
           {prep.lines.map((l) => (
             <Line key={l.key} l={l} />
           ))}

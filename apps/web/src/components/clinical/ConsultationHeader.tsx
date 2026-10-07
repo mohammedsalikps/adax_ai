@@ -1,7 +1,10 @@
-import type { Encounter } from '@adaxai/contracts'
-import { ArrowLeft, IdCard } from 'lucide-react'
+import type { Encounter, PatientHistory } from '@adaxai/contracts'
+import { useQuery } from '@tanstack/react-query'
+import { ArrowLeft, History, IdCard } from 'lucide-react'
 import { type RefObject, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
+import { api } from '../../lib/api.ts'
+import { historyKey } from '../../lib/history.ts'
 import { recordingLabel, useRecordingState } from '../../lib/recordingState.ts'
 import { StatusPill } from '../hero/StatusPill.tsx'
 import { Button } from '../ui/Button.tsx'
@@ -58,6 +61,30 @@ export function RecordingStatus({ encounterId }: { encounterId: string }) {
   )
 }
 
+/** A condition's short name for a header badge ("Type 2 diabetes mellitus" → "Diabetes"). */
+export const conditionBadge = (name: string): string => (/diabet/i.test(name) ? 'Diabetes' : /hypertens/i.test(name) ? 'Hypertension' : /asthma/i.test(name) ? 'Asthma' : /thyroid/i.test(name) ? 'Thyroid' : name.length > 22 ? `${name.slice(0, 21)}…` : name)
+
+/**
+ * The patient's important conditions as badges (jury design): the active and controlled ones on the condition list, read from the history the
+ * allergy chips already keep fresh (observed: no request of its own). Nothing is shown before it was read, or when none is recorded.
+ */
+function ConditionBadges({ patientId }: { patientId: string }) {
+  const q = useQuery({ queryKey: historyKey(patientId), queryFn: () => api<PatientHistory>(`/patients/${patientId}/history`), enabled: false })
+  const names = [...new Set((q.data?.conditions ?? []).filter((c) => c.status === 'active' || c.status === 'controlled').map((c) => conditionBadge(c.name)))].slice(0, 3)
+  if (!names.length) return null
+  return (
+    <ul className="flex flex-wrap items-center gap-1.5" aria-label="Conditions" data-testid="condition-badges">
+      {names.map((n) => (
+        <li key={n} className="rounded-full border border-pending/25 bg-pending-soft px-2 py-0.5 text-xs font-medium text-pending">
+          {n}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+const startedLine = (iso: string) => new Intl.DateTimeFormat('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(iso))
+
 export interface ConsultationHeaderProps {
   /** The consultation as the server last answered (its vital signs follow a Record vitals). */
   encounter: Encounter
@@ -65,6 +92,8 @@ export interface ConsultationHeaderProps {
   backTo: string
   /** [Patient profile]: the profile drawer on its overview. */
   onOpenProfile: () => void
+  /** [View history]: the profile drawer on the patient's history (jury design). */
+  onViewHistory?: () => void
   /** The ⋯ menu: Consultation overview, Clinical photographs, Keyboard shortcuts, Discard draft… */
   menu: MenuItem[]
 }
@@ -76,7 +105,7 @@ export interface ConsultationHeaderProps {
  * signs (VitalsSnapshot), then [Patient profile] and the ⋯ menu. The save state is in the bottom bar; saving is automatic (Ctrl/⌘+S still
  * saves now). The patient's name is the page's h1.
  */
-export function ConsultationHeader({ encounter, backTo, onOpenProfile, menu }: ConsultationHeaderProps) {
+export function ConsultationHeader({ encounter, backTo, onOpenProfile, onViewHistory, menu }: ConsultationHeaderProps) {
   const header = useRef<HTMLElement>(null)
   usePublishedHeight(header, '--consult-header-h')
   const p = encounter.patient
@@ -103,6 +132,7 @@ export function ConsultationHeader({ encounter, backTo, onOpenProfile, menu }: C
           <ul className="flex min-w-0 flex-wrap items-center gap-1.5" aria-label="Allergies">
             <AllergyChips encounter={encounter} />
           </ul>
+          <ConditionBadges patientId={p.id} />
           {encounter.visit.priority === 'urgent' && (
             <span data-testid="visit-urgent">
               <Badge tone="down" dot>
@@ -111,12 +141,22 @@ export function ConsultationHeader({ encounter, backTo, onOpenProfile, menu }: C
             </span>
           )}
           <RecordingStatus encounterId={encounter.id} />
+          {encounter.status === 'in_progress' && (
+            <p className="basis-full text-xs text-ink-muted" data-testid="consultation-started">
+              Consultation in progress · {startedLine(encounter.startedAt)}
+            </p>
+          )}
           <VitalsSnapshot encounter={encounter} />
         </section>
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <Button size="sm" variant="secondary" icon={<IdCard aria-hidden="true" className="size-4" />} onClick={onOpenProfile} data-testid="open-patient-profile">
             Patient profile
           </Button>
+          {onViewHistory && (
+            <Button size="sm" variant="secondary" icon={<History aria-hidden="true" className="size-4" />} onClick={onViewHistory} data-testid="view-history" className="max-sm:hidden">
+              View history
+            </Button>
+          )}
           <Menu label="More consultation actions" items={menu} triggerClassName="inline-flex size-control items-center justify-center rounded-md border border-transparent text-ink-muted hover:bg-canvas hover:text-ink" />
         </div>
       </div>

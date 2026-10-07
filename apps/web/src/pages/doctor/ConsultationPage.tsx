@@ -17,6 +17,7 @@ import { Sheet } from '../../components/hero/Sheet.tsx'
 import { StatusPill } from '../../components/hero/StatusPill.tsx'
 import { OrderServiceButton } from '../../components/orders/OrderServiceButton.tsx'
 import { ServiceOrdersList } from '../../components/orders/ServiceOrdersList.tsx'
+import { ManaPanel } from '../../components/mana/ManaPanel.tsx'
 import { PatientHistoryPanel } from '../../components/patients/PatientHistoryPanel.tsx'
 import { HandwritingPad } from '../../components/pen/HandwritingPad.tsx'
 import { AiProvenance } from '../../components/rx/AiProvenance.tsx'
@@ -154,7 +155,7 @@ const InputPanels = memo(function InputPanels({ encounter, inserter, autoRecord,
           <ClinicalInputs encounter={e} />
         </PanelBoundary>
       </div>
-      <div id="tools-history" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-2 xl:col-span-4 xl:col-start-9 xl:row-start-1`}>
+      <div id="tools-history" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-3 xl:col-span-4 xl:col-start-9 xl:row-start-2`}>
         <PanelBoundary label="The patient history" neutral>
           <PatientHistoryPanel encounter={e} onViewDetails={() => onProfile('history')} onDocuments={() => onProfile('documents')}>
             <PanelGroup label="Orders" actions={<OrderServiceButton encounterId={e.id} patientId={e.patient.id} />}>
@@ -168,6 +169,15 @@ const InputPanels = memo(function InputPanels({ encounter, inserter, autoRecord,
 })
 
 type NotesTab = 'pen' | 'keyboard'
+
+/**
+ * The doctor's note in the workspace (jury design): five plain sections in the brief's order, on the note's own fields. Medical history and
+ * follow-up stay on the prescription page's clinical note; nothing is lost (the same fields, the same autosave).
+ */
+const WORKSPACE_NOTE = (['chiefComplaint', 'history', 'examination', 'assessment', 'plan'] as const).map((key) => {
+  const s = NOTE_SECTIONS.find((x) => x.key === key)!
+  return { ...s, label: key === 'examination' ? 'Clinical findings (examination)' : s.label, rows: key === 'chiefComplaint' ? 2 : 3 }
+})
 
 /** The menu's sheets. */
 type SheetKind = 'overview' | 'more' | null
@@ -201,7 +211,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
   const inserter = editor.inserter
   const [profileTab, setProfileTab] = useState<ProfileDrawerTab | null>(null)
   const openProfile = useCallback((tab: ProfileDrawerTab) => setProfileTab(tab), [])
-  const [notesTab, setNotesTab] = useState<NotesTab>('pen')
+  const [notesTab, setNotesTab] = useState<NotesTab>('keyboard')
   const [sheet, setSheet] = useState<SheetKind>(null)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [discarding, setDiscarding] = useState(false)
@@ -279,7 +289,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
   // The typed note: what the doctor writes, with the same section labels as always (and as the prescription page's clinical note).
   const noteFields = (
     <div className="space-y-4">
-      {NOTE_SECTIONS.map((s) => (
+      {WORKSPACE_NOTE.map((s) => (
         <div key={s.key}>
           <TextAreaField
             label={s.label}
@@ -297,7 +307,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
 
   return (
     <>
-      <ConsultationHeader encounter={encounter} backTo={`${base}/queue`} onOpenProfile={() => setProfileTab('overview')} menu={menu} />
+      <ConsultationHeader encounter={encounter} backTo={`${base}/queue`} onOpenProfile={() => setProfileTab('overview')} onViewHistory={() => setProfileTab('history')} menu={menu} />
       {state === 'blocked' && (
         <Alert tone="error" title="Your latest changes cannot be saved" className="mb-4">
           {blocked}{' '}
@@ -316,11 +326,17 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
           .
         </Alert>
       )}
-      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-12 lg:grid-rows-[auto_auto_1fr] xl:grid-rows-[auto_auto] xl:gap-5" data-testid="consultation-workspace">
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-12 lg:grid-rows-[auto_auto_auto_1fr] xl:grid-rows-[auto_1fr] xl:gap-5" data-testid="consultation-workspace">
         <InputPanels encounter={encounter} inserter={inserter} autoRecord={autoRecord} onProfile={openProfile} />
-        <div id="consultation-note" tabIndex={-1} className={`${PART} lg:col-span-7 lg:col-start-1 lg:row-span-2 lg:row-start-2 xl:col-span-8 xl:row-span-1`}>
+        {/* Mana docked in the right column (jury design, screen 3); nothing is asked of the server until the doctor uses it. */}
+        <div id="mana-panel" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-2 xl:col-span-4 xl:col-start-9 xl:row-start-1`}>
+          <PanelBoundary label="Mana" neutral>
+            <ManaPanel encounter={encounter} />
+          </PanelBoundary>
+        </div>
+        <div id="consultation-note" tabIndex={-1} className={`${PART} lg:col-span-7 lg:col-start-1 lg:row-span-3 lg:row-start-2 xl:col-span-5 xl:col-start-1 xl:row-span-1 xl:row-start-2`}>
           <Panel
-            label="Doctor notes"
+            label="Doctor’s note"
             icon={NotebookPen}
             testId="doctor-notes"
             actions={
@@ -331,8 +347,8 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
                   prefix="doctor-notes"
                   variant="pill"
                   tabs={[
-                    { id: 'pen', label: 'Pen' },
                     { id: 'keyboard', label: 'Keyboard' },
+                    { id: 'pen', label: 'Handwriting' },
                   ]}
                   value={notesTab}
                   onChange={setNotesTab}
@@ -349,7 +365,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
             </TabPanel>
           </Panel>
         </div>
-        <div id="tools-thermal" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-3 xl:col-span-4 xl:col-start-9 xl:row-start-2`}>
+        <div id="tools-thermal" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-4 xl:col-span-3 xl:col-start-6 xl:row-start-2`}>
           <PanelBoundary label="The thermal context" neutral>
             <ThermalContext encounter={encounter} inserter={inserter} />
           </PanelBoundary>

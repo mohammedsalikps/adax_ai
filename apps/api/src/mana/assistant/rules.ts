@@ -17,13 +17,13 @@ import {
 } from '@adaxai/contracts'
 import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm'
 import { can } from '../../auth/permissions.ts'
-import { appointments, departments, encounters, observations, patientDocuments, patients, serviceOrders, users, visits, visitStatusEvents } from '../../db/schema.ts'
+import { allergies, appointments, departments, diagnoses, encounters, investigationResults, observations, patientConditions, patientDocuments, patientMedications, patientProcedures, patients, prescriptionItems, serviceOrders, users, visits, visitStatusEvents } from '../../db/schema.ts'
 import { getPatientOr404 } from '../../patients/service.ts'
 import { advanceSimulatedOrders } from '../../service-orders/service.ts'
 import { looksLikeInstruction } from './answer.ts'
 import { resolveHandle } from './entities.ts'
 import { cap, dayLabel, dayOf, freeText, timeLabel } from './format.ts'
-import { type ImagingModality, normService, type PatientRef, type RulesIntent } from './intents.ts'
+import { type ImagingModality, normService, type PatientRef, type RecordTopic, type RulesIntent } from './intents.ts'
 import { blank } from './plan.ts'
 import { band, consentRefusal, hiddenFor, listedPatient, mine, NOT_SHOWN, runTool, scrubberFor, STATUS_WORDS } from './tools.ts'
 import type { ManaCtx, ToolFinding } from './types.ts'
@@ -61,6 +61,8 @@ export interface RulesAnswer {
   action: ManaActionProposal | null
   /** For the audit and the details: what was read, in counts and categories (no clinical text). */
   detail: string
+  /** Where the answer comes from, in plain words (jury polish). */
+  basis: string
 }
 
 /** What each question reads with: the permissions of the platform's own matrix that the caller's role must all hold (the tools' own). */
@@ -73,6 +75,10 @@ const NEEDS: Record<RulesIntent['kind'], readonly Parameters<typeof can>[1][]> =
   orders: ['patients:read', 'orders:read'],
   imaging: ['patients:read'],
   allergies: ['patients:read', 'encounters:read'],
+  record_topic: ['patients:read', 'encounters:read'],
+  last_consultation: ['patients:read', 'encounters:read'],
+  surgeries: ['patients:read'],
+  today_consultation: ['patients:read', 'encounters:read'],
   add_medicine: ['patients:read', 'encounters:write'],
 }
 
@@ -87,6 +93,7 @@ class Composer {
   notice: string | null = null
   action: ManaActionProposal | null = null
   detail = ''
+  basis = ''
 
   fact(text: string, patient: string | null, items: ManaSourceItem[]): number {
     this.facts.push({ text: cap(text, 1200), patient, items: items.slice(0, 6) })
@@ -108,7 +115,7 @@ class Composer {
       this.outcome = 'not_established'
       this.notice ??= MANA_NOT_ESTABLISHED
     }
-    return { outcome: this.outcome, notice: this.notice, facts: this.facts, blocks: this.blocks, findings: this.findings, candidates: this.candidates, read: this.read, subjects: [...this.subjects], action: this.action, detail: this.detail }
+    return { outcome: this.outcome, notice: this.notice, facts: this.facts, blocks: this.blocks, findings: this.findings, candidates: this.candidates, read: this.read, subjects: [...this.subjects], action: this.action, detail: this.detail, basis: this.basis }
   }
 }
 
@@ -679,6 +686,200 @@ async function allergiesOnRecord(ctx: ManaCtx, c: Composer, who: PatientRef): Pr
   for (const f of out.findings) c.findings.push(f)
 }
 
+// --- the patient's record (jury polish) ------------------------------------------------------------------------------------------------------
+
+/** Section titles of the record answer, shortened for a spoken-style answer. */
+const SHORT_TITLE: [RegExp, string][] = [
+  [/^Current medicines\b.*$/i, 'Current medicines'],
+  [/^Last signed prescription\b.*$/i, 'Last signed prescription'],
+  [/^Today's consultation\b.*$/i, 'Today’s consultation (draft)'],
+]
+const shortTitle = (t: string) => SHORT_TITLE.find(([re]) => re.test(t))?.[1] ?? t
+
+/**
+ * One topic of the patient's record (history, medicines, investigations, diagnoses), through the record answer's own fixed rules (answers.ts via the
+ * record tool): exactly what the allergies question does, for the other topics. Statements keep their sources; what is not recorded is said so.
+ */
+async function recordTopic(ctx: ManaCtx, c: Composer, who: PatientRef, topic: RecordTopic): Promise<void> {
+  const p = await resolveWho(ctx, who, c)
+  if (p.kind !== 'one') return
+  const out = await runTool(ctx, blank('get_patient_record', { patient: p.alias, topic }))
+  c.detail = `record rules (${topic}): ${out.facts.length} statement(s), ${out.findings.length} finding(s)`
+  if (out.status === 'refused') {
+    c.end('refused', out.detail)
+    return
+  }
+  if (out.status === 'not_found' || out.status === 'error' || out.status === 'invalid') {
+    c.absent(out.status === 'error' ? 'The record could not be read just now. You can try again.' : 'That patient was not found in this clinic.')
+    c.end('not_established', MANA_NOT_ESTABLISHED)
+    return
+  }
+  c.read.add(p.patientId)
+  c.subjects.add(p.patientId)
+  // One statement per section ("Current medicines: A; B; C"), each citing its facts.
+  const groups = new Map<string, { parts: string[]; facts: number[] }>()
+  for (const f of out.facts) {
+    const i = c.fact(f.text, f.patient, f.items)
+    if (looksLikeInstruction(f.text)) continue
+    const m = /^([^:]{2,140}):\s+([\s\S]+)$/.exec(f.text)
+    const title = m ? shortTitle(m[1]!) : ''
+    const g = groups.get(title) ?? { parts: [], facts: [] }
+    g.parts.push((m ? m[2]! : f.text).replace(/[.;]\s*$/, ''))
+    g.facts.push(i)
+    groups.set(title, g)
+  }
+  for (const [title, g] of groups) c.say(`${title ? `${title}: ` : ''}${g.parts.join('; ')}.`, ...g.facts)
+  for (const f of out.findings) c.findings.push(f)
+}
+
+/**
+ * A short history summary composed by fixed rules from the record (jury polish): known conditions, recent consultations, current medicines,
+ * allergies, surgeries and recent results — each line from structured rows, quoted, with what is not recorded said so. No model writes it.
+ */
+async function historySummary(ctx: ManaCtx, c: Composer, who: PatientRef): Promise<void> {
+  const p = await resolveWho(ctx, who, c)
+  if (p.kind !== 'one' || !(await mayRead(ctx, p, c))) return
+  const pt = await getPatientOr404(ctx.db, ctx.me.facilityId, p.patientId)
+  const scrub = scrubberFor(pt)
+  const [conds, meds, alls, procs, results, visitsRows] = await Promise.all([
+    ctx.db.select().from(patientConditions).where(and(eq(patientConditions.patientId, p.patientId), inArray(patientConditions.status, ['active', 'controlled']))).orderBy(asc(patientConditions.sinceYear)),
+    ctx.db.select().from(patientMedications).where(and(eq(patientMedications.patientId, p.patientId), eq(patientMedications.status, 'current'))).orderBy(asc(patientMedications.drugName)),
+    ctx.db.select().from(allergies).where(and(eq(allergies.patientId, p.patientId), eq(allergies.status, 'active'))),
+    ctx.db.select().from(patientProcedures).where(and(eq(patientProcedures.patientId, p.patientId), eq(patientProcedures.status, 'recorded'))),
+    ctx.db.select().from(investigationResults).where(and(eq(investigationResults.patientId, p.patientId), eq(investigationResults.status, 'final'))).orderBy(desc(investigationResults.collectedOn)).limit(30),
+    ctx.db
+      .select({ id: encounters.id, signedAt: encounters.signedAt, complaint: encounters.chiefComplaint, assessment: encounters.assessment })
+      .from(encounters)
+      .where(and(eq(encounters.facilityId, ctx.me.facilityId), eq(encounters.patientId, p.patientId), eq(encounters.status, 'signed'), ...(ctx.scope.encounterId ? [ne(encounters.id, ctx.scope.encounterId)] : [])))
+      .orderBy(desc(encounters.signedAt))
+      .limit(4),
+  ])
+  ctx.textShown.add(p.patientId)
+  c.detail = `history rules: ${conds.length} condition(s), ${meds.length} medicine(s), ${alls.length} allerg(ies), ${procs.length} procedure(s), ${results.length} result(s), ${visitsRows.length} consultation(s)`
+  const item = patientItem(p.patientId, 'Patient record', 'History summary from the record')
+  const say = (text: string) => c.say(text, c.fact(text, p.alias, [item]))
+  const STATUS: Record<string, string> = { active: 'active', controlled: 'controlled' }
+  say(conds.length ? `Known conditions: ${conds.map((x) => `${freeText(x.name, 100, scrub)} (since ${x.sinceYear}, ${STATUS[x.status] ?? x.status})`).join('; ')}.` : 'Known conditions: none recorded on the condition list.')
+  say(
+    visitsRows.length
+      ? `Recent consultations: ${visitsRows.map((v) => `${v.signedAt ? dayLabel(v.signedAt, ctx.timeZone) : 'date not recorded'} — ${freeText(v.complaint ?? 'reason not recorded', 80, scrub)}${v.assessment ? ` (${freeText(v.assessment, 80, scrub).replace(/\.$/, '')})` : ''}`).join('; ')}.`
+      : 'Recent consultations: no signed consultation on record.',
+  )
+  say(meds.length ? `Current medicines: ${meds.map((m) => [m.drugName, m.strength, m.frequency].filter(Boolean).map((x) => freeText(String(x), 60, scrub)).join(' ')).join('; ')}.` : 'Current medicines: none on the medicine list.')
+  say(alls.length ? `Allergies: ${alls.map((a) => `${freeText(a.substance, 60, scrub)}${a.severity && a.severity !== 'unknown' ? ` (${a.severity}${a.reaction ? `, ${freeText(a.reaction, 40, scrub)}` : ''})` : a.reaction ? ` (${freeText(a.reaction, 40, scrub)})` : ''}`).join('; ')}.` : pt.noKnownAllergies ? 'Allergies: no known allergies (recorded).' : 'Allergies: allergy status not recorded.')
+  say(procs.length ? `Surgeries: ${procs.map((x) => `${freeText(x.name, 80, scrub)}${x.performedYear ? ` (${x.performedYear})` : ''}`).join('; ')}.` : 'Surgeries: none recorded.')
+  // The newest result of each test, abnormal ones first.
+  const latest = new Map<string, (typeof results)[number]>()
+  for (const r of results) if (!latest.has(r.testName.toLowerCase())) latest.set(r.testName.toLowerCase(), r)
+  const picked = [...latest.values()].sort((a, b) => Number(b.flag && b.flag !== 'normal') - Number(a.flag && a.flag !== 'normal')).slice(0, 4)
+  if (picked.length) say(`Recent results: ${picked.map((r) => `${freeText(r.testName, 40, scrub)} ${freeText(r.valueText, 20, scrub)}${r.unit ? ` ${r.unit}` : ''}${r.flag && r.flag !== 'normal' ? ` (${r.flag})` : ''} on ${dayLabel(r.collectedOn, ctx.timeZone)}`).join('; ')}.`)
+}
+
+/** The patient's last signed consultation (not the one open now): when, with whom, what was found, decided and prescribed — quoted from the record. */
+async function lastConsultation(ctx: ManaCtx, c: Composer, who: PatientRef): Promise<void> {
+  const p = await resolveWho(ctx, who, c)
+  if (p.kind !== 'one' || !(await mayRead(ctx, p, c))) return
+  const scrub = scrubberFor(await getPatientOr404(ctx.db, ctx.me.facilityId, p.patientId))
+  const [row] = await ctx.db
+    .select({ e: encounters, doctor: users.fullName })
+    .from(encounters)
+    .leftJoin(users, eq(users.id, encounters.doctorId))
+    .where(and(eq(encounters.facilityId, ctx.me.facilityId), eq(encounters.patientId, p.patientId), eq(encounters.status, 'signed'), ...(ctx.scope.encounterId ? [ne(encounters.id, ctx.scope.encounterId)] : [])))
+    .orderBy(desc(encounters.signedAt))
+    .limit(1)
+  c.detail = `${row ? 1 : 0} signed consultation read`
+  if (!row) {
+    c.say(`No earlier signed consultation is on ${p.alias}’s record.`, c.fact(`No signed consultation is recorded for ${p.alias}.`, p.alias, [patientItem(p.patientId, 'Consultations', 'No signed consultation')]))
+    return
+  }
+  const e = row.e
+  const [dx, meds] = await Promise.all([
+    ctx.db.select().from(diagnoses).where(eq(diagnoses.encounterId, e.id)).orderBy(asc(diagnoses.sortOrder)),
+    ctx.db.select().from(prescriptionItems).where(eq(prescriptionItems.encounterId, e.id)).orderBy(asc(prescriptionItems.sortOrder)),
+  ])
+  ctx.textShown.add(p.patientId)
+  const when = e.signedAt ? dayLabel(e.signedAt, ctx.timeZone) : 'a date not recorded'
+  const item: ManaSourceItem = { kind: 'signed_record', label: `Signed record · ${when} · ${row.doctor ?? 'doctor not recorded'}`, date: (e.signedAt ?? e.startedAt).toISOString(), status: 'Signed', excerpt: cap(e.chiefComplaint ?? '', 400), link: { to: 'encounter', id: e.id } }
+  const f = c.fact(`Signed consultation of ${when} by ${row.doctor ?? 'a doctor whose name is not recorded'}.`, p.alias, [item])
+  c.say(`${p.alias}’s last consultation was on ${when} with ${row.doctor ?? 'a doctor whose name is not recorded'}${e.chiefComplaint ? `, for ${quote(e.chiefComplaint, 200, scrub)}` : ''}.`, f)
+  const line = (label: string, text: string | null) => {
+    if (!text?.trim()) return
+    c.say(`${label}: ${quote(text, 600, scrub)}`, c.fact(`${label} (signed record of ${when}): ${freeText(text, 600, scrub)}`, p.alias, [item]))
+  }
+  line('Findings', e.examination)
+  line('Assessment', e.assessment)
+  if (dx.length) c.say(`Diagnosis: ${dx.map((d) => `${freeText(d.description, 160, scrub)}${d.code ? ` (${d.code})` : ''}`).join('; ')}.`, c.fact(`Diagnoses of ${when}: ${dx.length}.`, p.alias, [item]))
+  if (meds.length)
+    c.say(
+      `Prescribed: ${meds.map((m) => [m.drugName, m.strength, m.dose, m.frequency, m.duration ? `for ${m.duration}` : null].filter(Boolean).map((x) => freeText(String(x), 80, scrub)).join(' ')).join('; ')}.`,
+      c.fact(`Prescription of ${when}: ${meds.length} medicine(s).`, p.alias, [item]),
+    )
+  else c.say('No medicine was prescribed at that consultation.', c.fact(`Prescription of ${when}: none written.`, p.alias, [item]))
+  line('Follow-up', e.followUp)
+}
+
+/** Surgeries (procedures) on the record, as staff entered them. */
+async function surgeriesOnRecord(ctx: ManaCtx, c: Composer, who: PatientRef): Promise<void> {
+  const p = await resolveWho(ctx, who, c)
+  if (p.kind !== 'one' || !(await mayRead(ctx, p, c))) return
+  const scrub = scrubberFor(await getPatientOr404(ctx.db, ctx.me.facilityId, p.patientId))
+  const rows = await ctx.db.select().from(patientProcedures).where(and(eq(patientProcedures.patientId, p.patientId), eq(patientProcedures.status, 'recorded'))).orderBy(sql`${patientProcedures.performedYear} desc nulls last`)
+  c.detail = `${rows.length} procedure(s) read`
+  const item = patientItem(p.patientId, 'Surgeries', `${rows.length} recorded`)
+  if (!rows.length) {
+    c.say(`No surgery is recorded on ${p.alias}’s record.`, c.fact(`No procedure is recorded for ${p.alias}.`, p.alias, [item]))
+    return
+  }
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const when = (r: (typeof rows)[number]) => (r.performedYear ? `${r.performedMonth ? `${MONTHS[r.performedMonth - 1]} ` : ''}${r.performedYear}` : 'date not recorded')
+  c.say(`Surgical history: ${rows.map((r) => `${freeText(r.name, 120, scrub)} (${when(r)})${r.note ? ` — ${freeText(r.note, 160, scrub)}` : ''}`).join('; ')}.`, c.fact(`${rows.length} procedure(s) recorded for ${p.alias}.`, p.alias, [item]))
+}
+
+/** Today's consultation so far (the one this conversation was opened in): what was recorded, said, measured and drafted, through the consultation's own read. */
+async function todayConsultation(ctx: ManaCtx, c: Composer): Promise<void> {
+  if (!ctx.scope.encounterId || !ctx.scope.patientId) {
+    c.end('clarify', 'Ask this from the consultation itself: this conversation was not opened in one.')
+    return
+  }
+  const out = await runTool(ctx, blank('consultation_context', { topic: 'consultation_recorded' }))
+  c.detail = `consultation context: ${out.facts.length} statement(s), ${out.findings.length} finding(s)`
+  if (out.status === 'refused') {
+    c.end('refused', out.detail)
+    return
+  }
+  if (out.status !== 'ok' && out.status !== 'empty') {
+    c.absent('The consultation could not be read just now. You can try again.')
+    c.end('not_established', MANA_NOT_ESTABLISHED)
+    return
+  }
+  if (out.patientId) {
+    c.read.add(out.patientId)
+    c.subjects.add(out.patientId)
+  }
+  for (const f of out.facts.slice(0, 12)) {
+    const i = c.fact(f.text, f.patient, f.items)
+    if (!looksLikeInstruction(f.text)) c.say(f.text, i)
+  }
+  for (const f of out.findings) c.findings.push(f)
+}
+
+/** Where a fixed-rule answer comes from, in plain words (shown with the answer). */
+export const RULES_BASIS: Record<RulesIntent['kind'], string> = {
+  next_patient: 'From today’s queue',
+  seen_today: 'From today’s queue',
+  waiting_longest: 'From today’s queue',
+  arrival_time: 'From today’s queue',
+  nurse_triage: 'From today’s triage record',
+  orders: 'From service orders',
+  imaging: 'From the patient record',
+  allergies: 'From the patient record',
+  record_topic: 'From the patient record',
+  last_consultation: 'From the patient record',
+  surgeries: 'From the patient record',
+  today_consultation: 'From this consultation',
+  add_medicine: 'From your words',
+}
+
 // --- the entry point -----------------------------------------------------------------------------------------------------------------------
 
 /**
@@ -687,6 +888,7 @@ async function allergiesOnRecord(ctx: ManaCtx, c: Composer, who: PatientRef): Pr
  */
 export async function answerByRules(ctx: ManaCtx, intent: RulesIntent): Promise<RulesAnswer> {
   const c = new Composer()
+  c.basis = RULES_BASIS[intent.kind]
   if (NEEDS[intent.kind].some((p) => !can(ctx.me.role, p))) return c.end('refused', 'Your role is not allowed to read that.').done()
   switch (intent.kind) {
     case 'next_patient':
@@ -712,6 +914,19 @@ export async function answerByRules(ctx: ManaCtx, intent: RulesIntent): Promise<
       break
     case 'allergies':
       await allergiesOnRecord(ctx, c, intent.who)
+      break
+    case 'record_topic':
+      if (intent.topic === 'history') await historySummary(ctx, c, intent.who)
+      else await recordTopic(ctx, c, intent.who, intent.topic)
+      break
+    case 'last_consultation':
+      await lastConsultation(ctx, c, intent.who)
+      break
+    case 'surgeries':
+      await surgeriesOnRecord(ctx, c, intent.who)
+      break
+    case 'today_consultation':
+      await todayConsultation(ctx, c)
       break
     case 'add_medicine': {
       const r = await proposeMedicine(ctx, intent.command)

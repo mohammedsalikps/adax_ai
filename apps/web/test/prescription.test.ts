@@ -329,7 +329,9 @@ test('the prescription page runs the fixed rules only, after a saved change, on 
   const open = page.slice(page.indexOf('const openReview'), page.indexOf('setReviewing(true)\n  }'))
   assert.ok(open.indexOf('await flushState()') >= 0 && open.indexOf('await flushState()') < open.indexOf('await allergy.ensure(key)'))
   assert.ok(open.includes('finally'), 'it opens when the check failed too (the dialog says so)')
-  assert.ok(page.includes('onClick={() => void openReview()}'))
+  assert.ok(page.includes('onClick={() => void openReview(true)} data-testid="sign-and-print"'), 'Sign & print opens the review after the save and the check')
+  assert.ok(page.includes('onClick={() => void openReview(false)} data-testid="sign-only"'), 'Sign opens the same review')
+  assert.ok(!/openReview\(\)|setReviewing\(true\)\}/.test(page.replace(open, '')), 'nothing else opens the review')
   assert.ok(page.includes('allergyNote={allergyReviewNote(allergy.view)}'))
 })
 

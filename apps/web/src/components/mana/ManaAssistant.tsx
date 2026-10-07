@@ -20,6 +20,7 @@ import { type FormEvent, Fragment, type KeyboardEvent, type RefObject, useEffect
 import { Link } from 'react-router'
 import { errorMessage } from '../../lib/api.ts'
 import { usePortalBase } from '../../lib/clinical.ts'
+import { withoutSyntheticMarks } from '../../lib/displayName.ts'
 import { fmtDate, fmtDateTime } from '../../lib/format.ts'
 import { manaConversationKey, type ManaScope, pendingMessage, useAskMana, useCancelMana, useManaConversation, useNewManaConversation, useSelectManaPatient } from '../../lib/manaAssistant.ts'
 import { manaChips, NO_LOCAL_VOICE, speakableText, suggestionFor } from '../../lib/manaGlobal.ts'
@@ -46,7 +47,7 @@ const BLOCK_FLAG: Record<ManaAnswerBlock['flags'][number], { tone: BadgeTone; la
 
 /** A statement with the patients' handles (P1) put back as their names: the model never saw the names, the doctor should not have to read handles. */
 function WithNames({ text, entities }: { text: string; entities: ManaEntity[] }) {
-  const parts = text.split(/\b(P\d{1,2})\b/)
+  const parts = withoutSyntheticMarks(text).split(/\b(P\d{1,2})\b/)
   return (
     <>
       {parts.map((p, i) => {
@@ -92,10 +93,10 @@ function SourceItemCard({ item }: { item: ManaSourceItem }) {
         <Badge tone="neutral" icon={<FileText aria-hidden="true" className="size-3" />}>
           {MANA_SOURCE_KINDS[item.kind]}
         </Badge>
-        <span className="font-medium">{item.label}</span>
+        <span className="font-medium">{withoutSyntheticMarks(item.label)}</span>
         {item.status && <Badge tone={/draft|not signed/i.test(item.status) ? 'warn' : 'notice'}>{item.status}</Badge>}
       </p>
-      <p className="mt-1 [overflow-wrap:anywhere]">“{item.excerpt}”</p>
+      <p className="mt-1 [overflow-wrap:anywhere]">“{withoutSyntheticMarks(item.excerpt)}”</p>
       {link && (
         <Link to={link} className="mt-1 inline-block font-medium text-brand-strong underline underline-offset-2">
           {item.link!.to === 'encounter' ? 'Open consultation' : 'Open patient record'}
@@ -317,8 +318,14 @@ function ManaMessageView({ m, question, onSelect, onRetry, busy, current, scope 
       {a.action && <ManaProposalCard m={m} proposal={a.action} scope={scope} disabled={busy} />}
       {/* HERO final: an answer the server composed by fixed rules says so (no model wrote it); the model's answers keep their own labels. */}
       {a.engine === 'rules' && (
-        <p className="mt-2" data-testid="mana-rules-label">
+        <p className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="mana-rules-label">
           <SourceTag kind="rules">{MANA_RULES_ANSWER_LABEL}</SourceTag>
+          {/* Jury polish: where this answer comes from (the queue, the patient record, this consultation, service orders). */}
+          {a.basis && (
+            <span className="text-xs font-medium text-ink-muted" data-testid="mana-answer-basis">
+              {a.basis}
+            </span>
+          )}
         </p>
       )}
       {a.removed > 0 && m.status !== 'unverified' && (
@@ -772,7 +779,7 @@ function ManaSheetPanel({ encounterId, patientId, inputRef, pendingAsk, onAsked,
       submit()
     }
   }
-  const chips = manaChips({ hasPatient: !!sp, modelAvailable: available })
+  const chips = manaChips({ hasPatient: !!sp, modelAvailable: available, inConsultation: !!s?.conversation.scope.encounterId })
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="mana-assistant" data-open="true" data-variant="sheet">

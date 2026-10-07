@@ -1,6 +1,6 @@
 import type { Encounter, NoteFields } from '@adaxai/contracts'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, PenLine } from 'lucide-react'
+import { ArrowLeft, CircleCheck, PenLine } from 'lucide-react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { BottomBar } from '../../components/hero/BottomBar.tsx'
@@ -10,7 +10,9 @@ import { ClinicalNote } from '../../components/rx/ClinicalNote.tsx'
 import { ClinicalSummary } from '../../components/rx/ClinicalSummary.tsx'
 import { printUrl, SignedActions } from '../../components/rx/CompleteConsultation.tsx'
 import { ageSex, PrescriptionDocument } from '../../components/rx/PrescriptionDocument.tsx'
+import { PdfPreview } from '../../components/rx/PdfPreview.tsx'
 import { openInNewTab, PrintPreviewLink } from '../../components/rx/PrintPreviewLink.tsx'
+import { SECONDARY_CONTROL } from '../../components/rx/RepeatMedicineMenu.tsx'
 import { ReviewAndSignDialog } from '../../components/rx/ReviewAndSignDialog.tsx'
 import { allergyReviewNote, medicinesKey, type RxPageState, rxPageState, rxStatusPill } from '../../components/rx/rxModel.ts'
 import { SaveIndicator } from '../../components/rx/SaveIndicator.tsx'
@@ -74,6 +76,7 @@ function Header({ e, state, onBack }: { e: Encounter; state: RxPageState; onBack
       <div className="flex min-w-0 flex-1 items-center gap-3">
         <PatientAvatar name={e.patient.fullName} />
         <div className="min-w-0">
+          <p className="text-xs font-semibold tracking-wide text-brand uppercase">Review and sign prescription</p>
           <h1 className="text-xl font-semibold tracking-tight [overflow-wrap:anywhere]">
             <span className="sr-only">Prescription · </span>
             {e.patient.fullName}
@@ -88,12 +91,18 @@ function Header({ e, state, onBack }: { e: Encounter; state: RxPageState; onBack
   )
 }
 
-/** Two columns from 1024px (summary 5 : prescription 7); one column below, the summary first. */
-function Columns({ left, right }: { left: ReactNode; right: ReactNode }) {
+/**
+ * Jury design, screen 4: the prescription document first (with the clinical summary and the note under it) and the PDF preview beside it from
+ * 1024px (7 : 5, the preview held in view while the document scrolls); one column below, the preview after the document.
+ */
+function Columns({ doc, notes, preview }: { doc: ReactNode; notes: ReactNode; preview: ReactNode }) {
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:items-start">
-      <div className="min-w-0 space-y-4 lg:col-span-5">{left}</div>
-      <div className="min-w-0 lg:col-span-7">{right}</div>
+      <div className="min-w-0 space-y-4 lg:col-span-7">
+        {doc}
+        {notes}
+      </div>
+      <div className="min-w-0 lg:sticky lg:top-4 lg:col-span-5">{preview}</div>
     </div>
   )
 }
@@ -105,13 +114,16 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
   const navigate = useNavigate()
   const d = useEncounterDraft(initial)
   const [reviewing, setReviewing] = useState(false)
+  // [Sign & print] opens the printout as the signature is answered; [Sign] only signs.
+  const [printAfter, setPrintAfter] = useState(true)
   // The fixed rules' allergy name check of the medicines written here: after a saved change to them, on [Check now], and before Review and sign.
   const { saver, flushState } = d
   const savedKeyNow = useCallback(() => medicinesKey(saver.getSnapshot().savedPrescription), [saver])
   const allergy = useAllergyNameCheck(initial.id, { draftKey: medicinesKey(d.draft.prescription), savedKey: medicinesKey(d.savedPrescription), locked: d.locked, savedKeyNow, flushState })
   // Review and sign opens once what is pending is saved and the allergy name check has answered (or failed) for the medicines as saved.
   const [preparing, setPreparing] = useState(false)
-  const openReview = async () => {
+  const openReview = async (print: boolean) => {
+    setPrintAfter(print)
     setPreparing(true)
     try {
       const state = await flushState()
@@ -126,7 +138,7 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
     setReviewing(false)
     toast('success', 'Prescription signed. Complete the consultation when you are done.')
     // Opened as the doctor's Sign is answered; a browser that still blocks it is told so, and [Print] is on the page.
-    openInNewTab(printUrl(signed.id), 'The browser did not open the prescription to print. Use Print below, or allow pop-ups for this site.', toast)
+    if (printAfter) openInNewTab(printUrl(signed.id), 'The browser did not open the prescription to print. Use Print below, or allow pop-ups for this site.', toast)
   })
   const setNote = (key: keyof NoteFields, value: string) => d.update((x) => ({ ...x, note: { ...x.note, [key]: value } }))
   // Ctrl/⌘+S saves now (the autosave saves anyway).
@@ -168,18 +180,29 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
         </Alert>
       )}
       <Columns
-        left={
+        doc={<PrescriptionDocument encounter={initial} draft={d.draft} onChange={d.update} locked={d.locked} inserting={d.inserting} allergy={allergy} />}
+        notes={
           <>
             <ClinicalSummary encounter={initial} inserter={d.inserter} editable={!d.locked} flushState={flushState} />
             <ClinicalNote note={d.draft.note} insertions={d.insertions} readOnly={false} inserting={d.inserting} locked={d.locked} onChange={setNote} />
           </>
         }
-        right={<PrescriptionDocument encounter={initial} draft={d.draft} onChange={d.update} locked={d.locked} inserting={d.inserting} allergy={allergy} />}
+        preview={<PdfPreview encounterId={initial.id} revision={String(d.savedAt?.getTime() ?? 0)} signed={false} flush={d.flushState} />}
       />
       <BottomBar label="Prescription actions" testId="prescription-actions" start={<SaveIndicator state={d.state} savedAt={d.savedAt} />}>
+        <Link to={consultationUrl(initial.id)} onClick={back} className={SECONDARY_CONTROL} data-testid="back-to-editing">
+          <ArrowLeft aria-hidden="true" className="size-4" />
+          Back to editing
+        </Link>
         <PrintPreviewLink encounterId={initial.id} flushState={d.flushState} />
-        <Button icon={<PenLine aria-hidden="true" className="size-4" />} disabled={d.locked || d.inserting} loading={preparing} onClick={() => void openReview()} data-testid="sign-and-print">
+        <Button variant="secondary" disabled={d.locked || d.inserting} loading={preparing && !printAfter} onClick={() => void openReview(false)} data-testid="sign-only">
+          Sign
+        </Button>
+        <Button icon={<PenLine aria-hidden="true" className="size-4" />} disabled={d.locked || d.inserting} loading={preparing && printAfter} onClick={() => void openReview(true)} data-testid="sign-and-print">
           Sign & print
+        </Button>
+        <Button variant="secondary" icon={<CircleCheck aria-hidden="true" className="size-4" />} disabled title="Sign the prescription first" data-testid="complete-locked">
+          Complete consultation
         </Button>
       </BottomBar>
       {reviewing && (
@@ -215,13 +238,14 @@ function ReadPrescription({ e, state }: { e: Encounter; state: RxPageState }) {
         </Alert>
       )}
       <Columns
-        left={
+        doc={<PrescriptionDocument encounter={e} draft={draft} />}
+        notes={
           <>
             <ClinicalSummary encounter={e} inserter={NO_INSERTER} editable={false} />
             <ClinicalNote note={e.note} insertions={e.aiInsertions} readOnly />
           </>
         }
-        right={<PrescriptionDocument encounter={e} draft={draft} />}
+        preview={state === 'discarded' ? null : <PdfPreview encounterId={e.id} revision={e.version + ':' + e.amendments.length} signed={e.status === 'signed'} />}
       />
       {(state === 'signed_to_complete' || state === 'signed' || state === 'completed') && (
         <BottomBar label="Prescription actions" testId="prescription-actions">

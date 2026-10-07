@@ -117,6 +117,7 @@ interface StoredAnswer {
   removed: number
   /** HERO final: `rules` when the server composed it by fixed rules (no model). Absent: the model's. */
   engine?: 'rules'
+  basis?: string
   /** HERO final: an action the doctor may approve or decline (never carried out by the server). */
   action?: ManaActionProposal | null
 }
@@ -283,6 +284,7 @@ export class ManaAssistantService {
         entities: entities.filter((e) => mentioned.has(e.alias)),
         removed: stored.removed,
         ...(stored.engine ? { engine: stored.engine } : {}),
+        ...(stored.basis ? { basis: stored.basis } : {}),
         ...(stored.action ? { action: stored.action } : {}),
       }
     }
@@ -425,7 +427,7 @@ export class ManaAssistantService {
       const findings: ManaFinding[] = r.findings.map((x, i) => ({ ref: `F${i + 1}`, kind: x.kind, text: x.text, items: x.items }))
       const action = r.action
       await this.finish(req, conv, a, {
-        stored: { outcome: r.outcome, notice: r.notice, blocks, findings, candidates: r.candidates, removed: 0, engine: 'rules', ...(action ? { action } : {}) },
+        stored: { outcome: r.outcome, notice: r.notice, blocks, findings, candidates: r.candidates, removed: 0, engine: 'rules', ...(r.basis ? { basis: r.basis } : {}), ...(action ? { action } : {}) },
         plan: { type: 'rules', intent: o.intent, question: o.question, resolution: r.candidates.length ? { callIndexes: [] } : null },
         facts,
         toolRuns: [],

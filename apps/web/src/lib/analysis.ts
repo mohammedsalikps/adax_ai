@@ -555,7 +555,7 @@ export function analyzedTitle(d: Pick<DraftFacts, 'status'>): string {
 
 // --- Generate prescription (DESIGN §5.5): the bottom bar's one primary action -----------------------------------------------------------------
 
-export const GENERATE_LABEL = 'Generate prescription'
+export const GENERATE_LABEL = 'Analyze & Generate Prescription'
 
 /** Said when the local model cannot be asked: the prescription page opens without Mana's summary. */
 export const MANA_UNAVAILABLE = 'Mana is unavailable — you can write the prescription yourself'

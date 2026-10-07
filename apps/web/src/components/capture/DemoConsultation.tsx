@@ -519,7 +519,7 @@ export function DemoConsultation({
       {/* While it plays, only the mark stays above the controls, so that the transcript's new lines stay close by. */}
       {!active && (
         <p className="mt-1.5 text-xs text-ink-muted">
-          Plays a written consultation about a fictional child{plan.data ? ` (${plan.data.parts.length} parts, about ${seconds} seconds)` : ''} through this computer’s speakers and sends each part, as it ends, to the speech model on this computer, as a
+          Plays a written consultation with a fictional adult patient (fever and cough){plan.data ? ` (${plan.data.parts.length} parts, about ${seconds} seconds)` : ''} through this computer’s speakers and sends each part, as it ends, to the speech model on this computer, as a
           recording would. The transcript shows only what the model heard. No patient is recorded; offered because this deployment allows simulators.
         </p>
       )}

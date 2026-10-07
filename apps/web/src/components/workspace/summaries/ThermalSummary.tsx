@@ -196,7 +196,7 @@ function Newest({ n, images, actions }: { n: ThermalNewest; images: string; acti
         {n.body}
       </p>
       <p className="mt-0.5 flex flex-wrap items-center gap-1 text-xs">
-        <ThermalSourceBadge capture={c} compact />
+        <ThermalSourceBadge capture={c} compact simulatedLabel="SIMULATED THERMAL CAPTURE" />
         <span className={`inline-flex items-center rounded-md border px-1.5 py-px text-[0.6875rem] leading-4 font-medium ${STATUS_TONE[n.status.tone]}`}>
           <span className="sr-only">Status: </span>
           {n.status.word}

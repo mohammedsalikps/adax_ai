@@ -25,6 +25,66 @@ What the Doctor App actually does today, and the plan for its first complete con
 | Doctor HERO redesign, **partial (stopped by the owner)**: five input modules, Analyze with Mana, the result and the prescription lane, the pediatric shock research view; three V3 check fixes | the commit titled "Doctor HERO redesign (partial, stopped early) and V3 check fixes" (see `git log`) |
 | Doctor HERO Step 3: the first Step 3 brief's polish (real progress while the model writes, what Mana read, a synthetic demo consultation through the real speech model, a demo patient, missing ≠ none); **the "complete redesign" brief NOT built** | the commit titled "Doctor HERO final clinical workflow UI" (see `git log`) |
 | **Doctor HERO final**: the doctor application per the owner's master specification — four-item navigation, Today/Week/Month, My consultations, the five-input workstation with recording on Start and the digital pen, Generate prescription → prescription page → Sign & print → Complete, the patient app's Today's prescription, service orders (simulated lab), documents and surgeries, a global Mana with fixed-rule answers, voice and confirmed actions, the Thermal page | the commit titled "Doctor HERO final application" (see `git log`) |
+| **Doctor HERO jury polish**: the four reference screens (Home, the patient profile with tabs and average vitals, the workspace with docked Mana and the analyze flow, the prescription page with a real server PDF), a coherent demo clinic (`npm run demo:jury`), contextual fixed-rule Mana answers with their sources, the speaker demo fallback | the commit titled "Doctor HERO jury polish" (see `git log`) |
+
+## Doctor HERO jury polish: the four reference screens, a coherent demo clinic, a real prescription PDF
+
+**Basis:** the owner's "FINAL JURY UI/UX + FUNCTIONAL POLISH" brief (with the four-screen reference image). A focused pass on the existing
+application: no architecture change, the backend, safety rules and tests kept. Synthetic data only. No hardware was used.
+
+### What changed
+
+- **Demo clinic (`npm run demo:jury`, development database only):** ADAXAI Clinic, Dr. Meera Iyer, 20 fictional patients, 103 earlier
+  signed and completed consultations over four weeks, and **Ramesh Kumar** (45 M, MRN ADX-001245) with conditions, an allergy, medicines, a
+  surgery, four earlier consultations with staff vitals, eight results and two small synthetic PDF reports; today 5 completed · 1 in
+  consultation · 6 waiting · 8 booked = 20, all counted by the server. (The reference image's 5/20/15/20 cannot all hold at once; the tiles
+  show the server's counts.) See [DEMO.md](DEMO.md#the-jury-demonstration-adaxai-clinic--dr-meera-iyer--ramesh-kumar).
+- **Shell:** plain names (the data's "(synthetic)" mark said once, in the sidebar's footer); "Doctor HERO" under the brand; Mana in the
+  navigation.
+- **Home (screen 1):** pastel tiles with icons; the current patient (with me, or next) beside the week's consultations; today's patients.
+- **Patient profile (screen 2):** `PatientRecordView` — header with allergy and condition badges; tabs Overview · Consultations ·
+  Prescriptions · Lab Reports · Imaging · Documents · Surgeries · Allergies & Medications; *Average / Recent Vitals* (averages of STAFF
+  measurements over 6 / 12 months / all; device and simulated values left out); record summary by fixed rules (not AI); recent
+  consultations; patient information; active medications.
+- **Consultation workspace (screen 3):** condition badges and "Consultation in progress"; [View history]; the Mana panel docked in the
+  workspace (four one-tap questions answered by fixed rules, with their source); a simple "Doctor's note" (Chief complaint, History of present
+  illness, Clinical findings, Assessment, Plan; Keyboard first, Handwriting second); **speaker demo fallback**: lines nobody assigned show a
+  dashed Doctor/Patient chip alternating by recorded part, said once under the conversation ("no model identified the speakers"); the
+  thermal tile says **SIMULATED THERMAL CAPTURE** for a simulator image; the primary button is **Analyze & Generate Prescription**.
+- **Analyze (§29):** the "Analyzing the consultation" sheet shows the six inputs (each ticking on the server's real line; the stethoscope
+  "recorded · not analysed"), then ADAXAI Clinical Context → Mana AI (the local model's real state, token count and time) → Clinical summary →
+  Prescription draft. The only staging is the inputs' entrance (about 2.5 s); the model's stage lasts exactly as long as the model.
+- **Prescription (screen 4):** "Review and sign prescription": the document first, the **PDF preview** beside it (the server's real PDF,
+  remade after each save), [Open PDF] [Print]; bottom bar Back to editing · Preview · Sign · Sign & print · Complete consultation (locked
+  until signed). New **`GET /api/encounters/:id/prescription.pdf`** (`apps/api/src/encounters/pdf.ts`, hand-written PDF 1.4, no dependency;
+  permission `encounters:read`; audited as a read; a draft is marked "DRAFT — NOT SIGNED" on every page; a signed one carries "Signed
+  electronically on …"; every page's footer: synthetic data, not a valid prescription). Signing still never completes; Complete is separate
+  and confirmed.
+- **Mana:** new fixed-rule answers about the conversation's patient (history summary, medicines, last consultation, lab results, surgeries,
+  today's consultation), each with its source ("From the patient record", "From this consultation", "From today's queue", "From service
+  orders"); names that point at another patient, or no patient, still go to the planner and its safety checks.
+- **Demo audio:** regenerated as an adult fever consultation for Ramesh (Windows voices; still SYNTHETIC AUDIO); the real local speech model
+  transcribed it with 0 word errors in 69 words.
+
+### Verification
+
+- Typecheck and lint: clean. Web unit tests **369 passed** (3 tests updated for the intended changes: the demo audio offsets, the Mana chips,
+  Sign / Sign & print both through the review). Web build: passes. **API: 1,118 passed, 1 skipped, 0 failed** (adds the PDF tests and the
+  jury Mana questions).
+- **Real-stack jury walkthrough** (Chrome; the real local models: Qwen3.5-4B on llama.cpp, faster-whisper-small): login → Home (tiles equal
+  the server's counts) → Week/Month → patient profile and all tabs → Start consultation → demo audio transcribed live → important points
+  found, confirmed, added to the note → vitals (no DISCONNECTED) → simulated thermal capture → four Mana answers, all different, each with
+  its source → note → Analyze (the prescription page opened after 40–50 s of real model time) → diagnosis and two medicines → PDF (draft
+  mark) → Sign & print (the visit stays in consultation) → Complete → the profile shows today's consultation and Home counts one more seen.
+  No horizontal overflow at 1920×1080, 1440×900, 1366×768, 1280×800, 1180×820, 768×1024 (Home, profile, workspace, prescription).
+- **Browser tests (the suite's labelled stand-ins):** the critical set (`auth`, `doctor-hero-final`, `doctor-workflow`, `doctor-home`, `patient-portal`, `record-lifecycle`, `mana`, `devices-live`, `thermal-v6`, `nurse-workflow`; desktop): the first run, with the full dev stack and the local models running beside it, had 7 passed, 1 skipped and 29 failed + 1 not run, almost all `page.goto` timeouts at sign-in (this machine's known request stalls under load); **all 30 passed on a rerun alone with one worker** → **37 passed, 1 skipped, 0 failed**. Tests updated for the intended changes (equal or greater strength, each with its reason in a comment): `doctor-hero-final` (the pen is now the "Handwriting" tab), `auth` (the top bar shows the plain name), `mana` ("Summarize history" now stays offered with the model down and is answered by fixed rules from the record, with its source).
+
+### Limitations
+
+- The speech model identifies no speaker; the Doctor/Patient chips on unassigned lines are a labelled demo fallback, not diarization.
+- Thermal in the demo is the simulator (SIMULATED); FLIR hardware was not used. The stethoscope is recorded, never analysed.
+- The Home times follow the moment `demo:jury` ran (completed patients are earlier that day).
+- The PDF uses the standard Helvetica fonts (WinAnsi): characters outside Latin-1 are written as "?" (none occur in the demo).
 
 ## Doctor HERO final: the doctor application rebuilt on the existing foundations (master specification)
 

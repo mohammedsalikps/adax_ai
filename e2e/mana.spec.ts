@@ -327,10 +327,9 @@ test('when the model is not there Mana says so and makes nothing up, and comes b
   await expect(message(page)).toHaveCount(0)
   await expectNoAxeViolations(page)
   // Doctor HERO final (DESIGN §5.8, §6): the question box stays usable while the model is down, because questions fixed rules answer need no
-  // model; a question the model would have to answer is refused before anything is stored, and nothing is made up; Summarize history (the model
-  // writes it) is not offered.
+  // model; a question the model would have to answer is refused before anything is stored, and nothing is made up. Jury polish: "Summarize
+  // history" is now composed from the record by fixed rules, so it stays offered (and answers) while the model is down.
   await expect(input(page)).toBeEnabled()
-  await expect(mana(page).getByRole('button', { name: 'Summarize history' })).toHaveCount(0)
   await ask(page, 'What allergies are recorded for this patient?')
   await expect(mana(page).getByTestId('mana-ask-error')).toHaveText('Mana is currently unavailable.')
   await expect(message(page)).toHaveCount(0)
@@ -339,6 +338,12 @@ test('when the model is not there Mana says so and makes nothing up, and comes b
   await answered(page)
   await expect(message(page).last()).toContainText('Penicillin')
   await expect(message(page).last().getByTestId('mana-rules-label')).toContainText('From the records (fixed rules)')
+  await mana(page).getByRole('button', { name: 'Summarize history', exact: true }).click()
+  await expect(message(page)).toHaveCount(2)
+  await answered(page)
+  await expect(message(page).last()).toContainText('Penicillin')
+  await expect(message(page).last().getByTestId('mana-rules-label')).toContainText('From the records (fixed rules)')
+  await expect(message(page).last().getByTestId('mana-answer-basis')).toHaveText('From the patient record')
   await llm('ok')
   // Back by itself (the sheet looks again every few seconds): the input was never disabled, so the wait is on the unavailable notice going away.
   await expect(mana(page).getByTestId('mana-status-unavailable')).toHaveCount(0, { timeout: 20_000 })

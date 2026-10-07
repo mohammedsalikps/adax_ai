@@ -41,9 +41,9 @@ test('the committed manifest is read as 8 parts in order, each starting where th
   )
   assert.deepEqual(
     plan.parts.map((p) => p.offsetMs),
-    [0, 3555, 7590, 10935, 16590, 19545, 23345, 26350],
+    [0, 4885, 9435, 12115, 17130, 19975, 24960, 27919],
   )
-  assert.equal(plan.totalMs, 29940)
+  assert.equal(plan.totalMs, 33044)
   assert.equal(plan.totalMs, manifest.totalDurationMs)
   assert.equal(plan.parts[0]!.url, '/demo/consultation/01-doctor.wav')
   // The script's words and speakers are documentation: the player never has them, so it can never show or send them.
@@ -110,7 +110,7 @@ test('the parts are played in their index order whatever order the manifest list
     plan.parts.map((p) => p.file),
     manifest.utterances.map((u: { file: string }) => u.file),
   )
-  assert.equal(plan.parts[7]!.offsetMs, 26350)
+  assert.equal(plan.parts[7]!.offsetMs, 27919)
 })
 
 test('a new line is shown word by word, never with a word it does not have, and whole within 600 ms', () => {

@@ -14,6 +14,7 @@
     "demo:hospital": "tsx src/db/hospital-seed.ts",
     "demo:devices": "tsx src/devices/demo-devices.ts",
     "demo:hero": "tsx src/db/hero-demo.ts",
+    "demo:jury": "tsx src/db/jury-demo.ts",
     "devices:simulate": "tsx src/devices/simulate-cli.ts",
     "user:reset-password": "tsx src/reset-password-cli.ts",
     "audit:verify": "tsx src/audit/verify-cli.ts",
