@@ -27,6 +27,58 @@ What the Doctor App actually does today, and the plan for its first complete con
 | **Doctor HERO final**: the doctor application per the owner's master specification — four-item navigation, Today/Week/Month, My consultations, the five-input workstation with recording on Start and the digital pen, Generate prescription → prescription page → Sign & print → Complete, the patient app's Today's prescription, service orders (simulated lab), documents and surgeries, a global Mana with fixed-rule answers, voice and confirmed actions, the Thermal page | the commit titled "Doctor HERO final application" (see `git log`) |
 | **Doctor HERO jury polish**: the four reference screens (Home, the patient profile with tabs and average vitals, the workspace with docked Mana and the analyze flow, the prescription page with a real server PDF), a coherent demo clinic (`npm run demo:jury`), contextual fixed-rule Mana answers with their sources, the speaker demo fallback | the commit titled "Doctor HERO jury polish" (see `git log`) |
 | **Doctor HERO premium clinical UX and Mana recovery**: Mana as a two-column clinical assistant with grouped contextual questions and new fixed-rule answers, the consultation cockpit, the converging Analyze diagram with the draft summary, the prescription document with a suggested diagnosis and inline sign checks, the thermal analysis dashboard (demo indices, not clinically validated), Home and profile per the reference | the commit titled "Doctor HERO premium clinical UX and Mana recovery" (see `git log`) |
+| **Final demo polish**: Analyze fills an empty prescription with a labelled DEMO draft from what the consultation says (stomach pain → gastritis/dyspepsia + pantoprazole; fever; headache); an ordinary PNG/JPEG on the thermal pages is analysed as a demo (simulated values, labelled) instead of refused; a light visual pass | the commit titled "Finalize demo prescription and thermal flow" (see `git log`) |
+
+## Final demo polish: demo prescription draft and the ordinary-image thermal path
+
+**Basis:** the owner's "FINAL QUICK POLISH — DO NOT REDESIGN OR REMOVE FEATURES" brief. Two functional changes and a light visual pass on the
+existing workflow; navigation, pages, Mana, the safety checks and the database unchanged. Synthetic data only; no hardware used.
+
+### What changed
+
+- **Demo prescription draft (DEMO / SEED, `apps/web/src/lib/demoPrescription.ts`).** In a deployment that allows simulators (synthetic data,
+  not production), *Analyze & Generate Prescription* fills an **empty** prescription with a deterministic draft for what the consultation says —
+  the chief complaint first, then the visit's reason, the history, the assessment and the conversation's text: *stomach / abdominal /
+  epigastric pain* → Acute gastritis / dyspepsia, Pantoprazole 40 mg tablet, 1 tablet orally once daily before food for 5 days, "Avoid
+  heavy/spicy meals. Maintain hydration.", "Review after 5 days or earlier if symptoms worsen."; *fever* → viral fever, paracetamol;
+  *headache* → tension-type headache, paracetamol. It is a fixed keyword table, **not AI and not a clinical recommendation**; it never touches
+  a prescription the doctor has started and keeps any advice or follow-up the doctor wrote; it is saved through the draft's own save. The
+  prescription page says *Demo prescription draft — doctor review required* above the document; every part has **Edit**; the allergy name
+  check, the sign checks, the review attestation, Sign & print and the separate Complete are unchanged. `demoPrescriptionFor` is the one entry
+  point a real clinical decision support module would replace.
+- **Thermal PATH B: an ordinary image is not a dead end.** A radiometric FLIR file goes through the real extraction as before (PATH A, its
+  NON-RADIOMETRIC refusal and its tests unchanged). When the real extraction refuses an ordinary PNG/JPEG, the upload dialog says *Demo image
+  detected — Temperature metadata is unavailable. Continuing with simulated thermal analysis.* with **Continue analysis**:
+  `POST /api/patients/:id/thermal/demo-image` (only where the simulator is allowed; refused and audited in a clinical or production
+  deployment) stores the picture as the original and values **simulated from its colours** by a fixed formula (contracts `demoImageHeat`),
+  as a simulated capture (`simulator`, data origin `synthetic`: the database constraints), linked to the patient and to a consultation in
+  progress when one is named. The dashboard shows the picture itself, the five demo indices, a summary that never calls the values
+  temperatures ("simulated units"), and both labels: *Demo analysis — not clinically validated* and *Demo thermal analysis — temperature data
+  not available*. Nothing detects pain or shock, diagnoses, or claims a validated score.
+- **Light visual pass:** a lighter canvas, softer lines, a softer card shadow, rounder panels (tokens and the Panel only).
+
+### Verification
+
+- Typecheck and lint clean. API `thermal-v6` 23/23 (new: the demo-image route — refusals, stored as simulated with the picture kept, the
+  analysis equal to the formulas over the colour grid, no "°C", audits, a consultation of another patient refused, the clinical deployment
+  refused; the NON-RADIOMETRIC refusal test unchanged and passing); the other thermal API suites 39/39. Web unit 375/375 (new:
+  `demoPrescription.test.ts`).
+- End to end (desktop): `doctor-hero-final` (the demo draft shown, labelled, edited, signed and printed; Complete separate),
+  `doctor-workflow` (the doctor's own Plan kept; the draft edited and signed), `mana.spec` (asking Mana changes nothing in the draft: compared
+  before and after, version included), `thermal-v6` (new: an ordinary PNG → *Demo image detected* → the dashboard with the picture, five
+  indices, the summary and both labels, axe clean), `thermal.spec` (the FLIR path) — all pass (two needed the usual solo rerun for page-load
+  stalls on this machine). `consult.spec` (8) and `mana-analyze.spec` (3) fail as at the baseline (class C below: the panel they wait for is
+  not on the consultation page).
+- Real stack (this machine, the real local model and thermal service, a new synthetic patient): a stomach-pain consultation → Analyze → the
+  prescription opened with Acute gastritis / dyspepsia, Pantoprazole 40 mg once daily before food for 5 days, the advice and the follow-up,
+  labelled; edited (instructions, advice) → Sign & print (the printout carries the edits) → signed with the visit still in consultation →
+  Complete. Thermal page: an ordinary JPEG → the notice → the demo dashboard; the public FLIR sample → the real extraction (240 × 320, flyr).
+
+### Limitations
+
+- The demo prescription is a keyword table for three demonstration cases; anything else leaves the prescription empty, as before.
+- The demo image's values are simulated from colours: they are not temperatures; the thermal study view behind the dashboard shows them on
+  its scale, marked SIMULATED.
 
 ## Doctor HERO premium clinical UX and Mana recovery
 

@@ -90,6 +90,13 @@ test('Mana is closed until the doctor opens it, then answers from the record: st
   // and opens the prescription page with the draft ready for review: it does not open Mana or ask it anything.
   await openPrescription(page)
   await expect(page.getByTestId('clinical-summary-state')).toHaveAttribute('data-state', 'shown', { timeout: 30_000 })
+  // Final demo polish: Analyze filled the empty prescription with the labelled DEMO draft for this fever consultation (fixed demo rules, not
+  // AI, not Mana). What is checked below is that ASKING Mana changes nothing in the draft, exactly as it stands now.
+  await expect(page.getByTestId('rx-demo-draft')).toBeVisible()
+  // Saved by the analysis' own save before the page opened (the page has nothing pending: "No changes").
+  await expect.poll(async () => (await (await page.request.get(`/api/encounters/${encounterId}`)).json()).prescription.map((x: { drugName: string }) => x.drugName)).toEqual(['Paracetamol'])
+  const before = await (await page.request.get(`/api/encounters/${encounterId}`)).json()
+  const adviceBefore = await page.getByLabel('Advice / diet').inputValue()
   await expect(launcher).toHaveAttribute('aria-expanded', 'false')
   await expect(mana(page)).toHaveCount(0)
   expect(manaRequests).toEqual([])
@@ -131,14 +138,15 @@ test('Mana is closed until the doctor opens it, then answers from the record: st
   await expect(a.getByTestId('mana-details')).toContainText('runs on this computer')
   await expect(a.getByTestId('mana-details')).toContainText('mana-assistant-answer-v1')
   await expectNoAxeViolations(page)
-  // Nothing was written to the consultation by asking: the prescription page's Advice / diet (the note's Plan) is empty and nothing is prescribed,
-  // on the page and in the record.
+  // Nothing was written to the consultation by asking: the prescription page's Advice / diet (the note's Plan) and the medicines are exactly
+  // what they were before the question, on the page and in the record.
   await closeMana(page)
-  await expect(page.getByLabel('Advice / diet')).toHaveValue('')
-  await expect(page.getByTestId('rx-medicines')).toContainText('No medicines prescribed.')
+  await expect(page.getByLabel('Advice / diet')).toHaveValue(adviceBefore)
   const saved = await (await page.request.get(`/api/encounters/${encounterId}`)).json()
-  expect(saved.note.plan).toBe('')
-  expect(saved.prescription).toEqual([])
+  expect(saved.note.plan).toBe(before.note.plan)
+  expect(saved.prescription).toEqual(before.prescription)
+  expect(saved.diagnoses).toEqual(before.diagnoses)
+  expect(saved.version).toBe(before.version)
 
   // What the model was shown: the record as statements, the patient as a handle; never the name, the MRN or the telephone number.
   const calls = (await llmCalls(true)).calls.slice(base).filter((c) => c.kind)

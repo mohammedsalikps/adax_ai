@@ -1,4 +1,4 @@
-import { type CaptureProtocol, type Encounter, THERMAL_SUMMARY_DECISIONS, type ThermalCapture, type ThermalCaptureSource, type ThermalDeviceReported, type ThermalModelStatus, type ThermalSimulateRequest, type ThermalSummary, type ThermalSummaryReviewRequest, type ThermalWorkspaceEventRequest } from '@adaxai/contracts'
+import { type CaptureProtocol, demoImageHeat, type Encounter, THERMAL_DEMO_IMAGE_EXTRACTOR, THERMAL_SUMMARY_DECISIONS, type ThermalCapture, type ThermalCaptureSource, type ThermalDeviceReported, type ThermalModelStatus, type ThermalSimulateRequest, type ThermalSummary, type ThermalSummaryReviewRequest, type ThermalWorkspaceEventRequest } from '@adaxai/contracts'
 import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from './api.ts'
 import { fmtDateTime } from './format.ts'
@@ -50,6 +50,44 @@ export function uploadThermal(patientId: string, input: ThermalUploadInput): Pro
   const name = input.fileName ?? (input.file instanceof File ? input.file.name : 'thermal.jpg')
   fd.append('file', input.file, name)
   return api<ThermalCapture>(`/patients/${patientId}/thermal`, { method: 'POST', body: fd })
+}
+
+/** Whether a capture is a DEMO image: an ordinary picture analysed with simulated values (no temperature data). */
+export const isDemoImage = (c: Pick<ThermalCapture, 'extractor'>) => c.extractor.name === THERMAL_DEMO_IMAGE_EXTRACTOR
+
+/** An ordinary image's colours as a grid of "heat" values (contracts demoImageHeat), at most 160 pixels on its longer side, base64. */
+async function demoImageGrid(file: Blob): Promise<{ width: number; height: number; grid: string }> {
+  const bmp = await createImageBitmap(file)
+  const k = Math.min(1, 160 / Math.max(bmp.width, bmp.height))
+  const width = Math.max(8, Math.round(bmp.width * k))
+  const height = Math.max(8, Math.round(bmp.height * k))
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('The image could not be read.')
+  ctx.drawImage(bmp, 0, 0, width, height)
+  bmp.close()
+  const px = ctx.getImageData(0, 0, width, height).data
+  let bin = ''
+  for (let i = 0; i < width * height; i++) bin += String.fromCharCode(demoImageHeat(px[i * 4]!, px[i * 4 + 1]!, px[i * 4 + 2]!))
+  return { width, height, grid: btoa(bin) }
+}
+
+/**
+ * DEMO path (final demo polish): an ordinary PNG/JPEG the upload refused as non-radiometric, analysed as a demonstration with values simulated
+ * from its colours (POST /patients/:id/thermal/demo-image; only where the simulator is allowed). Stored as simulated, never as a measurement.
+ */
+export async function uploadDemoThermalImage(patientId: string, input: { file: Blob; protocol: CaptureProtocol; encounterId?: string | null | undefined }): Promise<ThermalCapture> {
+  const g = await demoImageGrid(input.file)
+  const fd = new FormData()
+  if (input.encounterId) fd.append('encounterId', input.encounterId)
+  fd.append('protocol', JSON.stringify(input.protocol))
+  fd.append('gridWidth', String(g.width))
+  fd.append('gridHeight', String(g.height))
+  fd.append('grid', g.grid)
+  fd.append('file', input.file, input.file instanceof File ? input.file.name : 'demo-image.jpg')
+  return api<ThermalCapture>(`/patients/${patientId}/thermal/demo-image`, { method: 'POST', body: fd })
 }
 
 /** Asks the server's simulator for a capture (stored and shown as SIMULATED; `invalid_capture` and `processing_failure` are refused). */

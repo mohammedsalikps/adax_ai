@@ -94,3 +94,22 @@ export function thermalStats(m: ArrayLike<number>): ThermalStats {
   const r = (v: number) => Math.round(v * 100) / 100
   return { pixelCount: n, minC: r(min), maxC: r(max), meanC: r(mean), stdC: r(Math.sqrt(sq / n)) }
 }
+
+/**
+ * DEMO thermal image (final demo polish): an ordinary PNG or JPEG — a photo, a screenshot of a thermal image — has no temperature data. Where the
+ * simulator is allowed it can still be analysed as a DEMO: the browser reduces it to a grid of at most DEMO_IMAGE_GRID_MAX × DEMO_IMAGE_GRID_MAX
+ * colour "heat" values (0–255, `demoImageHeat`), and the API turns each into a simulated value on a skin-like scale (`demoImageHeatToC`). The
+ * capture is stored as simulated and labelled "Demo thermal analysis — temperature data not available": nothing in it was measured.
+ */
+export const THERMAL_DEMO_IMAGE_EXTRACTOR = 'demo-image'
+export const THERMAL_DEMO_IMAGE_LABEL = 'Demo thermal analysis — temperature data not available'
+export const DEMO_IMAGE_GRID_MAX = 320
+
+/** A pixel's colour as a "heat" value 0–255 by a fixed formula: warm colours (red, yellow, white) high, blue and black low. Not a temperature. */
+export function demoImageHeat(r: number, g: number, b: number): number {
+  const h = 0.2 + (0.55 * r + 0.25 * g - 0.2 * b) / 255
+  return Math.round(Math.min(1, Math.max(0, h)) * 255)
+}
+
+/** A heat value (0–255) as a simulated value on a skin-like scale, 26–37 (rounded to 0.01). Simulated, never measured. */
+export const demoImageHeatToC = (heat: number): number => Math.round((26 + (Math.min(255, Math.max(0, heat)) / 255) * 11) * 100) / 100

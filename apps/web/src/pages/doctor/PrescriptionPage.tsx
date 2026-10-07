@@ -1,6 +1,6 @@
 import { type Encounter, type NoteFields, signIssues } from '@adaxai/contracts'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, CircleCheck, PenLine } from 'lucide-react'
+import { ArrowLeft, CircleCheck, FlaskConical, PenLine } from 'lucide-react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { BottomBar } from '../../components/hero/BottomBar.tsx'
@@ -22,6 +22,7 @@ import { PatientAvatar } from '../../components/ui/PatientAvatar.tsx'
 import { useToast } from '../../components/ui/Toast.tsx'
 import { ApiError, errorMessage } from '../../lib/api.ts'
 import { draftOf, isLocked } from '../../lib/draftSaver.ts'
+import { DEMO_PRESCRIPTION_NOTICE, demoPrescriptionMark } from '../../lib/demoPrescription.ts'
 import { useEncounterDraft, useFreshDraftGate, useSignEncounter } from '../../lib/encounterDraft.ts'
 import { encounterKey, useEncounter } from '../../lib/encounters.ts'
 import type { NoteInserter } from '../../lib/insert.ts'
@@ -127,6 +128,8 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
   // What the signing rules still need, shown in the document where it belongs once the doctor has tried to sign (and kept current as they edit).
   const [triedToSign, setTriedToSign] = useState(false)
   const issues = triedToSign ? signIssues(d.draft) : []
+  // DEMO / SEED: Analyze filled this draft by the fixed demo rules (lib/demoPrescription.ts): said plainly, above the document.
+  const [demoFilled] = useState(() => demoPrescriptionMark(initial.id) !== null)
   const openReview = async (print: boolean) => {
     setPrintAfter(print)
     setPreparing(true)
@@ -191,6 +194,15 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
           </button>
           .
         </Alert>
+      )}
+      {demoFilled && (
+        <div role="note" className="mb-4 flex items-start gap-3 rounded-2xl border border-brand/20 bg-brand-soft px-4 py-3 text-sm" data-testid="rx-demo-draft">
+          <FlaskConical aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-brand" />
+          <div>
+            <p className="font-semibold text-ink">Demo prescription draft — doctor review required</p>
+            <p className="mt-0.5 text-ink-muted">{DEMO_PRESCRIPTION_NOTICE}</p>
+          </div>
+        </div>
       )}
       <Columns
         doc={<PrescriptionDocument encounter={initial} draft={d.draft} onChange={d.update} locked={d.locked} inserting={d.inserting} allergy={allergy} issues={issues} />}

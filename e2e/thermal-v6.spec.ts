@@ -266,3 +266,56 @@ test('thermal imaging in the consultation: no camera in a browser, a SIMULATED c
   await admin.dispose()
   void encounterId
 })
+
+test('an ordinary PNG is not a dead end: “Demo image detected”, then the demo analysis dashboard with the picture, five indices, a summary and both labels', async ({ page, baseURL }) => {
+  const p = await nurseHandsOverPatient(baseURL!, { consents: ['thermal_imaging'] })
+  await signIn(page, 'dr.meera')
+  await page.goto(`/doctor/thermal?patientId=${p.patientId}`)
+  await expect(page.getByTestId('thermal-patient-name')).toContainText(p.name)
+  // An ordinary picture (a warm patch on a cool background), made by the browser: no FLIR radiometric data in it.
+  const dataUrl = await page.evaluate(() => {
+    const c = document.createElement('canvas')
+    c.width = 120
+    c.height = 90
+    const g = c.getContext('2d')!
+    g.fillStyle = '#1e3a8a'
+    g.fillRect(0, 0, 120, 90)
+    g.fillStyle = '#f97316'
+    g.fillRect(70, 20, 40, 50)
+    return c.toDataURL('image/png')
+  })
+  const png = Buffer.from(dataUrl.split(',')[1]!, 'base64')
+  await page.getByTestId('thermal-upload').click()
+  const dlg = page.getByRole('dialog', { name: 'Upload thermal image' })
+  await dlg.getByLabel(/Radiometric JPEG/).setInputFiles({ name: 'knee-photo.png', mimeType: 'image/png', buffer: png })
+  await dlg.getByLabel('Body region').selectOption('knee')
+  await dlg.getByRole('button', { name: 'Upload and extract' }).click()
+  // PATH B: no blocking refusal; said plainly, and the doctor continues.
+  const notice = dlg.getByTestId('thermal-demo-notice')
+  await expect(notice).toContainText('Demo image detected')
+  await expect(notice).toContainText('Temperature metadata is unavailable. Continuing with simulated thermal analysis.')
+  await expect(dlg.getByRole('alert')).toHaveCount(0)
+  await expectNoAxeViolations(page)
+  await dlg.getByTestId('thermal-demo-continue').click()
+  const sheet = page.getByTestId('thermal-analysis-sheet')
+  await expect(sheet.getByTestId('thermal-analysis')).toBeVisible({ timeout: 30_000 })
+  await expect(sheet).toContainText(p.name)
+  await expect(sheet).toContainText(`MRN ${p.mrn}`)
+  await expect(sheet.getByTestId('thermal-analysis-demo-label')).toHaveText('Demo analysis — not clinically validated')
+  await expect(sheet.getByTestId('thermal-analysis-demo-image')).toHaveText('Demo thermal analysis — temperature data not available')
+  // The picture itself, as uploaded.
+  const img = sheet.getByTestId('thermal-analysis-image')
+  await expect(img).toHaveJSProperty('complete', true)
+  expect(await img.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBe(120)
+  await expect(sheet.getByTestId('thermal-index')).toHaveCount(5)
+  for (const label of ['Pain pattern', 'Thermal asymmetry', 'Perfusion pattern', 'Temperature pattern', 'Thermal stress']) await expect(sheet.getByTestId('thermal-index').filter({ hasText: label })).toHaveCount(1)
+  await expect(sheet.getByTestId('thermal-analysis-summary')).toContainText('has no temperature data, so its values were simulated')
+  await expect(sheet.getByTestId('thermal-analysis-summary')).toContainText('No clinical interpretation or diagnosis should be made')
+  await expect(sheet).not.toContainText('°C')
+  await expectNoAxeViolations(page)
+  // Stored for the patient as simulated (never as a measurement).
+  const api = await staff(baseURL!, 'dr.meera')
+  const captures = (await (await api.get(`/api/patients/${p.patientId}/thermal`)).json()).captures
+  expect(captures.map((c: { captureSource: string; simulated: boolean; dataOrigin: string; extractor: { name: string } }) => [c.captureSource, c.simulated, c.dataOrigin, c.extractor.name])).toEqual([['simulator', true, 'synthetic', 'demo-image']])
+  await api.dispose()
+})

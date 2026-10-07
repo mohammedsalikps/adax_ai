@@ -1,10 +1,10 @@
-import type { ThermalCapture } from '@adaxai/contracts'
+import { THERMAL_DEMO_IMAGE_LABEL, type ThermalCapture } from '@adaxai/contracts'
 import { useQuery } from '@tanstack/react-query'
 import { FlaskConical, LoaderCircle, ScanHeart } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { api } from '../../lib/api.ts'
 import { fmtDate } from '../../lib/format.ts'
-import { paletteCss, paletteLut, useMatrix, useThermal } from '../../lib/thermal.ts'
+import { isDemoImage, paletteCss, paletteLut, useMatrix, useThermal } from '../../lib/thermal.ts'
 import { Sheet } from '../hero/Sheet.tsx'
 import { ErrorState } from '../ui/Feedback.tsx'
 
@@ -15,6 +15,8 @@ export interface ThermalAnalysisResult {
   summary: string[]
   scale: { minC: number; maxC: number }
   simulated: boolean
+  /** An ordinary image without temperature data, analysed as a demo with values simulated from its colours. */
+  demoImage?: boolean
 }
 
 export const thermalAnalysisKey = (captureId: string) => ['thermal', captureId, 'analysis'] as const
@@ -114,6 +116,15 @@ function ThermalImage({ capture, minC, maxC }: { capture: ThermalCapture; minC: 
   )
 }
 
+/** A DEMO image (an ordinary picture, no temperature data): the picture itself, as uploaded, without a temperature scale. */
+function DemoImage({ capture }: { capture: ThermalCapture }) {
+  return (
+    <div className="overflow-hidden rounded-2xl bg-ink">
+      <img src={`/api/files/${capture.rawFileId}`} alt={`Uploaded image of ${capture.protocol.bodyRegion} (demo: no temperature data)`} className="block aspect-[4/3] w-full object-contain" data-testid="thermal-analysis-image" />
+    </div>
+  )
+}
+
 /**
  * The thermal analysis dashboard (premium design): the image prominently, five demonstration indices as rings (each with the measured number it
  * comes from), a short summary composed by rules, and — visible at the top — "Demo analysis — not clinically validated". What a future validated
@@ -131,6 +142,7 @@ export function ThermalAnalysisDashboard({ captureId, patient }: { captureId: st
     )
   const c = capture.data
   const a = analysis.data
+  const demoImage = a.demoImage === true || isDemoImage(c)
   return (
     <div className="space-y-5" data-testid="thermal-analysis">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -143,13 +155,20 @@ export function ThermalAnalysisDashboard({ captureId, patient }: { captureId: st
             {c.protocol.bodyRegion ? ` · ${c.protocol.bodyRegion}` : ''}
           </p>
         </div>
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-pending/25 bg-pending-soft px-3 py-1 text-xs font-semibold text-pending" data-testid="thermal-analysis-demo-label">
-          <FlaskConical aria-hidden="true" className="size-3.5" />
-          {a.engine.label}
-        </span>
+        <div className="flex flex-col items-end gap-1.5">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-pending/25 bg-pending-soft px-3 py-1 text-xs font-semibold text-pending" data-testid="thermal-analysis-demo-label">
+            <FlaskConical aria-hidden="true" className="size-3.5" />
+            {a.engine.label}
+          </span>
+          {demoImage && (
+            <span className="inline-flex items-center rounded-full border border-brand/20 bg-brand-soft px-3 py-1 text-xs font-semibold text-brand-strong" data-testid="thermal-analysis-demo-image">
+              {THERMAL_DEMO_IMAGE_LABEL}
+            </span>
+          )}
+        </div>
       </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
-        <ThermalImage capture={c} minC={a.scale.minC} maxC={a.scale.maxC} />
+        {demoImage ? <DemoImage capture={c} /> : <ThermalImage capture={c} minC={a.scale.minC} maxC={a.scale.maxC} />}
         <section aria-label="Analysis scores">
           <h3 className="text-sm font-semibold">Analysis scores</h3>
           <ul className="mt-3 grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-3">
@@ -168,7 +187,9 @@ export function ThermalAnalysisDashboard({ captureId, patient }: { captureId: st
           {a.summary.join(' ')}
         </p>
         <p className="mt-3 text-xs text-ink-muted">
-          Indices computed by fixed demonstration formulas from the recorded temperatures ({a.engine.name} v{a.engine.version}); they detect, predict and diagnose nothing. A validated thermal model would replace them.
+          {demoImage
+            ? `Indices computed by fixed demonstration formulas from values simulated from the image’s colours (${a.engine.name} v${a.engine.version}): the image has no temperature data. They measure, detect and diagnose nothing.`
+            : `Indices computed by fixed demonstration formulas from the recorded temperatures (${a.engine.name} v${a.engine.version}); they detect, predict and diagnose nothing. A validated thermal model would replace them.`}
         </p>
       </section>
     </div>

@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { CONSENT_VERSIONS, Device, Encounter, PatientDetail, simulateThermalMatrix, THERMAL_SIM_SIZE, THERMAL_SIM_VERSION, ThermalCapture, ThermalDatasetExport, ThermalModelStatus, thermalStats, Visit } from '@adaxai/contracts'
+import { CONSENT_VERSIONS, demoImageHeatToC, Device, Encounter, PatientDetail, simulateThermalMatrix, THERMAL_DEMO_IMAGE_EXTRACTOR, THERMAL_SIM_SIZE, THERMAL_SIM_VERSION, ThermalCapture, ThermalDatasetExport, ThermalModelStatus, thermalStats, Visit } from '@adaxai/contracts'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { buildPatientContext } from '../src/ai/context.ts'
 import { hashPassword } from '../src/auth/password.ts'
@@ -501,6 +501,58 @@ describe.skipIf(!haveThermal)('V6 thermal simulator: SIMULATED captures', () => 
       { engine: 'adaxai-thermal-demo-indices', version: '1', simulated: true },
     ])
     expect((await call(ctx.app, 'GET', '/api/thermal/00000000-0000-4000-8000-000000000000/analysis', { cookie: doctor })).statusCode).toBe(404)
+  })
+
+  it('an ordinary PNG/JPEG is analysed only as a DEMO: simulated values from its colours, stored as simulated with the image kept, labelled, audited; the real upload still refuses it', async () => {
+    const p = await patient()
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 7)])
+    // PATH A is unchanged: the real extraction refuses a file without radiometric data, and nothing is stored.
+    expect((await upload(p.id, {}, doctor, png)).statusCode).toBe(422)
+    expect(await count('thermal_captures')).toBe(0)
+    const width = 16
+    const height = 12
+    // What the browser sends: the image's colours as "heat" values (contracts demoImageHeat); here a warmer right half.
+    const heat = Buffer.from(Array.from({ length: width * height }, (_, i) => (i % width < width / 2 ? 150 : 200)))
+    const demo = (fields: Record<string, string>, data = png, cookie = doctor, app = ctx.app) => {
+      const m = multipart({ protocol: JSON.stringify(simProtocol), gridWidth: String(width), gridHeight: String(height), grid: heat.toString('base64'), ...fields }, { name: 'photo.png', type: 'image/png', data })
+      return app.inject({ method: 'POST', url: `/api/patients/${p.id}/thermal/demo-image`, headers: { ...m.headers, cookie, 'x-adaxai-csrf': '1' }, payload: m.payload })
+    }
+    // Not a PNG or JPEG, or a grid that does not match its size: refused, nothing stored.
+    expect((await demo({}, Buffer.from('not an image at all'))).json().issues[0]).toMatchObject({ path: 'file' })
+    expect((await demo({ gridWidth: '15' })).json().issues[0]).toMatchObject({ path: 'grid' })
+    expect(await count('thermal_captures')).toBe(0)
+
+    const res = await demo({})
+    expect(res.statusCode, res.body).toBe(201)
+    const c = ThermalCapture.parse(res.json())
+    expect([c.captureSource, c.simulated, c.dataOrigin, c.extractor.name, c.width, c.height, c.encounterId]).toEqual(['simulator', true, 'synthetic', THERMAL_DEMO_IMAGE_EXTRACTOR, width, height, null])
+    // The picture itself is the original (the dashboard shows it), with its own type.
+    const raw = await call(ctx.app, 'GET', `/api/files/${c.rawFileId}`, { cookie: doctor })
+    expect([raw.statusCode, raw.headers['content-type']]).toEqual([200, 'image/png'])
+    expect(raw.rawPayload.equals(png)).toBe(true)
+    const a = (await call(ctx.app, 'GET', `/api/thermal/${c.id}/analysis`, { cookie: doctor })).json()
+    expect(a).toEqual(demoThermalAnalysis.analyse({ width, height, matrix: Float32Array.from(heat, demoImageHeatToC), simulated: true, demoImage: true }))
+    expect([a.demoImage, a.engine.label, a.engine.validated]).toEqual([true, DEMO_ANALYSIS_LABEL, false])
+    expect(a.summary[0]).toMatch(/has no temperature data, so its values were simulated/)
+    // Never called a measured temperature.
+    expect(JSON.stringify([a.indices, a.summary])).not.toMatch(/°C/)
+    expect((await audits('thermal.upload')).map((x) => x.details)).toEqual([expect.objectContaining({ captureSource: 'simulator', simulated: true, demoImage: true, extractor: THERMAL_DEMO_IMAGE_EXTRACTOR, dataOrigin: 'synthetic', sha256: sha256(png) })])
+    expect((await audits('thermal.analysis_read')).map((x) => x.details)).toEqual([{ engine: 'adaxai-thermal-demo-indices', version: '1', simulated: true, demoImage: true }])
+
+    // Filed under this patient's consultation in progress when one is named; never another patient's.
+    const e = await consultation(p.id)
+    expect(ThermalCapture.parse((await demo({ encounterId: e.id })).json()).encounterId).toBe(e.id)
+    const e2 = await consultation((await patient()).id)
+    expect((await demo({ encounterId: e2.id })).json().issues[0]).toMatchObject({ path: 'encounterId' })
+    // Only where the simulator is: refused where the data is clinical (audited).
+    const clinical = createTestApp({ config: { ...testConfig, dataOrigin: 'clinical' }, thermal: httpThermalService(serviceUrl), settings: generous })
+    try {
+      const r = await demo({}, png, await login(clinical.app, 't.doctor'), clinical.app)
+      expect([r.statusCode, r.json().error]).toEqual([403, 'simulator_not_allowed'])
+    } finally {
+      await clinical.close()
+    }
+    expect(await count('thermal_captures')).toBe(2)
   })
 
   it('is refused where the data is clinical (403, audited), and nothing is stored', async () => {

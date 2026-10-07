@@ -23,6 +23,8 @@ export interface ThermalAnalysis {
   /** The temperature scale of the image (°C), for the dashboard's colour bar. */
   scale: { minC: number; maxC: number }
   simulated: boolean
+  /** An ordinary image without temperature data (contracts THERMAL_DEMO_IMAGE_EXTRACTOR): its values were simulated from its colours. */
+  demoImage: boolean
 }
 
 export interface ThermalAnalysisInput {
@@ -31,6 +33,8 @@ export interface ThermalAnalysisInput {
   /** °C, row-major, float32 (NaN or out-of-range values are left out). */
   matrix: Float32Array
   simulated: boolean
+  /** An ordinary image analysed as a demo: its values are simulated from its colours, so they are never called measured temperatures. */
+  demoImage?: boolean
 }
 
 export interface ThermalAnalysisProvider {
@@ -40,7 +44,6 @@ export interface ThermalAnalysisProvider {
 export const DEMO_ANALYSIS_LABEL = 'Demo analysis — not clinically validated'
 
 const clamp = (v: number) => (Number.isFinite(v) ? Math.round(Math.min(100, Math.max(0, v))) : 0)
-const fmt = (v: number) => `${v.toFixed(1)} °C`
 
 /** The value at fraction `q` (0..1) of the sorted temperatures. */
 function quantile(sorted: Float32Array, q: number): number {
@@ -61,7 +64,10 @@ const SKIN_C = 30
 
 /** The demonstration provider: fixed formulas over the skin region, no learning, no randomness (the same image gives the same numbers). */
 export const demoThermalAnalysis: ThermalAnalysisProvider = {
-  analyse({ width, height, matrix, simulated }) {
+  analyse({ width, height, matrix, simulated, demoImage = false }) {
+    // A demo image's values were simulated from its colours: they are said to be simulated, never measured.
+    const fmt = (v: number) => `${v.toFixed(1)} ${demoImage ? 'simulated units' : '°C'}`
+    const reading = demoImage ? 'simulated value' : 'temperature'
     const all: number[] = []
     for (let i = 0; i < width * height; i++) {
       const v = matrix[i]!
@@ -100,13 +106,22 @@ export const demoThermalAnalysis: ThermalAnalysisProvider = {
       { key: 'pain_pattern', label: 'Pain pattern', score: clamp((hotspot / 3) * 100), basis: `Hottest 1% above the median of the ${where}: ${fmt(hotspot)} (localized warmth only; it detects no pain)` },
       { key: 'thermal_asymmetry', label: 'Thermal asymmetry', score: clamp((lr / 1.5) * 100), basis: `Left–right difference of the mean: ${fmt(lr)}` },
       { key: 'perfusion_pattern', label: 'Perfusion pattern', score: clamp(100 - (cool / 3) * 100), basis: `Coolest tenth below the median: ${fmt(cool)} (a smaller drop scores higher)` },
-      { key: 'temperature_pattern', label: 'Temperature pattern', score: clamp(((mean - 30) / 6) * 100), basis: `Mean temperature of the ${where}: ${fmt(mean)}` },
+      { key: 'temperature_pattern', label: 'Temperature pattern', score: clamp(((mean - 30) / 6) * 100), basis: `Mean ${reading} of the ${where}: ${fmt(mean)}` },
       { key: 'thermal_stress', label: 'Thermal stress', score: clamp((spread / 5) * 100), basis: `Spread of the middle 90% of the ${where}: ${fmt(spread)}` },
     ]
 
     const level = (n: number) => (n < 34 ? 'low' : n < 67 ? 'moderate' : 'high')
     const asym = indices[1]!.score
-    const summary = [
+    const summary = demoImage
+      ? [
+          'Demo thermal analysis of an ordinary image: the file has no temperature data, so its values were simulated from the image’s colours.',
+          `The simulated values show ${level(asym) === 'low' ? 'little' : level(asym) === 'moderate' ? 'a mild' : 'a marked'} left–right difference between the halves of the image (${fmt(lr)}).`,
+          `The warmest-coloured area stands ${fmt(hotspot)} above the median of the ${where}, and the coolest tenth ${fmt(cool)} below it.`,
+          'The scores come from fixed demonstration formulas over these simulated values; they are not measurements and are not clinically validated.',
+          'No clinical interpretation or diagnosis should be made from this demonstration.',
+          'A radiometric thermal image from a thermal camera is needed for real temperature measurements.',
+        ]
+      : [
       `${simulated ? 'This SIMULATED thermal image' : 'Thermal imaging'} shows ${level(asym) === 'low' ? 'little' : level(asym) === 'moderate' ? 'a mild' : 'a marked'} left–right temperature asymmetry in the captured region (${fmt(lr)} between the halves).`,
       `Across the ${where}, temperatures range from ${fmt(p5)} to ${fmt(p95)} for most of it, with a mean of ${fmt(mean)}.`,
       `The warmest area lies ${fmt(hotspot)} above the median, and the coolest tenth ${fmt(cool)} below it.`,
@@ -120,6 +135,7 @@ export const demoThermalAnalysis: ThermalAnalysisProvider = {
       summary,
       scale: { minC: sortedAll.length ? Math.floor(quantile(sortedAll, 0.01) * 10) / 10 : 0, maxC: sortedAll.length ? Math.ceil(quantile(sortedAll, 0.999) * 10) / 10 : 0 },
       simulated,
+      demoImage,
     }
   },
 }

@@ -1,4 +1,4 @@
-import { type RoiStats, type ThermalCaptureSource, type ThermalFlags, ThermalModelStatus, type ThermalPair, type ThermalSummary, ThermalSummaryReviewRequest, type ThermalSummaryStatement, ThermalWorkspaceEventRequest } from '@adaxai/contracts'
+import { type RoiStats, THERMAL_DEMO_IMAGE_EXTRACTOR, type ThermalCaptureSource, type ThermalFlags, ThermalModelStatus, type ThermalPair, type ThermalSummary, ThermalSummaryReviewRequest, type ThermalSummaryStatement, ThermalWorkspaceEventRequest } from '@adaxai/contracts'
 import { and, asc, desc, eq, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { FastifyInstance } from 'fastify'
@@ -194,8 +194,9 @@ export function registerThermalSummaryRoutes(app: FastifyInstance, deps: { db: D
     const matrix = await readMatrix(c)
     if (!matrix) throw conflict('The temperatures of this image are not available, so it cannot be analysed.', 'thermal_matrix_unavailable')
     const values = new Float32Array(matrix.buffer, matrix.byteOffset, c.width * c.height)
-    const analysis = demoThermalAnalysis.analyse({ width: c.width, height: c.height, matrix: Float32Array.from(values), simulated: c.simulated })
-    await audit(db, req, { action: 'thermal.analysis_read', entityType: 'thermal_capture', entityId: id, patientId: c.patientId, details: { engine: analysis.engine.name, version: analysis.engine.version, simulated: c.simulated } })
+    const demoImage = (c.extractor as { name?: string } | null)?.name === THERMAL_DEMO_IMAGE_EXTRACTOR
+    const analysis = demoThermalAnalysis.analyse({ width: c.width, height: c.height, matrix: Float32Array.from(values), simulated: c.simulated, demoImage })
+    await audit(db, req, { action: 'thermal.analysis_read', entityType: 'thermal_capture', entityId: id, patientId: c.patientId, details: { engine: analysis.engine.name, version: analysis.engine.version, simulated: c.simulated, ...(demoImage && { demoImage }) } })
     return analysis
   })
 

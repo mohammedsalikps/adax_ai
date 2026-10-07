@@ -76,9 +76,11 @@ export interface GeneratePrescriptionProps {
   prescriptionUrl: string
   /** Command (Mac) or Ctrl names the Ctrl/⌘+Enter shortcut. */
   mac: boolean
+  /** DEMO / SEED: fills an empty prescription with the labelled demo draft (lib/demoPrescription.ts) just before the analysis saves the note. */
+  prefill?: (() => void) | undefined
 }
 
-export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, mac }: GeneratePrescriptionProps) {
+export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, mac, prefill }: GeneratePrescriptionProps) {
   const id = encounter.id
   const qc = useQueryClient()
   const navigate = useNavigate()
@@ -96,6 +98,7 @@ export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, 
     setOpen(true)
     // A run or a draft already under way: its progress is shown again; nothing new is asked.
     if (active) return
+    prefill?.()
     const refusal = modelRefusal(ai)
     void runAnalysis({
       encounterId: id,

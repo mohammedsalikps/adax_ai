@@ -1,4 +1,4 @@
-import { AmendmentRequest, type Encounter, NOTE_SECTIONS, VISIT_STATUS_LABELS } from '@adaxai/contracts'
+import { AmendmentRequest, type Encounter, type EncounterAi, NOTE_SECTIONS, VISIT_STATUS_LABELS } from '@adaxai/contracts'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { FilePlus2, Images, Keyboard, LayoutList, NotebookPen, Printer, Stethoscope, Trash2 } from 'lucide-react'
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -32,13 +32,16 @@ import type { MenuItem } from '../../components/ui/Menu.tsx'
 import { PanelBoundary } from '../../components/ui/PanelBoundary.tsx'
 import { TabPanel, Tabs } from '../../components/ui/Tabs.tsx'
 import { useToast } from '../../components/ui/Toast.tsx'
+import { useSimulatorAllowed } from '../../components/capture/DemoConsultation.tsx'
 import { ClinicalInputs } from '../../components/workspace/ClinicalInputs.tsx'
 import { GeneratePrescription, ManaReads } from '../../components/workspace/GeneratePrescription.tsx'
 import { LiveTranscription } from '../../components/workspace/LiveTranscription.tsx'
 import { ThermalContext } from '../../components/workspace/ThermalContext.tsx'
 import { ApiError, api, errorMessage } from '../../lib/api.ts'
+import { aiKey } from '../../lib/ai.ts'
 import { useMe } from '../../lib/auth.tsx'
 import { usePortalBase } from '../../lib/clinical.ts'
+import { applyDemoPrescription, demoPrescriptionFor, markDemoPrescription, prescriptionEmpty } from '../../lib/demoPrescription.ts'
 import { useEncounterDraft, useFreshDraftGate } from '../../lib/encounterDraft.ts'
 import { encounterKey, useEncounter, useStartConsultation } from '../../lib/encounters.ts'
 import { fmtDate, fmtDateTime } from '../../lib/format.ts'
@@ -224,6 +227,23 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
   // The drawer links uploads to this consultation only while it is the doctor's own draft in progress (never a signed or read-only one).
   const ownDraft = encounter.canEdit && encounter.status === 'in_progress' && !locked
   const typedNote = NOTE_SECTIONS.some((s) => draft.note[s.key].trim() !== '')
+  // DEMO / SEED (lib/demoPrescription.ts): in a synthetic deployment, Analyze fills an EMPTY prescription with the labelled demo draft for what
+  // this consultation says (the doctor reviews and edits it on the prescription page); saved by the analysis' own save, never signed by it.
+  const simulatorAllowed = useSimulatorAllowed()
+  const fillDemoPrescription = useCallback(() => {
+    if (simulatorAllowed !== true || locked) return
+    const now = editor.saver.getSnapshot().draft
+    if (!prescriptionEmpty(now)) return
+    const ai = qc.getQueryData<EncounterAi>(aiKey(initial.id))
+    const demo = demoPrescriptionFor({
+      chiefComplaint: now.note.chiefComplaint,
+      reasonForVisit: initial.visit.reasonForVisit,
+      history: now.note.history,
+      assessment: now.note.assessment,
+      transcript: ai?.transcripts.flatMap((t) => t.segments.map((s) => s.text)) ?? [],
+    })
+    if (demo && update((d) => applyDemoPrescription(d, demo, initial.visit.reasonForVisit))) markDemoPrescription(initial.id, demo.case)
+  }, [simulatorAllowed, locked, editor.saver, qc, initial.id, initial.visit.reasonForVisit, update])
 
   const menu: MenuItem[] = [
     { label: 'Consultation overview', icon: <LayoutList aria-hidden="true" className="size-4" />, onSelect: () => setSheet('overview') },
@@ -423,7 +443,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
         }
       >
         <OrderServiceButton encounterId={encounter.id} patientId={encounter.patient.id} />
-        <GeneratePrescription encounter={encounter} flush={editor.flushState} save={state} prescriptionUrl={prescriptionUrl} mac={mac} />
+        <GeneratePrescription encounter={encounter} flush={editor.flushState} save={state} prescriptionUrl={prescriptionUrl} mac={mac} prefill={fillDemoPrescription} />
       </BottomBar>
     </>
   )

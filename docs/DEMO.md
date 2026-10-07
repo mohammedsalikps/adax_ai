@@ -126,7 +126,11 @@ What `demo:jury` makes (all fictional, marked synthetic; display names changed i
    analysed); **Thermal** → *Open* → Simulator → Connect → Capture, then the tile's **View analysis**: the thermal analysis
    dashboard (the image, five indices as rings, a summary) marked **Demo analysis — not clinically validated** (fixed
    formulas over the recorded temperatures; they detect and diagnose nothing). The Thermal page opens the same dashboard after
-   a capture or an upload.
+   a capture or an upload. **An ordinary PNG/JPEG** (a photo, a screenshot of a thermal image) is not refused: the dialog says
+   *Demo image detected — Temperature metadata is unavailable. Continuing with simulated thermal analysis.* and **Continue
+   analysis** opens the dashboard with the picture itself, labelled *Demo thermal analysis — temperature data not available*
+   (values simulated from its colours; stored as SIMULATED; only where the simulator is allowed). A radiometric FLIR file still
+   goes through the real extraction.
 6. **Mana** (header button, or the sidebar's Mana card) — the context (patient, "Consultation in progress"), suggested
    questions (*Summarize this patient's history*, *What medicines is he taking?*, *What are his allergies?*, *What happened in
    his last consultation?*, *Show recent lab results*, *Who is my next patient?*, *How many patients are waiting?*, …) answered
@@ -136,9 +140,13 @@ What `demo:jury` makes (all fictional, marked synthetic; display names changed i
    Handwriting is the second tab).
 8. **Analyze & Generate Prescription** — the six inputs flow into the *ADAXAI clinical context*, then *Mana AI* (the local
    Qwen model's real token count and time; about 40–60 s here), then *Clinical summary* · *Prescription draft* · *Ready for
-   review*; the draft's clinical summary (AI DRAFT) is shown with **Review prescription**.
+   review*; the draft's clinical summary (AI DRAFT) is shown with **Review prescription**. In this demo deployment Analyze also
+   fills an **empty** prescription with a **demo draft** for what the consultation says (fixed demo rules, not AI; e.g. *stomach
+   pain* → Acute gastritis / dyspepsia, Pantoprazole 40 mg once daily before food for 5 days, "Avoid heavy/spicy meals. Maintain
+   hydration.", "Review after 5 days or earlier if symptoms worsen."; fever and headache have their own).
 9. **Prescription** — the document (letterhead, patient, allergies, diagnosis, medications, advice, follow-up, signature line)
-   with **Edit** on each part; with no diagnosis the doctor's own assessment is offered (**Use as diagnosis**). The
+   with **Edit** on each part; a demo-filled draft says so above it (*Demo prescription draft — doctor review required*) and
+   the doctor edits any part; with no diagnosis the doctor's own assessment is offered (**Use as diagnosis**). The
    **Prescription preview** beside it is a real PDF from the server (`GET /api/encounters/:id/prescription.pdf`, marked
    *DRAFT — NOT SIGNED* until signed): **Open PDF**, **Print**. **Sign** or **Sign & print** (the review asks for the
    attestation); what is still missing is shown on the document. Signing does **not** complete the consultation.

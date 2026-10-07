@@ -177,10 +177,17 @@ test('the final Doctor HERO journey: Home → My consultations → Start (record
     .poll(async () => ((await (await page.request.get(`/api/encounters/${encounterId}`)).json()).aiInsertions as unknown[]).length, { timeout: 15_000 })
     .toBeGreaterThanOrEqual(1)
 
+  // Final demo polish: Analyze filled the EMPTY prescription with the labelled DEMO draft for what this consultation says (fever: a fixed demo
+  // table, not AI), shown as a draft the doctor must review; the doctor edits every part of it before signing.
+  await expect(page.getByTestId('rx-demo-draft')).toContainText('Demo prescription draft — doctor review required')
+  await expect(page.getByTestId('rx-demo-draft')).toContainText('not AI')
   const doc = page.getByTestId('prescription-document')
-  await doc.getByRole('button', { name: 'Add diagnosis' }).click()
+  await expect(doc).toContainText('Viral fever (acute febrile illness)')
+  await expect(doc).toContainText('Paracetamol')
+  await expect(doc.getByTestId('rx-follow-up').locator('textarea')).toHaveValue(/Review after 3 days/)
+  await doc.getByTestId('rx-edit-diagnosis').click()
   await doc.getByLabel('Diagnosis 1', { exact: true }).fill('Acute pharyngitis (synthetic)')
-  await doc.getByRole('button', { name: 'Add medicine' }).click()
+  await doc.getByTestId('rx-edit-medications').click()
   const meds = doc.getByTestId('rx-medicines')
   await meds.getByLabel('Medicine', { exact: true }).last().fill('Paracetamol')
   await meds.getByLabel('Dose', { exact: true }).last().fill('500 mg')

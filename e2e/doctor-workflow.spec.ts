@@ -25,10 +25,15 @@ test('doctor consults, writes the note, prescribes, signs, prints and amends; nu
   // The diagnosis and the prescription are written on the prescription page (DESIGN §5.5-5.6), reached through Generate prescription.
   await openPrescription(page)
   const doc = page.getByTestId('prescription-document')
-  await doc.getByRole('button', { name: 'Add diagnosis' }).click()
+  // Final demo polish: Analyze filled the EMPTY prescription with the labelled demo draft (fixed demo rules, not AI); the doctor's own Plan
+  // (Advice / diet) is kept as written, and the doctor edits the diagnosis and the medicine.
+  await expect(page.getByTestId('rx-demo-draft')).toContainText('doctor review required')
+  await expect(doc).toContainText('Viral fever (acute febrile illness)')
+  await expect(doc.getByLabel('Advice / diet')).toHaveValue('Warm saline gargles, fluids, paracetamol for fever.')
+  await doc.getByTestId('rx-edit-diagnosis').click()
   await doc.getByLabel('Diagnosis 1', { exact: true }).fill('Acute pharyngitis')
   await doc.getByLabel('ICD-10 (optional)').fill('J02.9')
-  await doc.getByRole('button', { name: 'Add medicine' }).click()
+  await doc.getByTestId('rx-edit-medications').click()
   await doc.getByLabel('Medicine', { exact: true }).fill('Paracetamol')
   await doc.getByLabel('Strength', { exact: true }).fill('500 mg')
   await doc.getByLabel('Form', { exact: true }).fill('Tablet')

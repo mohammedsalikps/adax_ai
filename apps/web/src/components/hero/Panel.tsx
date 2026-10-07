@@ -40,7 +40,7 @@ export function Panel({ label, icon: Icon, actions, children, id, testId, classN
   const headingId = useId()
   const Heading = as
   return (
-    <section id={id} aria-labelledby={headingId} data-testid={testId} className={`min-w-0 rounded-xl border border-line/80 bg-surface shadow-card ${className}`}>
+    <section id={id} aria-labelledby={headingId} data-testid={testId} className={`min-w-0 rounded-2xl border border-line/70 bg-surface shadow-card ${className}`}>
       <header className="flex min-h-11 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 pt-3 xl:px-5">
         <Heading id={headingId} className={`flex min-w-0 items-center gap-2 ${PANEL_TITLE}`}>
           {Icon && <Icon aria-hidden="true" className="size-[1.125rem] shrink-0 text-brand" />}

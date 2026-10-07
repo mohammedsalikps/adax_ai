@@ -1,10 +1,11 @@
 import { BODY_SITES, type BodySite, CaptureProtocol, THERMAL_VIEWS, type ThermalCapture } from '@adaxai/contracts'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { FlaskConical } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import { ApiError, errorMessage, issuesToErrors } from '../../lib/api.ts'
 import { usePortalBase } from '../../lib/clinical.ts'
-import { cacheThermalCapture, type ThermalUploadInput, uploadThermal } from '../../lib/thermal.ts'
+import { cacheThermalCapture, type ThermalUploadInput, uploadDemoThermalImage, uploadThermal } from '../../lib/thermal.ts'
 import { simpleUploadProtocol } from '../../lib/thermalStudy.ts'
 import { Button } from '../ui/Button.tsx'
 import { Dialog } from '../ui/Dialog.tsx'
@@ -17,6 +18,23 @@ function refusal(e: unknown): string {
   const message = errorMessage(e)
   if (!(e instanceof ApiError) || e.code !== 'not_radiometric') return message
   return `${message.startsWith('NON-RADIOMETRIC') ? message : `NON-RADIOMETRIC: ${message}`} Nothing was stored.`
+}
+
+/** The refusals of an ordinary picture (no FLIR radiometric data; a PNG is not a FLIR file): the demo path is offered instead of an error. */
+const ORDINARY_IMAGE = new Set(['not_radiometric', 'invalid_image'])
+const isPicture = (f: File | null) => f?.type === 'image/png' || f?.type === 'image/jpeg'
+
+/** Final demo polish: an ordinary PNG/JPEG is not a dead end. Where the deployment allows the simulator it is analysed as a DEMO (values simulated from its colours), said plainly. */
+function DemoImageNotice() {
+  return (
+    <div role="status" className="flex gap-3 rounded-xl border border-brand/20 bg-brand-soft px-4 py-3 text-sm" data-testid="thermal-demo-notice">
+      <FlaskConical aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-brand" />
+      <div>
+        <p className="font-semibold text-ink">Demo image detected</p>
+        <p className="mt-0.5 text-ink-muted">Temperature metadata is unavailable. Continuing with simulated thermal analysis.</p>
+      </div>
+    </div>
+  )
 }
 
 /**
@@ -52,16 +70,28 @@ export function ThermalUploadDialog({
   const [file, setFile] = useState<File | null>(null)
   const [v, setV] = useState({ bodyRegion: '', bodySite: '', view: 'anterior', roomTempC: '', acclimatisationMin: '', distanceM: '', notes: '' })
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const stored = (c: ThermalCapture) => {
+    cacheThermalCapture(qc, c)
+    onClose()
+    if (onUploaded) onUploaded(c)
+    else navigate(`${base}/thermal/${c.id}`)
+  }
   const upload = useMutation({
     mutationFn: (input: ThermalUploadInput) => uploadThermal(patientId, input),
-    onSuccess: (c) => {
-      cacheThermalCapture(qc, c)
-      onClose()
-      if (onUploaded) onUploaded(c)
-      else navigate(`${base}/thermal/${c.id}`)
-    },
+    onSuccess: stored,
     onError: (e) => setErrors(Object.fromEntries(Object.entries(issuesToErrors(e)).map(([k, m]) => [k.replace(/^protocol\./, ''), m]))),
   })
+  // PATH B: the real extraction refused an ordinary picture: the same file and details go to the demo analysis when the doctor continues.
+  const [demoInput, setDemoInput] = useState<ThermalUploadInput | null>(null)
+  const demo = useMutation({ mutationFn: (input: ThermalUploadInput) => uploadDemoThermalImage(patientId, input), onSuccess: stored })
+  const offerDemo = demoInput !== null && upload.isError && upload.error instanceof ApiError && ORDINARY_IMAGE.has(upload.error.code)
+  // A new file is a new attempt: the demo offer was for the file it was made for.
+  const pick = (f: File | null) => {
+    setFile(f)
+    setDemoInput(null)
+    upload.reset()
+    demo.reset()
+  }
   const submit = () => {
     const protocol = simple
       ? simpleUploadProtocol(v)
@@ -76,7 +106,10 @@ export function ThermalUploadDialog({
     if (!file) next.file = 'Choose the radiometric JPEG from the camera'
     setErrors(next)
     if (Object.keys(next).length || !file) return
-    upload.mutate({ file, protocol: protocol as CaptureProtocol, encounterId: encounterId ?? null, captureSource: source })
+    const input = { file, protocol: protocol as CaptureProtocol, encounterId: encounterId ?? null, captureSource: source }
+    demo.reset()
+    setDemoInput(isPicture(file) ? input : null)
+    upload.mutate(input)
   }
   return (
     <Dialog
@@ -89,28 +122,35 @@ export function ThermalUploadDialog({
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button loading={upload.isPending} onClick={submit}>
-            {importing ? 'Import and extract' : 'Upload and extract'}
-          </Button>
+          {offerDemo ? (
+            <Button loading={demo.isPending} onClick={() => demo.mutate(demoInput)} data-testid="thermal-demo-continue">
+              Continue analysis
+            </Button>
+          ) : (
+            <Button loading={upload.isPending} onClick={submit}>
+              {importing ? 'Import and extract' : 'Upload and extract'}
+            </Button>
+          )}
         </>
       }
     >
       {simple ? (
         <div className="space-y-4">
           <p className="text-sm text-ink-muted">
-            {importing ? 'An earlier radiometric JPEG from a FLIR camera, saved on this device; it is labelled IMPORTED.' : 'The original radiometric JPEG exported from a FLIR camera.'} Screenshots and edited images have no temperature data and are refused.
+            {importing ? 'An earlier radiometric JPEG from a FLIR camera, saved on this device; it is labelled IMPORTED.' : 'The original radiometric JPEG exported from a FLIR camera.'} An ordinary PNG or JPEG has no temperature data: it can be analysed as a demo, with simulated values.
           </p>
           {context && (
             <p className="text-sm" data-testid="thermal-upload-context">
               {context}
             </p>
           )}
-          {upload.isError && !Object.keys(errors).length && <Alert tone="error">{refusal(upload.error)}</Alert>}
+          {offerDemo ? <DemoImageNotice /> : upload.isError && !Object.keys(errors).length && <Alert tone="error">{refusal(upload.error)}</Alert>}
+          {demo.isError && <Alert tone="error">{errorMessage(demo.error)}</Alert>}
           <div className="space-y-1">
             <label htmlFor="thermal-file" className="block text-sm font-medium">
-              Radiometric JPEG <span className="text-down" aria-hidden="true">*</span>
+              Radiometric JPEG <span className="font-normal text-ink-muted">(or a PNG/JPEG for a demo)</span> <span className="text-down" aria-hidden="true">*</span>
             </label>
-            <input id="thermal-file" type="file" accept="image/jpeg,.jpg,.jpeg" aria-invalid={!!errors.file} aria-describedby={errors.file ? 'thermal-file-err' : undefined} onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="block w-full text-sm" />
+            <input id="thermal-file" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" aria-invalid={!!errors.file} aria-describedby={errors.file ? 'thermal-file-err' : undefined} onChange={(e) => pick(e.target.files?.[0] ?? null)} className="block w-full text-sm" />
             {errors.file && (
               <p id="thermal-file-err" className="text-xs font-medium text-down">
                 {errors.file}
@@ -131,15 +171,22 @@ export function ThermalUploadDialog({
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <p className="text-sm text-ink-muted sm:col-span-2">
             {importing
-              ? 'Choose an earlier radiometric JPEG from a FLIR camera, saved on this device. It is checked for temperature data like any upload, and is stored and shown labelled IMPORTED. Screenshots or edited images have no temperature data and are rejected.'
-              : 'Upload the original radiometric JPEG exported from a FLIR camera. Screenshots or edited images have no temperature data and are rejected.'}
+              ? 'Choose an earlier radiometric JPEG from a FLIR camera, saved on this device. It is checked for temperature data like any upload, and is stored and shown labelled IMPORTED. Screenshots and ordinary images have no temperature data: they can be analysed as a demo, with simulated values.'
+              : 'Upload the original radiometric JPEG exported from a FLIR camera. Screenshots and ordinary images have no temperature data: they can be analysed as a demo, with simulated values.'}
           </p>
-          {upload.isError && !Object.keys(errors).length && <Alert tone="error" className="sm:col-span-2">{refusal(upload.error)}</Alert>}
+          {offerDemo ? (
+            <div className="sm:col-span-2">
+              <DemoImageNotice />
+            </div>
+          ) : (
+            upload.isError && !Object.keys(errors).length && <Alert tone="error" className="sm:col-span-2">{refusal(upload.error)}</Alert>
+          )}
+          {demo.isError && <Alert tone="error" className="sm:col-span-2">{errorMessage(demo.error)}</Alert>}
           <div className="space-y-1 sm:col-span-2">
             <label htmlFor="thermal-file" className="block text-sm font-medium">
-              Radiometric JPEG <span className="text-down" aria-hidden="true">*</span>
+              Radiometric JPEG <span className="font-normal text-ink-muted">(or a PNG/JPEG for a demo)</span> <span className="text-down" aria-hidden="true">*</span>
             </label>
-            <input id="thermal-file" type="file" accept="image/jpeg,.jpg,.jpeg" aria-invalid={!!errors.file} aria-describedby={errors.file ? 'thermal-file-err' : undefined} onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="block w-full text-sm" />
+            <input id="thermal-file" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" aria-invalid={!!errors.file} aria-describedby={errors.file ? 'thermal-file-err' : undefined} onChange={(e) => pick(e.target.files?.[0] ?? null)} className="block w-full text-sm" />
             {errors.file && (
               <p id="thermal-file-err" className="text-xs font-medium text-down">
                 {errors.file}

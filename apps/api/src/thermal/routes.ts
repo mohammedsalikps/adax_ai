@@ -1,9 +1,12 @@
 import {
   CaptureProtocol,
+  DEMO_IMAGE_GRID_MAX,
+  demoImageHeatToC,
   type DataOrigin,
   SaveRoisRequest,
   simulateThermalMatrix,
   THERMAL_SIM_SIZE,
+  THERMAL_DEMO_IMAGE_EXTRACTOR,
   THERMAL_SIM_VERSION,
   THERMAL_TAXONOMY_VERSION,
   type ThermalCapture,
@@ -72,7 +75,17 @@ const UploadFields = z.object({
 
 /** What the simulator's capture says about its "camera": nothing, because there is none. */
 const SIMULATOR_CAMERA = { make: null, model: 'ADAXAI thermal simulator (SIMULATED)', dateTime: null }
-const NO_PARAMETERS = { emissivity: null, objectDistanceM: null, reflectedTempC: null, atmosphericTempC: null, relativeHumidity: null, irWindowTempC: null, irWindowTransmission: null }
+/** What a demo image's "camera" was: none (an ordinary picture, without temperature data). */
+const DEMO_IMAGE_CAMERA = { make: null, model: 'Ordinary image — no temperature data (DEMO)', dateTime: null }
+
+/** PNG or JPEG, by the file's first bytes (the name and the declared type are not trusted); anything else is null. */
+function imageKind(b: Buffer): 'png' | 'jpeg' | null {
+  if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'png'
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpeg'
+  return null
+}
+
+const NO_PARAMETERS ={ emissivity: null, objectDistanceM: null, reflectedTempC: null, atmosphericTempC: null, relativeHumidity: null, irWindowTempC: null, irWindowTransmission: null }
 
 /** float32, little-endian, row-major: the layout of every stored matrix. NaN (no reading) stays NaN. */
 function float32le(m: Float32Array): Buffer {
@@ -504,6 +517,85 @@ export function registerThermalRoutes(app: FastifyInstance, deps: { db: Db; conf
         deviceReported: null,
       }),
       details: (_c, raw) => ({ width, height, extractor: THERMAL_SIM_VERSION, dataOrigin: 'synthetic', ...sim, deviceId: null, sha256: raw.sha256 }),
+    })
+    return reply.code(201).send(await toCapture(db, created))
+  })
+
+  /**
+   * A DEMO thermal image (final demo polish): an ordinary PNG or JPEG without radiometric data — a photo, a screenshot of a thermal image — that
+   * the upload refused as NON-RADIOMETRIC can still be analysed as a demonstration, where the simulator is allowed (not clinical, not
+   * production). Its "temperatures" are simulated from the image's colours by a fixed formula (the browser sends the colour grid, contracts
+   * `demoImageHeat`); it is stored as simulated (`simulator`, data origin `synthetic`: the database constraints), keeps the image as its
+   * original, and is labelled "Demo thermal analysis — temperature data not available" wherever it is shown. A radiometric file still goes
+   * through the real extraction (POST /api/patients/:id/thermal), and that route's refusal of a non-radiometric file is unchanged.
+   */
+  app.post('/api/patients/:id/thermal/demo-image', { config: { permission: 'thermal:write' } }, async (req, reply) => {
+    const me = currentUser(req)
+    const { id } = parse(IdParams, req.params)
+    if (!simulatorAllowed(config)) {
+      await audit(db, req, { action: 'thermal.capture_refused', outcome: 'denied', details: { captureSource: 'simulator', demoImage: true, reason: 'simulator_not_allowed' } })
+      req.denialAudited = true
+      throw new HttpError(403, 'simulator_not_allowed', 'A demo thermal analysis is not available in a clinical or production deployment.')
+    }
+    await getPatientOr404(db, me.facilityId, id)
+    const up = await readUpload(req, 'an image')
+    const field = (name: string) => up.fields[name] || undefined
+    const kind = imageKind(up.data)
+    if (!kind) throw badRequest('Some fields are invalid', [{ path: 'file', message: 'Choose a PNG or JPEG image' }])
+    let protocolInput: unknown
+    try {
+      protocolInput = JSON.parse(field('protocol') ?? '{}')
+    } catch {
+      throw badRequest('Some fields are invalid', [{ path: 'protocol', message: 'Invalid capture details' }])
+    }
+    const protocol = parse(CaptureProtocol, protocolInput)
+    const width = Number(field('gridWidth'))
+    const height = Number(field('gridHeight'))
+    const grid = Buffer.from(field('grid') ?? '', 'base64')
+    const size = (n: number) => Number.isInteger(n) && n >= 8 && n <= DEMO_IMAGE_GRID_MAX
+    if (!size(width) || !size(height) || grid.length !== width * height) throw badRequest('Some fields are invalid', [{ path: 'grid', message: 'The image could not be read' }])
+    let encounterId: string | null = null
+    const named = field('encounterId')
+    if (named) {
+      const e = z.uuid().safeParse(named).success ? await db.query.encounters.findFirst({ where: and(eq(encounters.id, named), eq(encounters.patientId, id), eq(encounters.facilityId, me.facilityId)) }) : undefined
+      if (!e) throw badRequest('Some fields are invalid', [{ path: 'encounterId', message: 'Not a consultation of this patient' }])
+      if (e.status !== 'in_progress') throw conflict(FILE_INTO_CLOSED_CONSULTATION, 'encounter_not_in_progress')
+      encounterId = e.id
+    }
+    await requireConsent(db, req, { patientId: id, type: 'thermal_imaging', purpose: 'thermal image', encounterId: encounterId ?? undefined })
+    const matrix = Float32Array.from(grid, demoImageHeatToC)
+    const s = thermalStats(matrix)
+    if (s.minC === null || s.maxC === null || s.meanC === null) throw badRequest('Some fields are invalid', [{ path: 'grid', message: 'The image could not be read' }])
+    const { minC, maxC, meanC } = s
+    const arrival = { captureSource: 'simulator', simulated: true, demoImage: true }
+    const created = await persist(req, me, {
+      patientId: id,
+      encounterId,
+      openConsultation: false,
+      inProgressConsultation: encounterId !== null,
+      arrival,
+      raw: { data: up.data, ext: kind === 'png' ? '.png' : '.jpg', originalName: (up.filename || `demo-image.${kind === 'png' ? 'png' : 'jpg'}`).slice(0, 120), mimeType: kind === 'png' ? 'image/png' : 'image/jpeg' },
+      matrix: float32le(matrix),
+      visible: null,
+      values: () => ({
+        width,
+        height,
+        minC,
+        maxC,
+        meanC,
+        stdC: s.stdC,
+        camera: DEMO_IMAGE_CAMERA,
+        parameters: NO_PARAMETERS,
+        extractor: { name: THERMAL_DEMO_IMAGE_EXTRACTOR, version: '1' },
+        protocol,
+        dataOrigin: 'synthetic',
+        captureSource: 'simulator',
+        simulated: true,
+        deviceId: null,
+        capturedAt: null,
+        deviceReported: null,
+      }),
+      details: (_c, raw) => ({ width, height, extractor: THERMAL_DEMO_IMAGE_EXTRACTOR, dataOrigin: 'synthetic', ...arrival, encounterId, deviceId: null, sha256: raw.sha256 }),
     })
     return reply.code(201).send(await toCapture(db, created))
   })
