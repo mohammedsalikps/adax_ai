@@ -66,6 +66,8 @@ async function ask(page: Page, text: string) {
   await mana(page).getByTestId('mana-send').click()
 }
 /** The newest answer has arrived (not "working"). */
+/** The suggested allergy question, as the patient's sex names them. */
+const ALLERGY_CHIP = /^What are (his|her|this patient’s) allergies\?$/
 const answered = (page: Page) => expect(message(page).last().getByTestId('mana-answer')).toBeVisible({ timeout: 20_000 })
 
 test('Mana is closed until the doctor opens it, then answers from the record: statements with sources that open to the record, patients by name, and the model never sees who the patient is', async ({ page, baseURL }) => {
@@ -96,7 +98,8 @@ test('Mana is closed until the doctor opens it, then answers from the record: st
   await expect(mana(page)).toHaveAttribute('data-open', 'true')
   await expect(launcher).toHaveAttribute('aria-expanded', 'true')
   expect(manaRequests).toEqual(['POST /api/mana-assistant/conversations'])
-  await expect(input(page)).toHaveAttribute('placeholder', 'Ask Mana about this patient…')
+  // Premium Mana: one question box for everything Mana can be asked about.
+  await expect(input(page)).toHaveAttribute('placeholder', 'Ask Mana about this patient, today’s queue, records, labs, medicines, or consultation…')
   // Whom it is about is the sheet's subtitle (its accessible description), with the patient's name and MRN.
   await expect(sheet(page)).toHaveAccessibleDescription(`About ${p.name} · MRN ${p.mrn}`)
   await expect(mana(page).getByTestId('mana-context')).toContainText('Ask about this patient')
@@ -153,12 +156,12 @@ test('suggested questions and follow-ups: a button asks at once, a follow-up kee
   const p = await startConsultation(page, baseURL!)
   await openMana(page)
   const base = (await llmCalls()).count
-  // Doctor HERO final (DESIGN §5.8): the suggestions are the design's buttons; "Allergies" (it replaced "Allergies on record") asks
-  // "What allergies does this patient have?", which fixed rules answer from the record.
+  // Premium Mana: the suggested questions are the questions themselves, grouped (about the patient, this consultation, today's clinic); the
+  // allergy question names the patient by the record's sex ("his", "her", or "this patient's") and fixed rules answer it from the record.
   const chips = mana(page).getByRole('group', { name: 'Suggested questions' })
-  for (const chip of ['Next patient', 'Seen today', 'Waiting longest', 'Allergies', 'Nurse triage', 'Lab / orders status', 'Summarize history'])
+  for (const chip of ['Summarize this patient’s history', 'Show recent lab results', 'Summarize today’s consultation', 'Who is my next patient?', 'How many patients are waiting?', 'Any pending orders?'])
     await expect(chips.getByRole('button', { name: chip, exact: true })).toBeVisible()
-  await chips.getByRole('button', { name: 'Allergies', exact: true }).click()
+  await chips.getByRole('button', { name: ALLERGY_CHIP }).click()
   await answered(page)
   await expect(message(page).last()).toContainText('Penicillin')
   await expect(message(page).last().getByTestId('mana-rules-label')).toContainText('From the records (fixed rules)')
@@ -183,7 +186,7 @@ test('suggested questions and follow-ups: a button asks at once, a follow-up kee
   const plans = (await llmCalls(true)).calls.slice(base).filter((c) => c.kind === 'plan')
   expect(plans).toHaveLength(1)
   expect(plans.at(-1)!.prompt).toMatch(/FOCUS: P1/)
-  expect(plans.at(-1)!.prompt).toMatch(/EARLIER QUESTIONS \(oldest first\):\n1\. What allergies does this patient have\?/)
+  expect(plans.at(-1)!.prompt).toMatch(/EARLIER QUESTIONS \(oldest first\):\n1\. What are (his|her|this patient’s) allergies\?/)
   // New conversation: what was said is not shown or used any more.
   await newConversation(page)
   await expect(mana(page).getByTestId('mana-question')).toHaveCount(0)
@@ -334,11 +337,11 @@ test('when the model is not there Mana says so and makes nothing up, and comes b
   await expect(mana(page).getByTestId('mana-ask-error')).toHaveText('Mana is currently unavailable.')
   await expect(message(page)).toHaveCount(0)
   await expect(mana(page).getByTestId('mana-question')).toHaveCount(0)
-  await mana(page).getByRole('button', { name: 'Allergies', exact: true }).click()
+  await mana(page).getByRole('button', { name: ALLERGY_CHIP }).click()
   await answered(page)
   await expect(message(page).last()).toContainText('Penicillin')
   await expect(message(page).last().getByTestId('mana-rules-label')).toContainText('From the records (fixed rules)')
-  await mana(page).getByRole('button', { name: 'Summarize history', exact: true }).click()
+  await mana(page).getByRole('button', { name: 'Summarize this patient’s history', exact: true }).click()
   await expect(message(page)).toHaveCount(2)
   await answered(page)
   await expect(message(page).last()).toContainText('Penicillin')

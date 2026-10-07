@@ -208,7 +208,7 @@ test('thermal imaging in the consultation: no camera in a browser, a SIMULATED c
   // Nothing reached the note until the doctor adds it. (Doctor HERO final: the typed note is the Keyboard tab of Doctor notes.)
   await ws.getByRole('button', { name: 'Back to the consultation' }).click()
   const notes = page.getByTestId('doctor-notes')
-  await notes.getByRole('tab', { name: 'Keyboard' }).click()
+  await notes.getByRole('tab', { name: 'Structured' }).click()
   await expect(page.getByLabel('Examination')).toHaveValue('')
   // The imported image is opened again from the thermal panel (Open thermal imaging, then that image in the workspace's list of this
   // consultation's images: the panel itself shows only the newest image now).

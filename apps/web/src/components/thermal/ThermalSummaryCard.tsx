@@ -13,6 +13,7 @@ import { Button } from '../ui/Button.tsx'
 import { Alert, Badge, type BadgeTone, Spinner } from '../ui/Feedback.tsx'
 import { TextAreaField } from '../ui/Form.tsx'
 import { Card } from '../ui/Layout.tsx'
+import { plainName } from '../../lib/displayName.ts'
 
 type Basis = keyof typeof THERMAL_STATEMENT_BASES
 const BASIS_TONE: Record<Basis, BadgeTone> = { measurement: 'brand', rule: 'warn', model: 'ai', limitation: 'neutral' }
@@ -121,7 +122,7 @@ function Provenance({ s, versions = true }: { s: ThermalSummary; versions?: bool
         </>
       )}
       {fmtDateTime(s.createdAt)}
-      {s.createdByName ? ` · ${s.createdByName}` : ''}
+      {s.createdByName ? ` · ${plainName(s.createdByName)}` : ''}
     </p>
   )
 }

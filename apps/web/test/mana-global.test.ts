@@ -1,11 +1,11 @@
 // Unit tests (node --test) of the global Mana's pure rules (lib/manaGlobal.ts): which conversation a page opens, which one-tap questions it offers
 // (those answered by fixed rules also while the model is down), how a spoken question is recorded and uploaded, which voices may read an answer aloud
 // (only voices on this computer) and what is read, and how a proposed medicine is shown and becomes a draft row. No browser, no server.
-import { MANA_RULES_QUESTIONS, type ManaActionProposal, type ManaMessage } from '@adaxai/contracts'
+import { MANA_QUESTIONS, type ManaActionProposal, type ManaMessage } from '@adaxai/contracts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  manaChips,
+  manaSuggestions,
   manaScopeForPath,
   microphoneProblem,
   NO_DRAFT_OPEN,
@@ -40,28 +40,32 @@ test('the route decides what Mana is about: the consultation (and its prescripti
   assert.equal(scopeKey({}), 'clinic')
 })
 
-test('the one-tap questions follow the design’s order, the patient’s questions only about a patient, and every one is answered by fixed rules', () => {
-  assert.deepEqual(
-    manaChips({ hasPatient: true, modelAvailable: true }).map((c) => c.label),
-    ['Next patient', 'Seen today', 'Waiting longest', 'Allergies', 'Nurse triage', 'Lab / orders status', 'Summarize history', 'Recent lab reports'],
-  )
-  assert.deepEqual(
-    manaChips({ hasPatient: true, modelAvailable: true, inConsultation: true }).map((c) => c.label),
-    ['Next patient', 'Seen today', 'Waiting longest', 'Allergies', 'Nurse triage', 'Lab / orders status', 'Summarize history', 'Recent lab reports', 'Today’s consultation'],
-  )
-  assert.deepEqual(
-    manaChips({ hasPatient: false, modelAvailable: true }).map((c) => c.label),
-    ['Next patient', 'Seen today', 'Waiting longest', 'Lab / orders status'],
-  )
-  // Jury polish: "Summarize history" is answered from the record by fixed rules (no longer the model's brief), so the model's state does not
-  // change what is offered, and no chip is a model suggestion.
-  for (const o of [{ hasPatient: true, modelAvailable: true, inConsultation: true }, { hasPatient: true, modelAvailable: false }, { hasPatient: false, modelAvailable: false }]) {
-    assert.ok(manaChips(o).every((c) => c.rules && !('suggestion' in c)), 'every chip is answered by fixed rules')
-  }
-  assert.deepEqual(manaChips({ hasPatient: true, modelAvailable: false }), manaChips({ hasPatient: true, modelAvailable: true }))
-  const history = manaChips({ hasPatient: true, modelAvailable: true }).find((c) => c.label === 'Summarize history')!
-  assert.deepEqual(history, { key: 'history_summary', label: 'Summarize history', text: 'Summarize this patient’s previous history.', rules: true })
-  assert.equal(manaChips({ hasPatient: false, modelAvailable: false })[0]!.text, MANA_RULES_QUESTIONS.next_patient.text)
+test('the suggested questions are grouped by what Mana looks at, name the patient by the record’s sex, and offer the model’s only while it is there', () => {
+  const titles = (g: ReturnType<typeof manaSuggestions>) => g.map((x) => x.title)
+  const labels = (g: ReturnType<typeof manaSuggestions>, key: string) => g.find((x) => x.key === key)!.chips.map((c) => c.label)
+  // Today's clinic: the queue questions, all answered by fixed rules (the same counts as Home).
+  const clinic = manaSuggestions({ kind: 'clinic', modelAvailable: true })
+  assert.deepEqual(titles(clinic), ['Today’s clinic'])
+  assert.deepEqual(labels(clinic, 'clinic'), ['Who is my next patient?', 'Who has waited the longest?', 'How many patients are waiting?', 'Who is currently in consultation?', 'How many patients have I seen today?', 'Any pending orders?'])
+  // A patient's record: about the patient (by first name), then the clinic; "he" for a man, "she/her" for a woman, "this patient" otherwise.
+  const male = manaSuggestions({ kind: 'patient', firstName: 'Abdul', sex: 'male', modelAvailable: true })
+  assert.deepEqual(titles(male), ['About Abdul', 'Today’s clinic'])
+  assert.deepEqual(labels(male, 'patient'), ['Summarize this patient’s history', 'What medicines is he taking?', 'What are his allergies?', 'What happened in his last consultation?', 'Show recent lab results', 'What should I know before seeing him?'])
+  assert.deepEqual(labels(manaSuggestions({ kind: 'patient', firstName: 'Priya', sex: 'female', modelAvailable: true }), 'patient').slice(1, 4), ['What medicines is she taking?', 'What are her allergies?', 'What happened in her last consultation?'])
+  assert.deepEqual(labels(manaSuggestions({ kind: 'patient', sex: null, modelAvailable: true }), 'patient').slice(1, 4), ['What medicines is this patient taking?', 'What are this patient’s allergies?', 'What happened in this patient’s last consultation?'])
+  // A consultation adds its own questions: today's consultation by fixed rules; what was recorded and what needs review are the server's plans.
+  const consult = manaSuggestions({ kind: 'consultation', firstName: 'Abdul', sex: 'male', modelAvailable: true })
+  assert.deepEqual(titles(consult), ['About Abdul', 'This consultation', 'Today’s clinic'])
+  const plans = consult.find((g) => g.key === 'consultation')!.chips
+  assert.deepEqual(plans[0], { key: 'today_consultation', label: 'Summarize today’s consultation', text: 'Summarize today’s consultation', rules: true })
+  for (const c of plans.slice(1)) assert.equal(c.text, MANA_QUESTIONS[c.suggestion!].label, 'a suggestion is asked with its exact label (the server checks it)')
+  // The words asked for the history are the fixed-rule question; the history and record questions are rules, the brief is the model's.
+  assert.equal(male[0]!.chips[0]!.text, 'Summarize this patient’s previous history.')
+  assert.deepEqual(male[0]!.chips.map((c) => c.rules), [true, true, true, true, true, false])
+  // With the model down only what fixed rules answer is offered: nothing is offered that would be refused.
+  const down = manaSuggestions({ kind: 'consultation', firstName: 'Abdul', sex: 'male', modelAvailable: false })
+  for (const g of down) assert.ok(g.chips.every((c) => c.rules && !c.suggestion), g.title)
+  assert.equal(down.flatMap((g) => g.chips).length, consult.flatMap((g) => g.chips).length - 3)
 })
 
 test('a question asked from elsewhere that is a suggestion’s exact words is asked as that suggestion, where it is offered', () => {

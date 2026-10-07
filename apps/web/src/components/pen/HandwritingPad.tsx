@@ -37,6 +37,7 @@ import {
 import { ME_KEY } from '../../lib/session.ts'
 import { HeroEmpty } from '../hero/HeroEmpty.tsx'
 import { Button } from '../ui/Button.tsx'
+import { plainName } from '../../lib/displayName.ts'
 
 /** Props of the doctor's handwriting pad (DESIGN §5.4 "Doctor notes" → Pen tab, §7). */
 export interface HandwritingPadProps {
@@ -665,7 +666,7 @@ function Pad({ encounterId, readOnly = false, className = '' }: HandwritingPadPr
         )}
         {!editable && !notice && model && data && data.version > 0 && (
           <p className="text-xs text-ink-muted">
-            {readOnly || data.readOnly ? 'View only · ' : ''}Saved{data.savedByName ? ` by ${data.savedByName}` : ''} · kept as written, not read or converted to text
+            {readOnly || data.readOnly ? 'View only · ' : ''}Saved{data.savedByName ? ` by ${plainName(data.savedByName)}` : ''} · kept as written, not read or converted to text
           </p>
         )}
       </div>

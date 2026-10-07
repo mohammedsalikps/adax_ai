@@ -9,6 +9,7 @@ import { api, errorMessage } from '../../lib/api.ts'
 import { fmtClock, fmtInstantIn } from '../../lib/appointments.ts'
 import { fmtDate } from '../../lib/format.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
+import { plainName } from '../../lib/displayName.ts'
 
 const TONE = { booked: 'brand', checked_in: 'warn', completed: 'ok', cancelled: 'neutral', rescheduled: 'neutral', no_show: 'down' } as const
 
@@ -21,7 +22,7 @@ function AppointmentRow({ a }: { a: PortalAppointment }) {
       </p>
       <p className="text-sm text-ink-muted">
         {a.departmentName}
-        {a.doctorName ? ` · ${a.doctorName}` : ''} · {a.durationMinutes} minutes
+        {a.doctorName ? ` · ${plainName(a.doctorName)}` : ''} · {a.durationMinutes} minutes
       </p>
     </li>
   )

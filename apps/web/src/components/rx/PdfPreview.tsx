@@ -68,7 +68,7 @@ export function PdfPreview({ encounterId, revision, signed, flush, className = '
   }
   return (
     <Panel
-      label="PDF preview"
+      label="Prescription preview"
       icon={FileText}
       testId="pdf-preview"
       className={className}

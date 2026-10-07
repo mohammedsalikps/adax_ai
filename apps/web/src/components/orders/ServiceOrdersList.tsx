@@ -10,6 +10,7 @@ import { Button } from '../ui/Button.tsx'
 import { ConfirmationDialog } from '../ui/ConfirmationDialog.tsx'
 import { ErrorState, LoadingState } from '../ui/Feedback.tsx'
 import { useToast } from '../ui/Toast.tsx'
+import { plainName } from '../../lib/displayName.ts'
 
 /** Props of a list of service orders (DESIGN §5.4 Orders, §5.6, §7). */
 export interface ServiceOrdersListProps {
@@ -60,7 +61,7 @@ export function ServiceOrdersList({ encounterId, patientId, compact = false }: S
             <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
               <p className="min-w-0 text-xs text-ink-muted tabular-nums">
                 {orderTimeline(o, time)}
-                {!compact && o.orderedByName ? ` · ${o.orderedByName}` : ''}
+                {!compact && o.orderedByName ? ` · ${plainName(o.orderedByName)}` : ''}
               </p>
               {o.canCancel && (
                 <Button size="sm" variant="ghost" className="-my-1 ml-auto" aria-label={`Cancel order: ${o.serviceName}`} onClick={() => setCancelling(o)}>

@@ -1,6 +1,7 @@
 import { INSERTION_SUBJECTS, NOTE_SECTIONS, type NoteFields, type NoteInsertion } from '@adaxai/contracts'
 import { ListChecks, Sparkles } from 'lucide-react'
-import { fmtDateTime } from '../../lib/format.ts'
+import { plainName } from '../../lib/displayName.ts'
+import { fmtDateTime, fmtTime } from '../../lib/format.ts'
 
 /**
  * Where AI-produced text in the note came from (shown while editing, before signing and on the signed record). A thermal study summary is
@@ -15,12 +16,13 @@ export function AiProvenance({ insertions, section }: { insertions: NoteInsertio
         const rules = i.subjectType === 'thermal_summary'
         const Icon = rules ? ListChecks : Sparkles
         return (
-          <li key={i.id} className={rules ? 'text-ink-muted' : 'text-ai'} data-subject={i.subjectType}>
+          <li key={i.id} className={rules ? 'text-ink-muted' : 'text-ai'} data-subject={i.subjectType} title={i.producedBy ? `Produced by ${i.producedBy}` : undefined}>
             <Icon aria-hidden="true" className="mr-1 inline size-3" />
             {section ? '' : `${NOTE_SECTIONS.find((s) => s.key === i.section)?.label}: `}
             {rules ? 'Rule-composed text' : 'AI-assisted text'} from {INSERTION_SUBJECTS[i.subjectType].toLowerCase()}
-            {i.producedBy && ` (${i.producedBy})`}, inserted {fmtDateTime(i.insertedAt)}
-            {i.insertedByName && ` by ${i.insertedByName}`} · {i.retained ? 'unchanged in the note' : 'edited or removed since'}
+            {/* In a section of the note: short (a model's name and prompt on hover; a rule composer's version stays); in the record's list: in full. */}
+            {(!section || rules) && i.producedBy && ` (${i.producedBy})`}, inserted {section ? fmtTime(i.insertedAt) : fmtDateTime(i.insertedAt)}
+            {i.insertedByName && ` by ${plainName(i.insertedByName)}`} · {i.retained ? 'unchanged in the note' : 'edited or removed since'}
           </li>
         )
       })}

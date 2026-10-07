@@ -2,6 +2,7 @@ import { type Encounter, type EncounterAi, TRANSCRIPT_END_REASONS, type Transcri
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileAudio, History, Keyboard, ListChecks, LoaderCircle, Mic, MicOff, Pause, Play, PlayCircle, Square } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { type AiResponse, aiKey, useAiMutation } from '../../lib/ai.ts'
 import { api, errorMessage } from '../../lib/api.ts'
 import { useStillSamePerson } from '../../lib/auth.tsx'
@@ -38,6 +39,11 @@ export interface LiveTranscriptionProps {
    * Read once, when the panel first mounts (the workspace may clear its navigation flag afterwards).
    */
   autoRecord: boolean
+  /**
+   * Premium cockpit: where the important points are drawn (their own column beside the conversation). They stay this panel's (the same state,
+   * extraction and insertions); only where they appear changes. Absent: under the conversation, as before.
+   */
+  pointsTarget?: HTMLElement | null
 }
 
 /**
@@ -51,7 +57,7 @@ export interface LiveTranscriptionProps {
  * The recording's state is published for the consultation's header (lib/recordingState.ts). Nothing here is ever invented: no speaker
  * identification, no guessed words, no recording state without a running microphone recorder; raw transcript and audio stay out of the audit.
  */
-export function LiveTranscription({ encounter, inserter, autoRecord }: LiveTranscriptionProps) {
+export function LiveTranscription({ encounter, inserter, autoRecord, pointsTarget }: LiveTranscriptionProps) {
   const id = encounter.id
   // The request is read once, on the first mount: a reload, a resume or the flag cleared by the workspace never starts a recording.
   const [intent, setIntent] = useState<'pending' | 'done'>(() => (autoRecord ? 'pending' : 'done'))
@@ -62,11 +68,11 @@ export function LiveTranscription({ encounter, inserter, autoRecord }: LiveTrans
   const view = panelContent({ hasData: q.data !== undefined, isError: q.isError })
   if (view !== 'body' || q.data === undefined)
     return (
-      <Panel label="Live transcription" icon={Mic} testId="live-transcription">
+      <Panel label="Live conversation" icon={Mic} testId="live-transcription">
         {view === 'error' ? <Alert tone="error">{errorMessage(q.error)}</Alert> : <LoadingState label="Loading the transcription…" rows={3} />}
       </Panel>
     )
-  return <LiveTranscriptionBody encounter={encounter} ai={q.data} aiAt={q.dataUpdatedAt} refreshError={q.isError ? errorMessage(q.error) : null} inserter={inserter} intent={intent} onIntentDone={() => setIntent('done')} />
+  return <LiveTranscriptionBody encounter={encounter} ai={q.data} aiAt={q.dataUpdatedAt} refreshError={q.isError ? errorMessage(q.error) : null} inserter={inserter} intent={intent} onIntentDone={() => setIntent('done')} pointsTarget={pointsTarget} />
 }
 
 function LiveTranscriptionBody({
@@ -77,6 +83,7 @@ function LiveTranscriptionBody({
   inserter,
   intent,
   onIntentDone,
+  pointsTarget,
 }: {
   encounter: Encounter
   ai: EncounterAi
@@ -87,6 +94,7 @@ function LiveTranscriptionBody({
   inserter: NoteInserter
   intent: 'pending' | 'done'
   onIntentDone: () => void
+  pointsTarget?: HTMLElement | null | undefined
 }) {
   const id = encounter.id
   const qc = useQueryClient()
@@ -222,7 +230,7 @@ function LiveTranscriptionBody({
 
   const action = reason ? NOT_RECORDING_ACTION[reason] : undefined
   return (
-    <Panel label="Live transcription" icon={Mic} testId="live-transcription" actions={<Menu label="More transcription actions" items={menu} />}>
+    <Panel label="Live conversation" icon={Mic} testId="live-transcription" actions={<Menu label="More transcription actions" items={menu} />}>
       <input
         ref={fileInput}
         type="file"
@@ -241,7 +249,7 @@ function LiveTranscriptionBody({
       <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-2" data-testid="recorder">
         {recording ? (
           <>
-            <LiveWaveform getAnalyser={rec.getAnalyser} recording={rec.state === 'recording'} className="min-w-16 flex-1 basis-24" />
+            <LiveWaveform getAnalyser={rec.getAnalyser} recording={rec.state === 'recording'} className="w-full basis-full" />
             <p className={`inline-flex items-center gap-2 text-sm font-medium ${rec.state === 'paused' ? 'text-pending' : 'text-down'}`} data-testid="recording-state">
               {rec.state === 'paused' ? <MicOff aria-hidden="true" className="size-4" /> : <span className="size-2.5 rounded-full bg-down motion-safe:animate-pulse" aria-hidden="true" />}
               <span role="status">{rec.state === 'finishing' ? 'Finishing…' : rec.state === 'paused' ? 'Paused' : 'Recording'}</span>
@@ -367,21 +375,26 @@ function LiveTranscriptionBody({
         )}
       </div>
 
-      <ImportantPoints
-        encounter={encounter}
-        ai={ai}
-        inserter={inserter}
-        currentTranscriptId={current?.id ?? null}
-        onFocus={focusLines}
-        onShowEarlier={showEarlier}
-        extraction={{
-          running: extract.running,
-          error: extract.error,
-          auto: autoExtract,
-          canRun: open && ai.consent.granted && ai.status.extraction.available && !!withLines && !extract.running && (!autoExtract || withLines.status !== 'live'),
-          run: () => withLines && extract.runNow(withLines.id),
-        }}
-      />
+      {(() => {
+        const points = (
+          <ImportantPoints
+            encounter={encounter}
+            ai={ai}
+            inserter={inserter}
+            currentTranscriptId={current?.id ?? null}
+            onFocus={focusLines}
+            onShowEarlier={showEarlier}
+            extraction={{
+              running: extract.running,
+              error: extract.error,
+              auto: autoExtract,
+              canRun: open && ai.consent.granted && ai.status.extraction.available && !!withLines && !extract.running && (!autoExtract || withLines.status !== 'live'),
+              run: () => withLines && extract.runNow(withLines.id),
+            }}
+          />
+        )
+        return pointsTarget ? createPortal(points, pointsTarget) : points
+      })()}
 
       <Sheet open={sheet === 'earlier'} onClose={() => setSheet(null)} title="Earlier recordings" subtitle="Earlier transcripts of this consultation, and its saved recordings" testId="earlier-recordings">
         <EarlierRecordings ai={ai} transcripts={earlier} encounterId={id} open={open} highlight={highlight} />

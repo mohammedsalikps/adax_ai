@@ -1,6 +1,6 @@
 import { type Encounter, SIMULATION_TICK_MS } from '@adaxai/contracts'
 import { useQueryClient } from '@tanstack/react-query'
-import { Activity, ChevronDown, ClipboardPlus, Radio } from 'lucide-react'
+import { Activity, ChevronDown, ClipboardPlus, Droplet, HeartPulse, Radio, Thermometer, Wind } from 'lucide-react'
 import { memo, useEffect, useId, useRef, useState } from 'react'
 import { api, errorMessage } from '../../lib/api.ts'
 import { type InputTile, type InputValue, inputsDeviceLine, inputTiles, noAdultFlags } from '../../lib/clinicalInputs.ts'
@@ -14,7 +14,16 @@ import { Panel } from '../hero/Panel.tsx'
 import { SourceTag } from '../hero/SourceTag.tsx'
 import { Button } from '../ui/Button.tsx'
 import { PanelBoundary } from '../ui/PanelBoundary.tsx'
-import { StethoscopePanel } from './StethoscopePanel.tsx'
+import { SIGNAL_TILE, StethoscopeTile, ThermalTile } from './SignalTiles.tsx'
+
+/** Each vital sign's icon and colour on its tile (premium design). */
+const SIGNAL_ICON: Record<string, { icon: typeof Activity; className: string }> = {
+  bp: { icon: Activity, className: 'text-brand' },
+  heart_rate: { icon: HeartPulse, className: 'text-rose-500' },
+  spo2: { icon: Droplet, className: 'text-sky-500' },
+  temperature: { icon: Thermometer, className: 'text-orange-500' },
+  respiratory_rate: { icon: Wind, className: 'text-teal-600' },
+}
 
 /** Props of the consultation's clinical inputs panel (DESIGN §5.4 column 2, §7). */
 export interface ClinicalInputsProps {
@@ -39,7 +48,7 @@ function ValueRow({ v, large, now }: { v: InputValue; large: boolean; now: numbe
       className={large ? 'mt-0.5' : 'mt-1.5 border-t border-line pt-1.5'}
     >
       <p className={`flex flex-wrap items-baseline gap-x-1 ${v.current ? '' : 'text-ink-muted'}`}>
-        <span className={`${large ? 'text-2xl' : 'text-base'} leading-tight font-semibold tabular-nums`}>{v.value}</span>
+        <span className={`${large ? 'text-xl' : 'text-base'} leading-tight font-semibold tabular-nums`}>{v.value}</span>
         <span className="text-sm text-ink-muted">{v.unit}</span>
         {v.missingHalf && <span className="sr-only">({v.missingHalf} not recorded)</span>}
         <FlagLabel flag={v.flag} />
@@ -61,8 +70,12 @@ function Tile({ t, now }: { t: InputTile; now: number | null }) {
   const real = t.values.filter((v) => v.source !== 'simulated')
   const sim = t.values.find((v) => v.source === 'simulated')
   return (
-    <li className="min-w-0 rounded-lg bg-canvas px-3 py-2.5" data-testid="input-tile" data-kind={t.key} data-source={real[0]?.source ?? 'none'}>
-      <p className="text-xs font-medium text-ink-muted">
+    <li className={SIGNAL_TILE} data-testid="input-tile" data-kind={t.key} data-source={real[0]?.source ?? 'none'}>
+      <p className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
+        {(() => {
+          const ic = SIGNAL_ICON[t.key]
+          return ic ? <ic.icon aria-hidden="true" className={`size-4 ${ic.className}`} /> : null
+        })()}
         <span aria-hidden="true">{t.short}</span>
         <span className="sr-only">{t.label}</span>
       </p>
@@ -172,7 +185,7 @@ export function ClinicalInputs({ encounter }: ClinicalInputsProps) {
 
   return (
     <Panel
-      label="Clinical inputs"
+      label="Clinical signals"
       icon={Activity}
       testId="clinical-inputs"
       actions={
@@ -183,14 +196,16 @@ export function ClinicalInputs({ encounter }: ClinicalInputsProps) {
         )
       }
     >
-      <ul className="grid grid-cols-2 gap-2" aria-label="Vital signs" data-testid="input-tiles">
+      <ul className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 xl:grid-cols-7" aria-label="Vital signs" data-testid="input-tiles">
         {tiles.map((t) => (
           <Tile key={t.key} t={t} now={now} />
         ))}
+        <StethoscopeTile encounter={encounter} />
+        <ThermalTile encounter={encounter} />
       </ul>
 
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <p className="min-w-0 text-xs text-ink-muted" data-testid="clinical-inputs-devices">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <p className="min-w-0 text-[0.6875rem] text-ink-muted" data-testid="clinical-inputs-devices">
           {line}
         </p>
         <div className="flex flex-wrap items-center gap-1">
@@ -228,10 +243,6 @@ export function ClinicalInputs({ encounter }: ClinicalInputsProps) {
         </PanelBoundary>
       </div>
 
-      {/* The divider is drawn here: the stethoscope group is the first thing in its boundary. */}
-      <PanelBoundary label="The stethoscope" neutral className="mt-4 border-t border-line pt-3">
-        <StethoscopePanel encounter={encounter} />
-      </PanelBoundary>
 
       {recording && (
         <RecordVitalsDialog

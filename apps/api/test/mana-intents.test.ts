@@ -141,6 +141,41 @@ describe('the questions fixed rules answer', () => {
     for (const q of ['What are Meena’s allergies?', 'What medicines is Rahul Sharma on?', 'What are the allergies of Zara Khan?', 'What are the allergies?', 'What did the last consultation of Omkar say?', 'Brief me on this patient']) expect(matchRulesIntent(q), q).toBeNull()
   })
 
+  it('answers the queue counts, who is in consultation, available lab reports and pending services by fixed rules (premium Mana)', () => {
+    const current = { by: 'current' }
+    for (const q of ['How many patients are waiting?', 'How many are still waiting for me?', 'How many patients do I have waiting today?', 'How long is my queue?']) expect(matchRulesIntent(q), q).toEqual({ kind: 'waiting_count' })
+    for (const q of ['Who is currently in consultation?', 'Who is with me now?', 'Which patient is in consultation?']) expect(matchRulesIntent(q), q).toEqual({ kind: 'in_consultation' })
+    expect(matchRulesIntent('What lab reports are available?')).toEqual({ kind: 'record_topic', who: current, topic: 'investigations' })
+    expect(matchRulesIntent('Which results are on record?')).toEqual({ kind: 'record_topic', who: current, topic: 'investigations' })
+    expect(matchRulesIntent('What lab reports does he have?')).toEqual({ kind: 'record_topic', who: current, topic: 'investigations' })
+    expect(matchRulesIntent('What services are pending?')).toEqual({ kind: 'orders', ask: 'pending', service: null, who: { by: 'none' } })
+    // A named patient still goes to the planner (its name checks), as for the other record questions.
+    for (const q of ['What lab reports are available for Meena Kumar?', 'What lab reports does Rahul have?']) expect(matchRulesIntent(q), q).toBeNull()
+    // The premium Mana's suggested questions (web lib/manaGlobal.ts manaSuggestions), word for word: each fixed-rule one is answered by fixed rules.
+    const suggested: [string, string][] = [
+      ['Summarize this patient’s previous history.', 'record_topic'],
+      ['What medicines is he taking?', 'record_topic'],
+      ['What medicines is she taking?', 'record_topic'],
+      ['What medicines is this patient taking?', 'record_topic'],
+      ['What are his allergies?', 'allergies'],
+      ['What are her allergies?', 'allergies'],
+      ['What are this patient’s allergies?', 'allergies'],
+      ['What happened in his last consultation?', 'last_consultation'],
+      ['What happened in this patient’s last consultation?', 'last_consultation'],
+      ['Show recent lab results', 'record_topic'],
+      ['Summarize today’s consultation', 'today_consultation'],
+      ['Who is my next patient?', 'next_patient'],
+      ['Who has waited the longest?', 'waiting_longest'],
+      ['How many patients are waiting?', 'waiting_count'],
+      ['Who is currently in consultation?', 'in_consultation'],
+      ['How many patients have I seen today?', 'seen_today'],
+      ['Any pending orders?', 'orders'],
+    ]
+    for (const [q, kind] of suggested) expect(matchRulesIntent(q)?.kind, q).toBe(kind)
+    // The one the model writes is not a fixed-rule question.
+    expect(matchRulesIntent('What should I know before seeing him?')).toBeNull()
+  })
+
   it('reads who a question is about without guessing: the current patient, a handle, a name, a check-in time, or nobody', () => {
     expect(parseWho('this patient')).toEqual({ by: 'current' })
     expect(parseWho('her')).toEqual({ by: 'current' })

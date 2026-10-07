@@ -70,6 +70,8 @@ const NEEDS: Record<RulesIntent['kind'], readonly Parameters<typeof can>[1][]> =
   next_patient: ['queue:read'],
   seen_today: ['queue:read', 'appointments:read'],
   waiting_longest: ['queue:read'],
+  waiting_count: ['queue:read', 'appointments:read'],
+  in_consultation: ['queue:read'],
   arrival_time: ['patients:read', 'queue:read'],
   nurse_triage: ['patients:read', 'queue:read'],
   orders: ['patients:read', 'orders:read'],
@@ -260,7 +262,7 @@ async function nextPatient(ctx: ManaCtx, c: Composer): Promise<void> {
   c.say(`Your next patient is ${alias}: ${state}${top.v.priority === 'urgent' ? ', marked urgent' : ''}; checked in at ${at(ctx, top.v.checkedInAt)} (token ${top.v.tokenNumber})${top.apptAt ? `; appointment at ${at(ctx, top.apptAt)}` : ''}.`, facts[0]!, header)
   if (rows.length > 1) {
     const after = rows.slice(1, 3).map((r) => `${ctx.book.aliasFor(r.p.id)} (${STATUS_WORDS[r.v.status] ?? r.v.status})`)
-    c.say(`After that: ${after.join(', then ')}${rows.length > 3 ? `, and ${plural(rows.length - 3, 'more')}` : ''}.`, ...facts.slice(1))
+    c.say(`After that: ${after.join(', then ')}${rows.length > 3 ? `, and ${`${rows.length - 3} more`}` : ''}.`, ...facts.slice(1))
   }
 }
 
@@ -297,6 +299,49 @@ async function seenToday(ctx: ManaCtx, c: Composer): Promise<void> {
   c.detail = `${n.total} row(s) of your day counted`
   c.say(`You have seen ${plural(n.seen, 'patient')} today.`, f)
   c.say(`Still today: ${n.waiting} waiting, ${n.inConsultation} in consultation, ${n.yetToSee} yet to see.`, f)
+}
+
+/**
+ * How many patients are waiting for the doctor now, counted as Home counts them (the same `countDoctorQueue` over the doctor's own day), with who is
+ * ready first: the number on Home and Mana's answer are the same number.
+ */
+async function waitingCount(ctx: ManaCtx, c: Composer): Promise<void> {
+  const v = await ctx.db
+    .select({ status: visits.status, enc: encounters.status })
+    .from(visits)
+    .leftJoin(encounters, and(eq(encounters.visitId, visits.id), ne(encounters.status, 'discarded')))
+    .where(and(eq(visits.facilityId, ctx.me.facilityId), eq(visits.visitDate, ctx.today), mine(ctx)!))
+  const a = await ctx.db.select({ status: appointments.status }).from(appointments).where(myAppointmentsToday(ctx))
+  const statuses: DoctorQueueStatus[] = [...v.map((r) => doctorQueueStatus({ visitStatus: r.status, encounterStatus: r.enc })), ...a.map((r) => doctorQueueStatus({ appointmentStatus: r.status }))]
+  const n = countDoctorQueue(statuses)
+  const ready = v.filter((r) => r.status === 'ready').length
+  const triage = v.filter((r) => r.status === 'in_triage').length
+  const day = dayLabel(ctx.today, ctx.timeZone)
+  const text = `Your patients today (${day}), counted as on Home: ${n.waiting} waiting (${ready} ready for the doctor, ${triage} with the nurse, ${n.waiting - ready - triage} checked in), ${n.inConsultation} in consultation, ${n.yetToSee} booked and not yet arrived, ${n.seen} seen.`
+  const f = c.fact(text, null, [{ kind: 'operational', label: `Your day · ${day}`, date: ctx.today, status: null, excerpt: text, link: null }])
+  c.detail = `${n.total} row(s) of your day counted`
+  c.say(n.waiting ? `${plural(n.waiting, 'patient is', 'patients are')} waiting for you: ${ready} ready for the doctor, ${triage} with the nurse and ${n.waiting - ready - triage} checked in.` : 'Nobody is waiting for you right now.', f)
+  c.say(`Also today: ${n.inConsultation} in consultation, ${n.yetToSee} booked and not yet arrived, ${n.seen} already seen.`, f)
+}
+
+/** Who is in consultation now: today's visits with a doctor, the doctor's own first. */
+async function inConsultationNow(ctx: ManaCtx, c: Composer): Promise<void> {
+  const rows = await queueSelect(ctx)
+    .where(and(eq(visits.facilityId, ctx.me.facilityId), eq(visits.visitDate, ctx.today), eq(visits.status, 'in_consultation'), mine(ctx)!))
+    .orderBy(asc(visits.statusChangedAt))
+    .limit(5)
+  c.detail = `${rows.length} visit(s) in consultation read`
+  if (!rows.length) {
+    const f = c.fact(`None of your visits today (${dayLabel(ctx.today, ctx.timeZone)}) is in consultation.`, null, [{ kind: 'operational', label: `Your queue · ${dayLabel(ctx.today, ctx.timeZone)}`, date: ctx.today, status: null, excerpt: 'Nobody in consultation', link: null }])
+    c.say('Nobody is in consultation with you right now.', f)
+    return
+  }
+  const hidden = await hiddenFor(ctx, rows.map((r) => r.p.id))
+  const facts = rows.map((r) => visitFact(ctx, c, r, hidden))
+  for (const r of rows) c.subjects.add(r.p.id)
+  const top = rows[0]!
+  c.say(`${ctx.book.aliasFor(top.p.id)} is in consultation with you since ${at(ctx, top.v.statusChangedAt)}${hidden.has(top.p.id) || !top.v.chiefComplaint ? '' : ` (${quote(top.v.chiefComplaint, 80, scrubberFor(top.p))})`}.`, facts[0]!)
+  if (rows.length > 1) c.say(`Also in consultation: ${rows.slice(1).map((r) => ctx.book.aliasFor(r.p.id)).join(', ')}.`, ...facts.slice(1))
 }
 
 /** Who has waited longest since checking in (today's visits waiting for a doctor: waiting, in triage or ready); the doctor's own when they say so. */
@@ -728,7 +773,14 @@ async function recordTopic(ctx: ManaCtx, c: Composer, who: PatientRef, topic: Re
     g.facts.push(i)
     groups.set(title, g)
   }
-  for (const [title, g] of groups) c.say(`${title ? `${title}: ` : ''}${g.parts.join('; ')}.`, ...g.facts)
+  // A section of one item reads as one sentence; a longer one as its title, then one line per item (each citing its own record), easy to scan.
+  for (const [title, g] of groups) {
+    if (g.parts.length === 1) c.say(`${title ? `${title}: ` : ''}${g.parts[0]}.`, ...g.facts)
+    else {
+      c.say(`${title || 'From the record'} (${g.parts.length}):`, ...g.facts)
+      g.parts.forEach((part, k) => c.say(`${part}.`, g.facts[k]!))
+    }
+  }
   for (const f of out.findings) c.findings.push(f)
 }
 
@@ -868,6 +920,8 @@ export const RULES_BASIS: Record<RulesIntent['kind'], string> = {
   next_patient: 'From today’s queue',
   seen_today: 'From today’s queue',
   waiting_longest: 'From today’s queue',
+  waiting_count: 'From today’s queue',
+  in_consultation: 'From today’s queue',
   arrival_time: 'From today’s queue',
   nurse_triage: 'From today’s triage record',
   orders: 'From service orders',
@@ -899,6 +953,12 @@ export async function answerByRules(ctx: ManaCtx, intent: RulesIntent): Promise<
       break
     case 'waiting_longest':
       await waitingLongest(ctx, c, intent.mine)
+      break
+    case 'waiting_count':
+      await waitingCount(ctx, c)
+      break
+    case 'in_consultation':
+      await inConsultationNow(ctx, c)
       break
     case 'arrival_time':
       await arrivalTime(ctx, c, intent.who)

@@ -15,17 +15,16 @@ import {
   type ManaSourceItem,
 } from '@adaxai/contracts'
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronUp, FileText, LoaderCircle, MessageSquarePlus, RotateCcw, Send, ShieldAlert, Sparkles, Square, TriangleAlert } from 'lucide-react'
+import { ArrowUp, CalendarDays, ChevronDown, ChevronUp, CircleCheck, Database, FileText, LoaderCircle, MessageSquarePlus, RotateCcw, Send, ShieldAlert, Sparkles, Square, TriangleAlert } from 'lucide-react'
 import { type FormEvent, Fragment, type KeyboardEvent, type RefObject, useEffect, useId, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { errorMessage } from '../../lib/api.ts'
 import { usePortalBase } from '../../lib/clinical.ts'
 import { withoutSyntheticMarks } from '../../lib/displayName.ts'
-import { fmtDate, fmtDateTime } from '../../lib/format.ts'
+import { fmtDate, fmtDateTime, fmtTime } from '../../lib/format.ts'
 import { manaConversationKey, type ManaScope, pendingMessage, useAskMana, useCancelMana, useManaConversation, useNewManaConversation, useSelectManaPatient } from '../../lib/manaAssistant.ts'
-import { manaChips, NO_LOCAL_VOICE, speakableText, suggestionFor } from '../../lib/manaGlobal.ts'
+import { type ManaChip, type ManaContextKind, manaSuggestions, NO_LOCAL_VOICE, speakableText, suggestionFor } from '../../lib/manaGlobal.ts'
 import { useLocalSpeech } from '../../lib/manaSpeech.ts'
-import { SourceTag } from '../hero/SourceTag.tsx'
 import { Button } from '../ui/Button.tsx'
 import { Alert, Badge, type BadgeTone } from '../ui/Feedback.tsx'
 import { ManaProposalCard } from './ManaProposalCard.tsx'
@@ -124,11 +123,29 @@ function SourceBox({ s, entities }: { s: ManaAnswerSource; entities: ManaEntity[
 }
 
 /** The short name of a source on its chip: the record in words ("Allergy · 1 Sep 2026"), not an id. */
-const chipLabel = (s: ManaAnswerSource) => s.items[0]?.label ?? s.label
+const chipLabel = (s: ManaAnswerSource) => withoutSyntheticMarks(s.items[0]?.label ?? s.label)
 
-function Block({ b, sources, entities }: { b: ManaAnswerBlock; sources: ManaAnswerSource[]; entities: ManaEntity[] }) {
+/**
+ * The sources each statement shows: a source already shown under an earlier statement of the answer (the same record in words) is not repeated
+ * under each one. Worked out once per answer, before drawing (pure: the same answer always gives the same chips).
+ */
+function visibleRefs(a: ManaAnswerBody): string[][] {
+  const shown = new Set<string>()
+  return a.blocks.map((b) =>
+    b.refs.filter((r) => {
+      const src = a.sources.find((x) => x.ref === r)
+      if (!src) return false
+      const label = chipLabel(src)
+      if (shown.has(label)) return false
+      shown.add(label)
+      return true
+    }),
+  )
+}
+
+function Block({ b, sources, entities, refs = b.refs }: { b: ManaAnswerBlock; sources: ManaAnswerSource[]; entities: ManaEntity[]; refs?: string[] }) {
   const [open, setOpen] = useState<string | null>(null)
-  const cited = b.refs.flatMap((r) => (sources.find((s) => s.ref === r) ? [sources.find((s) => s.ref === r)!] : []))
+  const cited = refs.flatMap((r) => (sources.find((s) => s.ref === r) ? [sources.find((s) => s.ref === r)!] : []))
   return (
     <li className="text-sm" data-testid="mana-block">
       <p>
@@ -153,7 +170,7 @@ function Block({ b, sources, entities }: { b: ManaAnswerBlock; sources: ManaAnsw
                   aria-expanded={open === s.ref}
                   onClick={() => setOpen(open === s.ref ? null : s.ref)}
                   data-testid="mana-source-chip"
-                  className="inline-flex min-h-7 max-w-full items-center gap-1 rounded-full border border-brand/30 bg-brand-soft px-2.5 text-xs font-medium text-brand-strong transition-colors hover:bg-brand/10 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
+                  className="-ml-1.5 inline-flex min-h-7 max-w-full items-center gap-1 rounded-md px-1.5 text-xs font-medium text-ink-muted transition-colors hover:bg-brand-soft hover:text-brand-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
                 >
                   <FileText aria-hidden="true" className="size-3 shrink-0" />
                   <span className="truncate">{chipLabel(s)}</span>
@@ -251,8 +268,12 @@ function ManaMessageView({ m, question, onSelect, onRetry, busy, current, scope 
   ) : null
   if (m.status === 'pending') {
     return (
-      <p role="status" className="flex items-center gap-2 text-sm text-ink-muted" data-testid="mana-working">
-        <LoaderCircle aria-hidden="true" className="size-4 shrink-0 animate-spin" />
+      <p role="status" className="flex items-center gap-2.5 text-sm text-ink-muted" data-testid="mana-working">
+        <span aria-hidden="true" className="inline-flex items-center gap-1">
+          <span className="size-1.5 rounded-full bg-brand/70 motion-safe:animate-bounce" />
+          <span className="size-1.5 rounded-full bg-brand/50 motion-safe:animate-bounce [animation-delay:120ms]" />
+          <span className="size-1.5 rounded-full bg-brand/30 motion-safe:animate-bounce [animation-delay:240ms]" />
+        </span>
         {m.phase ? MANA_PHASE_LABEL[m.phase] : 'Working'}…
       </p>
     )
@@ -310,22 +331,24 @@ function ManaMessageView({ m, question, onSelect, onRetry, busy, current, scope 
       )}
       {a.blocks.length > 0 && (
         <ul className="space-y-2.5" aria-label="Mana’s answer">
-          {a.blocks.map((b, i) => (
-            <Block key={i} b={b} sources={a.sources} entities={a.entities} />
+          {visibleRefs(a).map((refs, i) => (
+            <Block key={i} b={a.blocks[i]!} sources={a.sources} entities={a.entities} refs={refs} />
           ))}
         </ul>
       )}
       {a.action && <ManaProposalCard m={m} proposal={a.action} scope={scope} disabled={busy} />}
       {/* HERO final: an answer the server composed by fixed rules says so (no model wrote it); the model's answers keep their own labels. */}
       {a.engine === 'rules' && (
-        <p className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="mana-rules-label">
-          <SourceTag kind="rules">{MANA_RULES_ANSWER_LABEL}</SourceTag>
-          {/* Jury polish: where this answer comes from (the queue, the patient record, this consultation, service orders). */}
+        <p className="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 border-t border-line/60 pt-2 text-xs text-ink-muted" data-testid="mana-rules-label">
+          <Database aria-hidden="true" className="size-3.5 shrink-0 text-brand" />
+          {/* Where this answer comes from (the queue, the patient record, this consultation, service orders), and that fixed rules wrote it. */}
           {a.basis && (
-            <span className="text-xs font-medium text-ink-muted" data-testid="mana-answer-basis">
+            <span className="font-medium text-ink" data-testid="mana-answer-basis">
               {a.basis}
             </span>
           )}
+          {a.basis && <span aria-hidden="true">·</span>}
+          <span>{MANA_RULES_ANSWER_LABEL}</span>
         </p>
       )}
       {a.removed > 0 && m.status !== 'unverified' && (
@@ -459,34 +482,58 @@ function useManaPanel(scope: ManaScope, open: boolean, onAnswer?: (m: ManaMessag
 
 type Panel = ReturnType<typeof useManaPanel>
 
+/** Mana's mark: a soft gradient disc with the spark (the assistant, not a person). */
+export function ManaMark({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {
+  const box = size === 'lg' ? 'size-11' : size === 'sm' ? 'size-7' : 'size-8'
+  const icon = size === 'lg' ? 'size-5' : 'size-4'
+  return (
+    <span aria-hidden="true" className={`inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand to-ai text-white shadow-[0_4px_14px_-4px_rgb(79_70_229/0.55)] ${box}`}>
+      <Sparkles className={icon} />
+    </span>
+  )
+}
+
 /** The conversation's messages (the doctor's questions, Mana's answers). */
-function Conversation({ p, scope, keepFocus }: { p: Panel; scope: ManaScope; keepFocus: () => void }) {
+function Conversation({ p, scope, keepFocus, welcome }: { p: Panel; scope: ManaScope; keepFocus: () => void; welcome?: string }) {
   const s = p.s!
   return (
     <>
-      {s.messages.length === 0 && <p className="text-sm text-ink-muted">Nothing asked yet. Mana looks things up in the records you can already see, and shows where each statement comes from.</p>}
+      {s.messages.length === 0 && (
+        <div className="flex flex-col items-center px-4 py-10 text-center" data-testid="mana-welcome">
+          <ManaMark size="lg" />
+          <p className="mt-4 text-base font-semibold text-ink">{welcome ?? 'Ask me anything about today’s clinic.'}</p>
+          <p className="mt-1 max-w-md text-sm text-ink-muted">Nothing asked yet. Mana looks things up in the records you can already see, and shows where each answer comes from.</p>
+        </div>
+      )}
       {s.messages.map((m, i) =>
         m.role === 'doctor' ? (
-          <div key={m.id} className="flex justify-end" data-testid="mana-question">
-            <p className="max-w-[90%] rounded-lg rounded-br-sm bg-brand-soft px-3 py-1.5 text-sm text-brand-strong [overflow-wrap:anywhere]">{m.text}</p>
+          <div key={m.id} className="flex flex-col items-end motion-safe:animate-rise-in" data-testid="mana-question">
+            <p className="max-w-[85%] rounded-2xl rounded-br-md bg-brand-soft px-4 py-2.5 text-sm text-ink [overflow-wrap:anywhere]">{m.text}</p>
+            <span className="mt-1 text-[0.6875rem] text-ink-muted tabular-nums">{fmtTime(m.createdAt)}</span>
           </div>
         ) : (
-          <div key={m.id} className="rounded-lg border border-line bg-canvas p-3" data-testid="mana-message">
-            <ManaMessageView
-              m={m}
-              question={p.retryOf(i)}
-              busy={p.busy}
-              current={i === s.messages.length - 1}
-              scope={scope}
-              onSelect={(alias) => {
-                p.select.mutate(alias)
-                keepFocus()
-              }}
-              onRetry={(t) => {
-                p.ask.mutate({ text: t })
-                keepFocus()
-              }}
-            />
+          <div key={m.id} className="flex items-start gap-3 motion-safe:animate-rise-in" data-testid="mana-message">
+            <ManaMark />
+            <div className="min-w-0 flex-1">
+              <div className="rounded-2xl rounded-tl-md border border-line/70 bg-surface px-4 py-3 shadow-[0_1px_2px_rgb(15_23_42/0.04)]">
+                <ManaMessageView
+                  m={m}
+                  question={p.retryOf(i)}
+                  busy={p.busy}
+                  current={i === s.messages.length - 1}
+                  scope={scope}
+                  onSelect={(alias) => {
+                    p.select.mutate(alias)
+                    keepFocus()
+                  }}
+                  onRetry={(t) => {
+                    p.ask.mutate({ text: t })
+                    keepFocus()
+                  }}
+                />
+              </div>
+              {m.status !== 'pending' && <span className="mt-1 block text-[0.6875rem] text-ink-muted tabular-nums">{fmtTime(m.createdAt)}</span>}
+            </div>
           </div>
         ),
       )}
@@ -726,10 +773,61 @@ function ManaCard({ encounterId, patientId, defaultOpen = false, title }: ManaAs
   )
 }
 
+/** Who and what Mana is looking at, from the conversation the server opened (never guessed). */
+function ContextCard({ s }: { s: ManaConversationState | undefined }) {
+  const sp = s?.scopePatient
+  const kind: ManaContextKind = s?.conversation.scope.encounterId ? 'consultation' : sp ? 'patient' : 'clinic'
+  return (
+    <section aria-label="Current context" className="rounded-2xl border border-line/70 bg-surface p-3.5 shadow-[0_1px_2px_rgb(15_23_42/0.04)]" data-testid="mana-context-card">
+      <p className="text-xs font-medium text-ink-muted">Current context</p>
+      {sp ? (
+        <div className="mt-2 flex items-start gap-3">
+          <span aria-hidden="true" className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-brand-soft text-sm font-semibold text-brand-strong">
+            {initials(sp.displayName)}
+          </span>
+          <div className="min-w-0">
+            <p className="font-semibold text-ink [overflow-wrap:anywhere]">{sp.displayName}</p>
+            <p className="text-xs text-ink-muted">
+              {sp.ageSex} · {sp.mrn}
+            </p>
+            <p className={`mt-1 inline-flex items-center gap-1.5 text-xs font-medium ${kind === 'consultation' ? 'text-ok' : 'text-ink-muted'}`}>
+              <span aria-hidden="true" className={`size-1.5 rounded-full ${kind === 'consultation' ? 'bg-ok' : 'bg-ink-muted/60'}`} />
+              {kind === 'consultation' ? 'Consultation in progress' : 'Patient record'}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 flex items-start gap-3">
+          <span aria-hidden="true" className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-brand-soft text-brand-strong">
+            <CalendarDays className="size-5" />
+          </span>
+          <div className="min-w-0">
+            <p className="font-semibold text-ink">Today’s clinic</p>
+            <p className="text-xs text-ink-muted">Your queue, appointments, orders and patients</p>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+const initials = (name: string) =>
+  name
+    .replace(/\(.*?\)/g, '')
+    .trim()
+    .split(/\s+/)
+    .filter((w) => !/^dr\.?$/i.test(w))
+    .map((w) => w[0]!.toUpperCase())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join('')
+
 /**
- * The global Mana's body (components/mana/GlobalMana.tsx puts it in the right sheet): the conversation scrolls, the question box stays below it. It
- * offers the one-tap questions (those fixed rules answer work while the local model is down; the box stays usable for them), a microphone for a
- * spoken question, and reads answers aloud only when the doctor turned that on and a voice on this computer exists.
+ * The global Mana's body (components/mana/GlobalMana.tsx puts it in a wide sheet; premium design): on the left, what Mana is looking at (the
+ * patient and the consultation, or today's clinic) and the suggested questions grouped by subject; on the right, the conversation (the doctor's
+ * questions, Mana's answers with where each comes from) and the question box with the microphone and Send. Questions fixed rules answer work while
+ * the local model is down; the ones only the model can write are not offered then. Answers are read aloud only when the doctor turned that on and a
+ * voice on this computer exists.
  */
 function ManaSheetPanel({ encounterId, patientId, inputRef, pendingAsk, onAsked, speakAnswers = false }: ManaAssistantProps) {
   const scope: ManaScope = { encounterId, patientId }
@@ -779,110 +877,138 @@ function ManaSheetPanel({ encounterId, patientId, inputRef, pendingAsk, onAsked,
       submit()
     }
   }
-  const chips = manaChips({ hasPatient: !!sp, modelAvailable: available, inConsultation: !!s?.conversation.scope.encounterId })
+  const kind: ManaContextKind = inConsultation ? 'consultation' : sp ? 'patient' : 'clinic'
+  const firstName = sp?.displayName.replace(/\(.*?\)/g, '').trim().split(/\s+/)[0] ?? null
+  const sex = sp ? (/\bfemale\b/i.test(sp.ageSex) ? 'female' : /\bmale\b/i.test(sp.ageSex) ? 'male' : null) : null
+  const groups = manaSuggestions({ kind, firstName, sex, modelAvailable: available })
+  const askChip = (c: ManaChip) => {
+    speech.cancel()
+    ask.mutate(c.suggestion ? { text: c.text, suggestion: c.suggestion } : { text: c.text })
+    keepFocus()
+  }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="mana-assistant" data-open="true" data-variant="sheet">
-      <div ref={p.logRef} role="group" aria-label="Conversation with Mana" tabIndex={0} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4 focus-visible:outline-2 focus-visible:-outline-offset-2" data-testid="mana-log">
-        {p.conv.isPending && (
-          <p role="status" className="flex items-center gap-2 text-sm text-ink-muted">
-            <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> Opening the conversation…
-          </p>
-        )}
-        {p.conv.isError && <OpenProblem p={p} scope={scope} />}
+    <div className="flex min-h-0 flex-1 flex-col bg-canvas/50 md:flex-row" data-testid="mana-assistant" data-open="true" data-variant="sheet">
+      <aside tabIndex={0} className="shrink-0 overflow-y-auto border-line/70 px-4 py-4 focus-visible:outline-2 focus-visible:-outline-offset-2 max-md:max-h-[38dvh] max-md:border-b md:w-[19rem] md:border-r" aria-label="Context and suggested questions">
+        <ContextCard s={s} />
         {s && (
-          <>
-            <p className="text-xs text-ink-muted" data-testid="mana-context">
-              {sp ? 'Ask about this patient, today’s queue, orders, or your consultations.' : 'Ask about today’s queue, your patients, orders, or a patient by name.'}
-            </p>
-            {!available && (
-              <Alert tone="warning" title={MANA_UNAVAILABLE} live={false}>
-                <span data-testid="mana-status-unavailable">{s.status.reason ?? 'The local model is not running.'}</span> Questions answered from the records by fixed rules (the buttons below) still work; nothing else is answered, and nothing is made up.
-              </Alert>
-            )}
-            {speakAnswers && speech.checked && !speech.voice && (
-              <p className="text-xs text-ink-muted" data-testid="mana-no-voice">
-                {NO_LOCAL_VOICE}: answers are not read aloud (only a voice that runs on this computer may read them).
-              </p>
-            )}
-            <Conversation p={p} scope={scope} keepFocus={keepFocus} />
-          </>
-        )}
-      </div>
-      <div className="shrink-0 border-t border-line px-5 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        {s && !busy && (
-          <div className="mb-2 flex flex-wrap gap-1.5" role="group" aria-label="Suggested questions" data-testid="mana-chips">
-            {chips.map((c) => (
-              <button
-                key={c.key}
-                type="button"
-                onClick={() => {
-                  speech.cancel()
-                  ask.mutate(c.suggestion ? { text: c.text, suggestion: c.suggestion } : { text: c.text })
-                  keepFocus()
-                }}
-                className={CHIP}
-              >
-                {c.label}
-              </button>
+          <div className="mt-5" role="group" aria-label="Suggested questions" data-testid="mana-chips">
+            {groups.map((g) => (
+              <section key={g.key} className="mb-4" aria-label={g.title}>
+                <p className="mb-1.5 px-1 text-xs font-medium text-ink-muted">{g.title}</p>
+                <ul className="space-y-1">
+                  {g.chips.map((c) => (
+                    <li key={c.key}>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => askChip(c)}
+                        className="group flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm text-ink transition-colors hover:bg-surface hover:shadow-[0_1px_3px_rgb(15_23_42/0.08)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand disabled:opacity-50"
+                        data-rules={c.rules || undefined}
+                      >
+                        {c.rules ? <CircleCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-brand" /> : <Sparkles aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-ai" />}
+                        <span>{c.label}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             ))}
           </div>
         )}
-        <AskError p={p} />
-        {voiceProblem && (
-          <p role="status" className="mt-1 text-sm text-pending" data-testid="mana-voice-problem">
-            {voiceProblem}
-          </p>
-        )}
-        <form onSubmit={submit} className="mt-2">
-          <label htmlFor={inputId} className="sr-only">
-            Ask Mana
-          </label>
-          <div className="flex items-end gap-2">
-            <textarea
-              id={inputId}
-              ref={input}
-              rows={2}
-              value={text}
-              maxLength={500}
-              placeholder={sp ? 'Ask Mana about this patient…' : 'Ask Mana…'}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={onKey}
-              className="min-h-[2.75rem] min-w-0 flex-1 resize-none rounded-md border border-line-strong bg-surface px-3 py-2 text-sm placeholder:text-ink-muted focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand"
-              data-testid="mana-input"
-            />
-            <ManaVoiceButton
-              conversationId={s?.conversation.id}
-              disabled={!s || busy}
-              onProblem={setVoiceProblem}
-              onText={(heard) => {
-                setText(heard)
-                send(heard)
-              }}
-            />
-            {pending ? (
-              <Button
-                variant="secondary"
-                icon={<Square aria-hidden="true" className="size-4" />}
-                loading={cancel.isPending}
-                onClick={() => {
-                  cancel.mutate(pending.id)
-                  keepFocus()
+      </aside>
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Conversation">
+        <div ref={p.logRef} role="group" aria-label="Conversation with Mana" tabIndex={0} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5 focus-visible:outline-2 focus-visible:-outline-offset-2 md:px-7" data-testid="mana-log">
+          {p.conv.isPending && (
+            <p role="status" className="flex items-center gap-2 text-sm text-ink-muted">
+              <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> Opening the conversation…
+            </p>
+          )}
+          {p.conv.isError && <OpenProblem p={p} scope={scope} />}
+          {s && (
+            <>
+              <p className="sr-only" data-testid="mana-context">
+                {sp ? 'Ask about this patient, today’s queue, orders, or your consultations.' : 'Ask about today’s queue, your patients, orders, or a patient by name.'}
+              </p>
+              {!available && (
+                <Alert tone="warning" title={MANA_UNAVAILABLE} live={false}>
+                  <span data-testid="mana-status-unavailable">{s.status.reason ?? 'The local model is not running.'}</span> Questions answered from the records by fixed rules (the suggested questions) still work; nothing else is answered, and nothing is made up.
+                </Alert>
+              )}
+              {speakAnswers && speech.checked && !speech.voice && (
+                <p className="text-xs text-ink-muted" data-testid="mana-no-voice">
+                  {NO_LOCAL_VOICE}: answers are not read aloud (only a voice that runs on this computer may read them).
+                </p>
+              )}
+              <Conversation p={p} scope={scope} keepFocus={keepFocus} welcome={sp ? `Ask me anything about ${firstName ?? 'this patient'} or today’s clinic.` : undefined} />
+            </>
+          )}
+        </div>
+        <div className="shrink-0 px-5 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-7">
+          <AskError p={p} />
+          {voiceProblem && (
+            <p role="status" className="mb-1 text-sm text-pending" data-testid="mana-voice-problem">
+              {voiceProblem}
+            </p>
+          )}
+          <form onSubmit={submit}>
+            <label htmlFor={inputId} className="sr-only">
+              Ask Mana
+            </label>
+            <div className="flex items-end gap-1.5 rounded-2xl border border-line bg-surface py-1.5 pr-1.5 pl-4 shadow-[0_2px_8px_-2px_rgb(15_23_42/0.08)] transition-shadow focus-within:border-brand/50 focus-within:shadow-[0_0_0_4px_rgb(37_99_235/0.10)]">
+              <textarea
+                id={inputId}
+                ref={input}
+                rows={1}
+                value={text}
+                maxLength={500}
+                placeholder="Ask Mana about this patient, today’s queue, records, labs, medicines, or consultation…"
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={onKey}
+                className="max-h-32 min-h-10 min-w-0 flex-1 resize-none bg-transparent py-2.5 text-sm leading-5 outline-none placeholder:text-ink-muted"
+                data-testid="mana-input"
+              />
+              <ManaVoiceButton
+                conversationId={s?.conversation.id}
+                disabled={!s || busy}
+                onProblem={setVoiceProblem}
+                onText={(heard) => {
+                  setText(heard)
+                  send(heard)
                 }}
-                data-testid="mana-stop"
-              >
-                Stop
-              </Button>
-            ) : (
-              <Button type="submit" loading={ask.isPending} disabled={busy || !s || text.trim().length < 2} icon={<Send aria-hidden="true" className="size-4" />} onClick={keepFocus} data-testid="mana-send" aria-label="Send">
-                <span className="hidden sm:inline">Send</span>
-              </Button>
-            )}
-          </div>
-        </form>
-        <p className="mt-2 text-xs text-ink-muted">Mana only reads records you can already see. It never signs, and adds nothing without your approval.</p>
-      </div>
+              />
+              {pending ? (
+                <Button
+                  variant="secondary"
+                  icon={<Square aria-hidden="true" className="size-4" />}
+                  loading={cancel.isPending}
+                  onClick={() => {
+                    cancel.mutate(pending.id)
+                    keepFocus()
+                  }}
+                  data-testid="mana-stop"
+                >
+                  Stop
+                </Button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={busy || !s || text.trim().length < 2}
+                  onClick={keepFocus}
+                  aria-label="Send"
+                  className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-brand text-white shadow-sm transition-colors hover:bg-brand-strong disabled:bg-line-strong disabled:text-white"
+                  data-testid="mana-send"
+                >
+                  {ask.isPending ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <ArrowUp aria-hidden="true" className="size-4" />}
+                </button>
+              )}
+            </div>
+          </form>
+          <p className="mt-2 text-center text-[0.6875rem] text-ink-muted">Mana only reads records you can already see. It never signs, and adds nothing without your approval.</p>
+        </div>
+      </section>
       <Announcer p={p} />
     </div>
   )
 }
+

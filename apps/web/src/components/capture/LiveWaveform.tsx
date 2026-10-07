@@ -43,14 +43,22 @@ function WaveCanvas({ getAnalyser, recording, className }: { getAnalyser: () => 
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.clearRect(0, 0, w, h)
-      // The colour of the element (a design token through its text colour class), so the bars follow the theme.
-      ctx.fillStyle = getComputedStyle(canvas).color
-      for (const b of waveformBars(history.current, { width: w, height: h })) ctx.fillRect(b.x, b.y, b.w, b.h)
+      // The colour of the element (a design token through its text colour class) blending into the AI accent: dense, rounded bars of the real level.
+      const grad = ctx.createLinearGradient(0, 0, w, 0)
+      grad.addColorStop(0, getComputedStyle(canvas).color)
+      grad.addColorStop(1, getComputedStyle(document.documentElement).getPropertyValue('--color-ai').trim() || getComputedStyle(canvas).color)
+      ctx.fillStyle = grad
+      for (const b of waveformBars(history.current, { width: w, height: h, barWidth: 2, gap: 2, minBar: 2 })) {
+        ctx.beginPath()
+        if (typeof ctx.roundRect === 'function') ctx.roundRect(b.x, b.y, b.w, b.h, 1)
+        else ctx.rect(b.x, b.y, b.w, b.h)
+        ctx.fill()
+      }
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
   }, [getAnalyser, recording])
-  return <canvas ref={ref} aria-hidden="true" data-testid="live-waveform" className={`block h-8 min-w-0 ${recording ? 'text-brand' : 'text-ink-muted/40'} ${className}`} />
+  return <canvas ref={ref} aria-hidden="true" data-testid="live-waveform" className={`block h-12 min-w-0 ${recording ? 'text-brand' : 'text-ink-muted/40'} ${className}`} />
 }
 
 /** The microphone's level as a plain bar (reduced motion, and the capture panel's recorder): the real signal's loudness, about every 150 ms. */

@@ -17,7 +17,6 @@ import { Sheet } from '../../components/hero/Sheet.tsx'
 import { StatusPill } from '../../components/hero/StatusPill.tsx'
 import { OrderServiceButton } from '../../components/orders/OrderServiceButton.tsx'
 import { ServiceOrdersList } from '../../components/orders/ServiceOrdersList.tsx'
-import { ManaPanel } from '../../components/mana/ManaPanel.tsx'
 import { PatientHistoryPanel } from '../../components/patients/PatientHistoryPanel.tsx'
 import { HandwritingPad } from '../../components/pen/HandwritingPad.tsx'
 import { AiProvenance } from '../../components/rx/AiProvenance.tsx'
@@ -49,6 +48,7 @@ import { durationLines } from '../../lib/prescriptionCourse.ts'
 import { isMacPlatform, isTypingTarget, type Shortcut, shortcutOf, shortcutRows } from '../../lib/shortcuts.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
 import { elsewhereOf, type PartId, showPart, WORKSPACE_PANELS, workspaceDocument } from '../../lib/workspace.ts'
+import { plainName } from '../../lib/displayName.ts'
 
 export type { Draft } from '../../lib/draftSaver.ts'
 
@@ -131,6 +131,8 @@ interface InputPanelsProps {
   inserter: NoteInserter
   autoRecord: boolean
   onProfile: (tab: ProfileDrawerTab) => void
+  /** Where the conversation's important points are drawn (their own column). */
+  pointsTarget: HTMLElement | null
 }
 
 /**
@@ -141,21 +143,21 @@ interface InputPanelsProps {
  * Each panel is mounted once and never moves between parents, so the recording, the device readings poller (inside ClinicalInputs) and the
  * reads go on whatever the width. Its props do not change while the doctor types, so typing never draws them again.
  */
-const InputPanels = memo(function InputPanels({ encounter, inserter, autoRecord, onProfile }: InputPanelsProps) {
+const InputPanels = memo(function InputPanels({ encounter, inserter, autoRecord, onProfile, pointsTarget }: InputPanelsProps) {
   const e = encounter
   return (
     <>
-      <div id="tools-conversation" tabIndex={-1} className={`${PART} lg:col-span-7 lg:col-start-1 lg:row-start-1 xl:col-span-5`}>
+      <div id="tools-conversation" tabIndex={-1} className={`${PART} lg:col-span-7 lg:col-start-1 lg:row-start-1 xl:col-span-5 xl:col-start-1 xl:row-start-1`}>
         <PanelBoundary label="The live transcription">
-          <LiveTranscription encounter={e} inserter={inserter} autoRecord={autoRecord} />
+          <LiveTranscription encounter={e} inserter={inserter} autoRecord={autoRecord} pointsTarget={pointsTarget} />
         </PanelBoundary>
       </div>
-      <div id="tools-devices" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-1 xl:col-span-3 xl:col-start-6`}>
-        <PanelBoundary label="The clinical inputs">
+      <div id="tools-devices" tabIndex={-1} className={`${PART} lg:col-span-12 lg:col-start-1 lg:row-start-2 xl:col-span-8 xl:col-start-1 xl:row-start-2`}>
+        <PanelBoundary label="The clinical signals">
           <ClinicalInputs encounter={e} />
         </PanelBoundary>
       </div>
-      <div id="tools-history" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-3 xl:col-span-4 xl:col-start-9 xl:row-start-2`}>
+      <div id="tools-history" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-3 xl:col-span-5 xl:col-start-1 xl:row-start-3`}>
         <PanelBoundary label="The patient history" neutral>
           <PatientHistoryPanel encounter={e} onViewDetails={() => onProfile('history')} onDocuments={() => onProfile('documents')}>
             <PanelGroup label="Orders" actions={<OrderServiceButton encounterId={e.id} patientId={e.patient.id} />}>
@@ -212,6 +214,8 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
   const [profileTab, setProfileTab] = useState<ProfileDrawerTab | null>(null)
   const openProfile = useCallback((tab: ProfileDrawerTab) => setProfileTab(tab), [])
   const [notesTab, setNotesTab] = useState<NotesTab>('keyboard')
+  // The important points' column (a DOM node the conversation draws its points into).
+  const [pointsEl, setPointsEl] = useState<HTMLElement | null>(null)
   const [sheet, setSheet] = useState<SheetKind>(null)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [discarding, setDiscarding] = useState(false)
@@ -326,15 +330,20 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
           .
         </Alert>
       )}
-      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-12 lg:grid-rows-[auto_auto_auto_1fr] xl:grid-rows-[auto_1fr] xl:gap-5" data-testid="consultation-workspace">
-        <InputPanels encounter={encounter} inserter={inserter} autoRecord={autoRecord} onProfile={openProfile} />
-        {/* Mana docked in the right column (jury design, screen 3); nothing is asked of the server until the doctor uses it. */}
-        <div id="mana-panel" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-2 xl:col-span-4 xl:col-start-9 xl:row-start-1`}>
-          <PanelBoundary label="Mana" neutral>
-            <ManaPanel encounter={encounter} />
-          </PanelBoundary>
-        </div>
-        <div id="consultation-note" tabIndex={-1} className={`${PART} lg:col-span-7 lg:col-start-1 lg:row-span-3 lg:row-start-2 xl:col-span-5 xl:col-start-1 xl:row-span-1 xl:row-start-2`}>
+      {/*
+        The clinical cockpit (premium design): the live conversation, the important points found in it and the doctor's note side by side; under
+        them the clinical signals (vitals, stethoscope, thermal) and the patient's context. Mana opens from the header and the sidebar.
+      */}
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-12 xl:grid-rows-[auto_auto_1fr] xl:gap-5" data-testid="consultation-workspace">
+        <InputPanels encounter={encounter} inserter={inserter} autoRecord={autoRecord} onProfile={openProfile} pointsTarget={pointsEl} />
+        {/* The important points of the conversation (LiveTranscription draws them here). */}
+        <section
+          id="consultation-points"
+          ref={setPointsEl}
+          aria-label="Important points"
+          className={`${PART} rounded-2xl border border-line/80 bg-surface p-4 shadow-card lg:col-span-5 lg:col-start-8 lg:row-start-1 xl:col-span-3 xl:col-start-6 xl:row-start-1 xl:p-5 [&_[data-testid=important-points]]:mt-0 [&_[data-testid=important-points]]:border-t-0 [&_[data-testid=important-points]]:pt-0`}
+        />
+        <div id="consultation-note" tabIndex={-1} className={`${PART} lg:col-span-7 lg:col-start-1 lg:row-span-2 lg:row-start-3 xl:col-span-4 xl:col-start-9 xl:row-span-3 xl:row-start-1`}>
           <Panel
             label="Doctor’s note"
             icon={NotebookPen}
@@ -347,7 +356,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
                   prefix="doctor-notes"
                   variant="pill"
                   tabs={[
-                    { id: 'keyboard', label: 'Keyboard' },
+                    { id: 'keyboard', label: 'Structured' },
                     { id: 'pen', label: 'Handwriting' },
                   ]}
                   value={notesTab}
@@ -365,7 +374,7 @@ function ConsultationEditor({ initial, panels }: { initial: Encounter; panels: C
             </TabPanel>
           </Panel>
         </div>
-        <div id="tools-thermal" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-4 xl:col-span-3 xl:col-start-6 xl:row-start-2`}>
+        <div id="tools-thermal" tabIndex={-1} className={`${PART} lg:col-span-5 lg:col-start-8 lg:row-start-4 xl:col-span-3 xl:col-start-6 xl:row-start-3`}>
           <PanelBoundary label="The thermal context" neutral>
             <ThermalContext encounter={encounter} inserter={inserter} />
           </PanelBoundary>
@@ -483,7 +492,7 @@ export function EncounterReadView({ e }: { e: Encounter }) {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Consultation · {fmtDate(e.visit.visitDate)}</h1>
           <p className="text-sm text-ink-muted">
-            {e.doctor.fullName} · {e.visit.departmentName} · token {e.visit.tokenNumber}
+            {plainName(e.doctor.fullName)} · {e.visit.departmentName} · token {e.visit.tokenNumber}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

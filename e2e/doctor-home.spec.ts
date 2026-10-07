@@ -28,14 +28,15 @@ test('the doctor’s Home shows how the day stands from real data, and its short
   await expect(page.getByRole('heading', { level: 1, name: /^Good (morning|afternoon|evening), Dr\. Meera$/ })).toBeVisible()
   await expect(page.getByTestId('signed-in-user')).toContainText('Meera')
 
-  // Four numbers, each a real count (not a placeholder), under their labels. Redesigned Home (DESIGN §5.1): Patients seen · Waiting · Yet to
-  // see · Total, and each must be the server's own count (GET /api/doctor/day), read again until both agree (the page polls every 30 s).
+  // Four numbers, each a real count (not a placeholder), with their names. Premium Home: Completed · Waiting · In consultation · Upcoming (the
+  // number first, then its name), the day's total beside Today's patients; each the server's own count (GET /api/doctor/day), read again until
+  // both agree (the page polls every 30 s).
   const glance = page.getByRole('list', { name: 'Today at a glance' })
   const tiles = [
-    ['Patients seen', 'day-seen', 'seen'],
+    ['Completed', 'day-seen', 'seen'],
     ['Waiting', 'day-waiting', 'waiting'],
-    ['Yet to see', 'day-yet-to-see', 'yetToSee'],
-    ['Total', 'day-total', 'total'],
+    ['In consultation', 'day-in-consultation', 'inConsultation'],
+    ['Upcoming', 'day-yet-to-see', 'yetToSee'],
   ] as const
   for (const [label, testId] of tiles) {
     await expect(glance.getByRole('listitem').filter({ hasText: label })).toHaveAttribute('data-testid', testId)
@@ -46,8 +47,9 @@ test('the doctor’s Home shows how the day stands from real data, and its short
     .poll(
       async () => {
         const counts = (await (await page.request.get('/api/doctor/day?period=today')).json()).counts as Record<string, number>
-        const shown = await Promise.all(tiles.map(async ([, testId]) => Number((await glance.getByTestId(testId).locator('p').nth(1).innerText()).trim())))
-        return JSON.stringify(shown) === JSON.stringify(tiles.map(([, , key]) => counts[key])) ? 'same' : `shown ${JSON.stringify(shown)}, server ${JSON.stringify(counts)}`
+        const shown = await Promise.all(tiles.map(async ([, testId]) => Number((await glance.getByTestId(testId).locator('p').nth(0).innerText()).trim())))
+        const total = Number(/^(\d+)/.exec((await page.getByTestId('day-total').innerText()).trim())?.[1])
+        return JSON.stringify([...shown, total]) === JSON.stringify([...tiles.map(([, , key]) => counts[key]), counts.total]) ? 'same' : `shown ${JSON.stringify([...shown, total])}, server ${JSON.stringify(counts)}`
       },
       { timeout: 35_000 },
     )

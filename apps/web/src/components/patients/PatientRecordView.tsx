@@ -1,9 +1,11 @@
 import { type Observation, type PatientDetail, type PatientHistory, SEX_LABELS } from '@adaxai/contracts'
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ClipboardList, Droplet, FileText, FlaskConical, HeartPulse, IdCard, Images, Pill, Printer, Scissors, Stethoscope, Thermometer, TriangleAlert, Wind } from 'lucide-react'
+import { Activity, ClipboardList, History, Droplet, FileText, FlaskConical, HeartPulse, IdCard, Images, Pill, Printer, Scissors, Stethoscope, Thermometer, TriangleAlert, Wind } from 'lucide-react'
 import { type ComponentType, useState } from 'react'
 import { Link } from 'react-router'
 import { useMe } from '../../lib/auth.tsx'
+import { todayAction, useDoctorDay } from '../../lib/doctorDay.ts'
+import { TodayAction } from '../doctor/TodayAction.tsx'
 import { usePatient } from '../../lib/clinical.ts'
 import { api } from '../../lib/api.ts'
 import { plainName } from '../../lib/displayName.ts'
@@ -26,7 +28,7 @@ import { SurgeriesSection } from './SurgeriesSection.tsx'
 /** The tabs of the patient record (jury design, screen 2). */
 export type PatientRecordTab = 'overview' | 'consultations' | 'prescriptions' | 'labs' | 'imaging' | 'documents' | 'surgeries' | 'allergies_medications'
 const TABS: { id: PatientRecordTab; label: string }[] = [
-  { id: 'overview', label: 'Overview' },
+  { id: 'overview', label: 'Summary' },
   { id: 'consultations', label: 'Consultations' },
   { id: 'prescriptions', label: 'Prescriptions' },
   { id: 'labs', label: 'Lab Reports' },
@@ -132,29 +134,6 @@ function AverageVitals({ patientId }: { patientId: string }) {
   )
 }
 
-function ActiveMedications({ h }: { h: PatientHistory }) {
-  const current = h.medications.filter((m) => m.status === 'current')
-  return (
-    <Panel label="Active Medications" icon={Pill} testId="record-active-medications">
-      {current.length ? (
-        <ul className="divide-y divide-line">
-          {current.map((m) => (
-            <li key={m.id} className="flex items-start justify-between gap-3 py-2 first:pt-0 last:pb-0">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold">{[m.drugName, m.strength].filter(Boolean).join(' ')}</p>
-                <p className="text-xs text-ink-muted">{[m.dose, m.frequency, m.reason].filter(Boolean).join(' · ')}</p>
-              </div>
-              <span className="shrink-0 text-xs text-ink-muted">{m.startedOn ? `since ${fmtDate(m.startedOn)}` : `updated ${fmtDate(m.enteredAt.slice(0, 10))}`}</span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <HeroEmpty>No current medicines on the list.</HeroEmpty>
-      )}
-    </Panel>
-  )
-}
-
 function PatientInformation({ p, h }: { p: PatientDetail; h: PatientHistory }) {
   const last = h.consultations[0]
   return (
@@ -223,21 +202,167 @@ function RecentConsultationsTable({ h, onAll }: { h: PatientHistory; onAll: () =
   )
 }
 
+const list = (xs: string[]) => (xs.length <= 1 ? (xs[0] ?? '') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`)
+const lowerFirst = (t: string) => (/^[A-Z][a-z]/.test(t) ? t[0]!.toLowerCase() + t.slice(1) : t)
+
+/**
+ * The patient's clinical summary in a few sentences (premium design), composed by fixed rules from the record — age and sex, the known
+ * conditions and since when, the current medicines, the last consultation, the allergies, abnormal recent results. Not AI-generated.
+ */
+export function clinicalSummaryText(p: PatientDetail, h: PatientHistory): string[] {
+  const age = Math.floor((Date.parse(localToday()) - Date.parse(p.dateOfBirth)) / (365.25 * 86_400_000))
+  const sex = p.sex === 'male' ? 'male' : p.sex === 'female' ? 'female' : 'patient'
+  const open = h.conditions.filter((c) => c.status === 'active' || c.status === 'controlled')
+  const meds = h.medications.filter((m) => m.status === 'current').map((m) => [m.drugName, m.strength].filter(Boolean).join(' '))
+  const out: string[] = []
+  out.push(`${age}-year-old ${sex}${open.length ? ` with ${list(open.map((c) => `${lowerFirst(c.name)} since ${c.sinceYear}${c.status === 'controlled' ? ' (controlled)' : ''}`))}` : ', no long-term condition recorded'}${meds.length ? `, on ${list(meds)}` : ''}.`)
+  const last = h.consultations[0]
+  if (last) out.push(`Last consultation on ${fmtDate(last.date)} for ${lowerFirst(last.chiefComplaint || 'a visit')}${last.diagnoses[0] ? ` (${lowerFirst(last.diagnoses[0].description)})` : ''}.`)
+  const active = p.allergies.filter((a) => a.status === 'active')
+  out.push(active.length ? `Allergic to ${list(active.map((a) => a.substance))}.` : p.noKnownAllergies ? 'No known drug allergies.' : 'Allergy status not recorded.')
+  const abnormal = h.investigations.filter((r) => r.flag === 'high' || r.flag === 'low' || r.flag === 'abnormal').slice(0, 2)
+  if (abnormal.length) out.push(`Recent results outside range: ${list(abnormal.map((r) => `${r.testName} ${r.valueText}${r.unit ? ` ${r.unit}` : ''} on ${fmtDate(r.collectedOn)}`))}.`)
+  return out
+}
+
+function KeyHistory({ h }: { h: PatientHistory }) {
+  const conditions = h.conditions.filter((c) => c.status !== 'entered_in_error').map((c) => ({ key: `c-${c.id}`, text: c.name, when: `Since ${c.sinceYear}` }))
+  const visits = h.consultations.slice(0, 4).map((c) => ({ key: `v-${c.encounterId}`, text: c.diagnoses[0]?.description ?? (c.chiefComplaint || 'Consultation'), when: fmtDate(c.date) }))
+  const surgeries = (h.procedures ?? []).filter((x) => x.status === 'recorded').map((x) => ({ key: `s-${x.id}`, text: x.name, when: x.performedYear ? String(x.performedYear) : '' }))
+  const rows = [...conditions, ...visits, ...surgeries]
+  return (
+    <Panel label="Key history" icon={History} testId="record-key-history">
+      {rows.length ? (
+        <ul className="space-y-2.5">
+          {rows.map((r) => (
+            <li key={r.key} className="flex items-start justify-between gap-3 text-sm">
+              <span className="flex min-w-0 items-start gap-2">
+                <span aria-hidden="true" className="mt-1.5 size-1.5 shrink-0 rounded-full bg-brand/60" />
+                <span className="min-w-0">{r.text}</span>
+              </span>
+              <span className="shrink-0 text-xs text-ink-muted tabular-nums">{r.when}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <HeroEmpty>Nothing recorded yet.</HeroEmpty>
+      )}
+    </Panel>
+  )
+}
+
 function Overview({ p, h, onTab }: { p: PatientDetail; h: PatientHistory; onTab: (t: PatientRecordTab) => void }) {
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
       <div className="min-w-0 space-y-4 xl:col-span-8">
-        <AverageVitals patientId={p.id} />
-        <Panel label="Record summary" icon={ClipboardList} testId="record-summary-panel" actions={<SourceTag kind="record">From recorded consultations</SourceTag>}>
-          <RecordLines lines={recordLines(h, localToday())} />
+        <Panel label="Clinical summary" icon={ClipboardList} testId="record-summary-panel" actions={<SourceTag kind="record">From the record</SourceTag>}>
+          <p className="text-[0.9375rem] leading-7 text-ink" data-testid="record-clinical-summary">
+            {clinicalSummaryText(p, h).join(' ')}
+          </p>
+          <details className="mt-3 text-sm">
+            <summary className="cursor-pointer text-xs font-medium text-ink-muted hover:text-ink">The record in lines</summary>
+            <div className="mt-2">
+              <RecordLines lines={recordLines(h, localToday())} />
+            </div>
+          </details>
           <p className="mt-3 text-xs text-ink-muted">Composed by fixed rules from the record as of {fmtDateTime(h.generatedAt)}. Not AI-generated.</p>
         </Panel>
+        <AverageVitals patientId={p.id} />
         <RecentConsultationsTable h={h} onAll={() => onTab('consultations')} />
       </div>
       <div className="min-w-0 space-y-4 xl:col-span-4">
+        <KeyHistory h={h} />
         <PatientInformation p={p} h={h} />
-        <ActiveMedications h={h} />
       </div>
+    </div>
+  )
+}
+
+/** The three cards under the header (premium design): the last vitals staff recorded, the current medicines, the recent lab results. */
+function QuickCards({ patientId, h, onTab }: { patientId: string; h: PatientHistory | undefined; onTab: (t: PatientRecordTab) => void }) {
+  const obs = useQuery({ queryKey: ['patient', patientId, 'observations', 'all'], queryFn: () => api<{ observations: Observation[] }>(`/patients/${patientId}/observations?limit=500`), staleTime: 30_000 })
+  const staff = (obs.data?.observations ?? []).filter((o) => o.validationStatus === 'manual_entry')
+  const latest = (k: Observation['kind']) => staff.filter((o) => o.kind === k).sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt))[0]
+  const sys = latest('systolic_bp')
+  const dia = latest('diastolic_bp')
+  const at = [sys, latest('heart_rate'), latest('spo2'), latest('temperature')].filter(Boolean).map((o) => o!.measuredAt).sort().at(-1)
+  const vit: { key: string; label: string; icon: typeof Activity; tint: string; value: string | null; unit: string }[] = [
+    { key: 'bp', label: 'BP', icon: Activity, tint: 'text-brand bg-brand-soft', value: sys && dia ? `${Math.round(sys.value)}/${Math.round(dia.value)}` : null, unit: 'mmHg' },
+    { key: 'hr', label: 'HR', icon: HeartPulse, tint: 'text-rose-500 bg-rose-50', value: latest('heart_rate') ? String(Math.round(latest('heart_rate')!.value)) : null, unit: 'bpm' },
+    { key: 'spo2', label: 'SpO₂', icon: Droplet, tint: 'text-sky-600 bg-sky-50', value: latest('spo2') ? String(Math.round(latest('spo2')!.value)) : null, unit: '%' },
+    { key: 'temp', label: 'Temp', icon: Thermometer, tint: 'text-orange-500 bg-orange-50', value: latest('temperature') ? latest('temperature')!.value.toFixed(1) : null, unit: '°C' },
+  ]
+  const meds = (h?.medications ?? []).filter((m) => m.status === 'current').slice(0, 3)
+  const labs = (h?.investigations ?? []).slice(0, 3)
+  const card = 'min-w-0 rounded-2xl border border-line/80 bg-surface p-4 shadow-card'
+  return (
+    <div className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)]" data-testid="record-quick-cards">
+      <section className={card} aria-label="Last recorded vitals">
+        <p className="text-sm font-semibold">Last recorded vitals</p>
+        <p className="text-xs text-ink-muted">{at ? fmtDateTime(at) : 'None recorded by staff yet'}</p>
+        <ul className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {vit.map((v) => {
+            const I = v.icon
+            return (
+              <li key={v.key} className="flex items-center gap-2.5">
+                <span className={`inline-flex size-9 shrink-0 items-center justify-center rounded-xl ${v.tint}`}>
+                  <I aria-hidden="true" className="size-4" />
+                </span>
+                <span className="min-w-0 leading-tight">
+                  <span className="block text-[0.6875rem] text-ink-muted">{v.label}</span>
+                  <span className="block font-semibold tabular-nums">
+                    {v.value ?? '—'}
+                  </span>
+                  {v.value && <span className="block text-[0.6875rem] text-ink-muted">{v.unit}</span>}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      </section>
+      <section className={card} aria-label="Current medications">
+        <p className="text-sm font-semibold">Current medications</p>
+        {meds.length ? (
+          <ul className="mt-2 space-y-2">
+            {meds.map((m) => (
+              <li key={m.id} className="flex items-start gap-2.5 text-sm">
+                <Pill aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-violet-500" />
+                <span className="min-w-0 leading-tight">
+                  <span className="block font-medium">{[m.drugName, m.strength].filter(Boolean).join(' ')}</span>
+                  <span className="block text-xs text-ink-muted">{[m.dose, m.frequency].filter(Boolean).join(' · ')}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-2 text-sm text-ink-muted">{h ? 'No current medicines on the list.' : '…'}</p>
+        )}
+      </section>
+      <section className={card} aria-label="Recent labs">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-semibold">Recent labs</p>
+          <button type="button" onClick={() => onTab('labs')} className="text-xs font-medium text-brand-strong hover:underline">
+            View all
+          </button>
+        </div>
+        {labs.length ? (
+          <ul className="mt-2 space-y-2">
+            {labs.map((l) => (
+              <li key={l.id} className="flex items-start gap-2.5 text-sm">
+                <FlaskConical aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-emerald-600" />
+                <span className="min-w-0 leading-tight">
+                  <span className="block font-medium">
+                    {l.testName} <span className="font-normal text-ink-muted">{l.valueText}{l.unit ? ` ${l.unit}` : ''}</span>
+                  </span>
+                  <span className="block text-xs text-ink-muted">{fmtDate(l.collectedOn)}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-2 text-sm text-ink-muted">{h ? 'No results recorded.' : '…'}</p>
+        )}
+      </section>
     </div>
   )
 }
@@ -367,15 +492,18 @@ function Imaging({ p, h, onDocuments }: { p: PatientDetail; h: PatientHistory; o
 }
 
 function Header({ p, h, embedded }: { p: PatientDetail; h: PatientHistory | undefined; embedded: boolean }) {
+  // Today's visit of this patient for this doctor, if any: its one action (Start or Continue consultation), as on Home.
+  const day = useDoctorDay('today')
+  const row = embedded ? undefined : day.data?.timeline.find((r) => r.patient.id === p.id && todayAction(r))
   const active = p.allergies.filter((a) => a.status === 'active')
   const conditions = [...new Set((h?.conditions ?? []).filter((c) => c.status === 'active' || c.status === 'controlled').map((c) => conditionBadge(c.name)))].slice(0, 3)
   const Title = embedded ? 'h2' : 'h1'
   return (
-    <header className="mb-4 flex items-start gap-4 rounded-2xl border border-line/80 bg-surface p-4 shadow-card xl:p-5" data-testid="patient-header">
+    <header className="mb-4 flex flex-wrap items-start gap-4 rounded-2xl border border-line/80 bg-surface p-5 shadow-card" data-testid="patient-header">
       <PatientAvatar name={p.fullName} size="lg" />
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-          <Title className="text-xl font-semibold tracking-tight [overflow-wrap:anywhere]">{p.fullName}</Title>
+          <Title className="text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]">{p.fullName}</Title>
           <ul aria-label="Allergies" className="flex flex-wrap gap-1.5">
             {active.map((a) => (
               <li key={a.id} className="inline-flex items-center gap-1 rounded-full border border-down/25 bg-down-soft px-2 py-0.5 text-xs font-semibold text-down">
@@ -383,12 +511,14 @@ function Header({ p, h, embedded }: { p: PatientDetail; h: PatientHistory | unde
                 Allergy: {a.substance} ({SEVERITY[a.severity]})
               </li>
             ))}
-            {!active.length && <li className="rounded-full border border-line px-2 py-0.5 text-xs text-ink-muted">{p.noKnownAllergies ? 'No known allergies' : 'Allergy status not recorded'}</li>}
+            {!active.length && (
+              <li className={`rounded-full border px-2 py-0.5 text-xs font-medium ${p.noKnownAllergies ? 'border-ok/25 bg-ok-soft text-ok' : 'border-line text-ink-muted'}`}>{p.noKnownAllergies ? 'No known allergies' : 'Allergy status not recorded'}</li>
+            )}
           </ul>
           {conditions.length > 0 && (
             <ul aria-label="Conditions" className="flex flex-wrap gap-1.5" data-testid="record-condition-badges">
               {conditions.map((n) => (
-                <li key={n} className="rounded-full border border-pending/25 bg-pending-soft px-2 py-0.5 text-xs font-medium text-pending">
+                <li key={n} className="rounded-full border border-brand/20 bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand-strong">
                   {n}
                 </li>
               ))}
@@ -400,6 +530,11 @@ function Header({ p, h, embedded }: { p: PatientDetail; h: PatientHistory | unde
           {p.phone && <> · {p.phone}</>}
         </p>
       </div>
+      {row && (
+        <div className="ml-auto shrink-0 self-center" data-testid="record-today-action">
+          <TodayAction row={row} />
+        </div>
+      )}
     </header>
   )
 }
@@ -466,6 +601,7 @@ export function PatientRecordView({ patientId, initialTab = 'overview', embedded
   return (
     <div data-testid="patient-record-view">
       <Header p={p} h={h} embedded={embedded} />
+      {!embedded && <QuickCards patientId={p.id} h={h} onTab={setTab} />}
       <Tabs label="Patient record" prefix={prefix} tabs={TABS} value={tab} onChange={setTab} className="mb-4 overflow-x-auto" />
       {TABS.map((t) => (
         <TabPanel key={t.id} prefix={prefix} id={t.id} active={tab === t.id} focusable={false}>

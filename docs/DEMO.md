@@ -110,33 +110,40 @@ What `demo:jury` makes (all fictional, marked synthetic; display names changed i
 
 **The walk-through (about 5 minutes on this computer):**
 
-1. **Home** — Today | Week | Month tiles, the current patient, the week's consultations, today's patients.
-2. **Patient profile** (Ramesh's name anywhere) — allergy and condition badges; *Average / Recent Vitals* (averages
-   of staff measurements; device and simulated readings are left out); the record summary (fixed rules, not AI);
-   recent consultations; active medications; tabs Consultations · Prescriptions · Lab Reports · Imaging ·
-   Documents · Surgeries · Allergies & Medications.
-3. **Start consultation** (My consultations) — recording starts by itself when the recording consent is on record.
-   For the demo, **Stop**, then ⋯ → **Play demo consultation**: computer voices (SYNTHETIC AUDIO) read an adult fever
-   consultation through the real local speech model (faster-whisper). The speech model identifies nobody: lines
-   nobody assigned show a dashed **Speaker assignment — demo fallback** (Doctor / Patient alternating by recorded
-   part; display only, nothing stored); the doctor can correct any line.
-4. **Important points** appear (fixed rules); **Confirm** one, then **Add to …** puts it in the note.
-5. **Clinical inputs** (staff vitals with time and source), **Stethoscope** (recorded, never analysed), **Thermal** →
-   *Open thermal imaging* → Simulator → Connect → Capture: the tile then says **SIMULATED THERMAL CAPTURE**.
-6. **Mana** (docked) — *Summarize this patient's previous history*, *Summarize today's consultation*, *Show recent lab
-   reports*, *Any pending orders?*: each answered at once by fixed rules, with its source ("From the patient record",
-   "From this consultation", "From service orders"). Mana never signs or completes.
+1. **Home** — Completed · Waiting · In consultation · Upcoming (the server's counts), today's activity by hour, today's
+   patients (Week / Month: their tiles and the trend per day).
+2. **Patient profile** (Ramesh's name anywhere) — allergy and condition chips, [Start consultation]; Last recorded vitals ·
+   Current medications · Recent labs; Summary: the clinical summary in sentences (fixed rules, not AI), key history,
+   averages of staff vitals, recent consultations; tabs Consultations · Prescriptions · Lab Reports · Imaging · Documents ·
+   Surgeries · Allergies & Medications.
+3. **Start consultation** — the cockpit: Live conversation · Important points · Doctor's note, then Clinical signals. Recording
+   starts by itself when the recording consent is on record. For the demo, **Stop**, then ⋯ → **Play demo consultation**:
+   computer voices (SYNTHETIC AUDIO) read an adult fever consultation through the real local speech model (faster-whisper).
+   The speech model identifies nobody: lines nobody assigned show a dashed **Speaker assignment — demo fallback**
+   (Doctor / Patient alternating by recorded part; display only, nothing stored); the doctor can correct any line.
+4. **Important points** appear in their column (fixed rules); **Confirm** one, then **+ Add to …** puts it in the note.
+5. **Clinical signals** — staff vitals with time and source; **Stethoscope** (tile → its recorder; recorded, never
+   analysed); **Thermal** → *Open* → Simulator → Connect → Capture, then the tile's **View analysis**: the thermal analysis
+   dashboard (the image, five indices as rings, a summary) marked **Demo analysis — not clinically validated** (fixed
+   formulas over the recorded temperatures; they detect and diagnose nothing). The Thermal page opens the same dashboard after
+   a capture or an upload.
+6. **Mana** (header button, or the sidebar's Mana card) — the context (patient, "Consultation in progress"), suggested
+   questions (*Summarize this patient's history*, *What medicines is he taking?*, *What are his allergies?*, *What happened in
+   his last consultation?*, *Show recent lab results*, *Who is my next patient?*, *How many patients are waiting?*, …) answered
+   at once from the records by fixed rules with their source; other questions go to the local model. Mana never signs or
+   completes.
 7. **Doctor's note** — Chief complaint · History of present illness · Clinical findings · Assessment · Plan (autosaved;
    Handwriting is the second tab).
-8. **Analyze & Generate Prescription** — the inputs light up as the server reports them, then *ADAXAI Clinical Context*
-   → *Mana AI* (the local Qwen model's real token count and time; about 40–50 s here) → *Clinical summary* →
-   *Prescription draft*; the prescription page opens when the draft is ready (at once if the model is down).
-9. **Review and sign prescription** — the document (patient, allergies, diagnosis, medicines, advice, follow-up) and
-   the **PDF preview**: a real PDF made by the server from what is saved (`GET /api/encounters/:id/prescription.pdf`,
-   marked *DRAFT — NOT SIGNED* until signed). **Open PDF**, **Print**, **Sign** or **Sign & print** (the review asks for
-   the attestation). Signing does **not** complete the consultation.
-10. **Complete consultation** (confirmed) → My consultations, marked Completed; Home counts one more seen; the profile
-    shows today's consultation; the patient app shows the course ("Day 1 of 5").
+8. **Analyze & Generate Prescription** — the six inputs flow into the *ADAXAI clinical context*, then *Mana AI* (the local
+   Qwen model's real token count and time; about 40–60 s here), then *Clinical summary* · *Prescription draft* · *Ready for
+   review*; the draft's clinical summary (AI DRAFT) is shown with **Review prescription**.
+9. **Prescription** — the document (letterhead, patient, allergies, diagnosis, medications, advice, follow-up, signature line)
+   with **Edit** on each part; with no diagnosis the doctor's own assessment is offered (**Use as diagnosis**). The
+   **Prescription preview** beside it is a real PDF from the server (`GET /api/encounters/:id/prescription.pdf`, marked
+   *DRAFT — NOT SIGNED* until signed): **Open PDF**, **Print**. **Sign** or **Sign & print** (the review asks for the
+   attestation); what is still missing is shown on the document. Signing does **not** complete the consultation.
+10. **Complete consultation** (confirmed) → My consultations, marked Completed; Home counts one more completed; the profile
+    shows today's consultation; the patient app shows today's prescription ("Day 1 of 5").
 
 To run it again, recreate the development database (back it up first with `npm run backup`), then repeat the four
 commands above.

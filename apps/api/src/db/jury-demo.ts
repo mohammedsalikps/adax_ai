@@ -216,6 +216,15 @@ const RAMESH_RESULTS = (dayOf: (daysAgo: number) => string) => [
   { testName: 'Serum creatinine', valueText: '0.9', valueNumber: 0.9, unit: 'mg/dL', refLow: 0.7, refHigh: 1.3, collectedOn: dayOf(60), resultedOn: dayOf(59) },
 ]
 
+const ABDUL_RESULTS = (dayOf: (daysAgo: number) => string) => [
+  { testName: 'Haemoglobin', valueText: '14.8', valueNumber: 14.8, unit: 'g/dL', refLow: 13, refHigh: 17, collectedOn: dayOf(4), resultedOn: dayOf(4) },
+  { testName: 'Total leucocyte count', valueText: '7200', valueNumber: 7200, unit: '/µL', refLow: 4000, refHigh: 11000, collectedOn: dayOf(4), resultedOn: dayOf(4) },
+  { testName: 'Platelet count', valueText: '2.4', valueNumber: 2.4, unit: 'lakh/µL', refLow: 1.5, refHigh: 4.5, collectedOn: dayOf(4), resultedOn: dayOf(4) },
+  { testName: 'Total cholesterol', valueText: '182', valueNumber: 182, unit: 'mg/dL', refLow: 0, refHigh: 200, collectedOn: dayOf(4), resultedOn: dayOf(4) },
+  { testName: 'LDL cholesterol', valueText: '104', valueNumber: 104, unit: 'mg/dL', refLow: 0, refHigh: 100, collectedOn: dayOf(4), resultedOn: dayOf(4) },
+  { testName: 'HDL cholesterol', valueText: '46', valueNumber: 46, unit: 'mg/dL', refLow: 40, refHigh: 60, collectedOn: dayOf(4), resultedOn: dayOf(4) },
+]
+
 /** Reasons and short consultations for the rest of the clinic (rotated deterministically). */
 const COMMON: ConsultSpec[] = [
   {
@@ -540,8 +549,10 @@ export async function seedJuryDemo(opts: { config?: Config; password?: string; l
 
     // In consultation: Abdul Rahman (BP follow-up), Dr. Meera's draft, with a pending SIMULATED laboratory order.
     const abdul = byName('Abdul Rahman')
+    // His recent results (a CBC and a lipid profile four days ago), so Mana and the profile have his labs to show.
+    for (const res of ABDUL_RESULTS(dayOf)) await doctor.call('POST', `/api/patients/${abdul.id}/investigations`, res)
     const av = await nurse.call('POST', '/api/visits', { patientId: abdul.id, departmentId: gen.id, assignedDoctorId: doctorId, chiefComplaint: 'BP follow-up' })
-    await nurse.call('POST', `/api/visits/${av.id}/observations`, { items: [{ kind: 'systolic_bp', value: 138 }, { kind: 'diastolic_bp', value: 88 }, { kind: 'heart_rate', value: 80 }, { kind: 'spo2', value: 98 }, { kind: 'temperature', value: 36.8 }] })
+    await nurse.call('POST', `/api/visits/${av.id}/observations`, { items: [{ kind: 'systolic_bp', value: 138 }, { kind: 'diastolic_bp', value: 88 }, { kind: 'heart_rate', value: 78 }, { kind: 'spo2', value: 98 }, { kind: 'temperature', value: 36.8 }] })
     await nurse.call('POST', `/api/visits/${av.id}/status`, { status: 'ready' })
     const ae = await doctor.call('POST', `/api/visits/${av.id}/encounter`)
     await backdate(av.id, ae.id, minus(40), today)

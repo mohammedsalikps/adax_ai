@@ -14,7 +14,7 @@ test('doctor consults, writes the note, prescribes, signs, prints and amends; nu
   // The banner identifies the patient; the complaint is prefilled from check-in. The typed note is the Keyboard tab of Doctor notes (the pen
   // is the default tab; DESIGN §5.4), with the same section labels as before.
   await expect(page.getByTestId('patient-banner')).toContainText(p.mrn)
-  await page.getByTestId('doctor-notes').getByRole('tab', { name: 'Keyboard' }).click()
+  await page.getByTestId('doctor-notes').getByRole('tab', { name: 'Structured' }).click()
   await expect(page.getByLabel('Chief complaint')).toHaveValue('Sore throat and fever')
   await page.getByLabel('History of present illness').fill('Two days of sore throat and fever. No cough.')
   await page.getByLabel('Examination').fill('Tonsils enlarged, no exudate. Chest clear.')
@@ -37,11 +37,18 @@ test('doctor consults, writes the note, prescribes, signs, prints and amends; nu
   await doc.getByLabel('Duration', { exact: true }).fill('3 days')
   await doc.getByLabel('Instructions', { exact: true }).fill('After food')
   await expect(page.getByTestId('save-state')).toContainText('Saved', { timeout: 10_000 })
+  // From the top of the page (as mana.spec and capture.spec do): typing in the last medicine field leaves the page scrolled so that the
+  // diagnosis row can sit under the sticky top bar, and axe then measures only its uncovered part; where the page happens to be scrolled is
+  // not a state of the page.
+  await page.evaluate(() => window.scrollTo(0, 0))
   await expectNoAxeViolations(page)
   await expectNoHorizontalOverflow(page)
 
   // Autosave persisted to the database: a reload shows the same draft (the note's assessment folded under "Show the rest of the note").
   await page.reload()
+  // Premium design: a part with content reads as the finished prescription; [Edit] opens its editor (the saved values are there).
+  await expect(doc.getByTestId('rx-medicines-signed')).toContainText('Paracetamol')
+  await doc.getByTestId('rx-edit-medications').click()
   await expect(doc.getByLabel('Medicine', { exact: true })).toHaveValue('Paracetamol')
   await page.getByTestId('rx-clinical-note').getByRole('button', { name: /^Show the rest of the note/ }).click()
   await expect(page.getByLabel('Assessment')).toHaveValue('Acute pharyngitis, likely viral.')
@@ -75,7 +82,8 @@ test('doctor consults, writes the note, prescribes, signs, prints and amends; nu
   await expect(page.getByRole('note')).toContainText('not a valid prescription')
   await expect(page.locator('main')).toContainText(p.name)
   await expect(page.locator('main')).toContainText('Paracetamol 500 mg')
-  await expect(page.locator('main')).toContainText('Electronically signed by Dr. Meera Iyer (synthetic)')
+  // Premium branding: the printout names the doctor without the dataset's "(synthetic)" mark (its banner says the data is synthetic).
+  await expect(page.locator('main')).toContainText('Electronically signed by Dr. Meera Iyer on')
   await expectNoAxeViolations(page)
   await page.getByRole('button', { name: 'Back' }).click()
 

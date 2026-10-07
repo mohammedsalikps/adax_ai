@@ -4,6 +4,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { audit } from '../audit/audit.ts'
+import { demoThermalAnalysis } from './demoAnalysis.ts'
 import { currentUser } from '../auth/plugin.ts'
 import type { SessionUser } from '../auth/sessions.ts'
 import type { Config } from '../config.ts'
@@ -182,6 +183,22 @@ export function registerThermalSummaryRoutes(app: FastifyInstance, deps: { db: D
   })
 
   /** The summaries of one capture, newest first. */
+  /**
+   * The thermal analysis dashboard's demonstration indices for one capture (premium design): fixed formulas over its stored temperatures
+   * (thermal/demoAnalysis.ts), labelled not clinically validated. Detects and diagnoses nothing. Audited as a read of the capture.
+   */
+  app.get('/api/thermal/:id/analysis', { config: { permission: 'patients:read' } }, async (req) => {
+    const me = currentUser(req)
+    const { id } = parse(IdParams, req.params)
+    const c = await getCaptureOr404(me, id)
+    const matrix = await readMatrix(c)
+    if (!matrix) throw conflict('The temperatures of this image are not available, so it cannot be analysed.', 'thermal_matrix_unavailable')
+    const values = new Float32Array(matrix.buffer, matrix.byteOffset, c.width * c.height)
+    const analysis = demoThermalAnalysis.analyse({ width: c.width, height: c.height, matrix: Float32Array.from(values), simulated: c.simulated })
+    await audit(db, req, { action: 'thermal.analysis_read', entityType: 'thermal_capture', entityId: id, patientId: c.patientId, details: { engine: analysis.engine.name, version: analysis.engine.version, simulated: c.simulated } })
+    return analysis
+  })
+
   app.get('/api/thermal/:id/summaries', { config: { permission: 'patients:read' } }, async (req) => {
     const me = currentUser(req)
     const { id } = parse(IdParams, req.params)

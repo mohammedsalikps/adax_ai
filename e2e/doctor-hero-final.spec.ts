@@ -83,16 +83,22 @@ test('the final Doctor HERO journey: Home → My consultations → Start (record
   // The first 10-second part reaches the stand-in speech service and comes back as lines; no speaker is identified by any model.
   await expect(live.getByTestId('transcript-line').first()).toBeVisible({ timeout: 60_000 })
   await expect(live).not.toContainText(/Doctor:|Patient:/)
-  // Important points are found by the fixed rules after a part, without a click, and wait for the doctor (never auto-confirmed).
-  await expect(live.getByTestId('important-point').first()).toBeVisible({ timeout: 60_000 })
-  await expect(live.getByTestId('important-point').first()).toHaveAttribute('data-state', /extracted|pending/)
+  // Important points are found by the fixed rules after a part, without a click, and wait for the doctor (never auto-confirmed). Premium cockpit:
+  // they are drawn in their own column beside the conversation (still the conversation's points).
+  const points = page.locator('#consultation-points')
+  await expect(points.getByTestId('important-point').first()).toBeVisible({ timeout: 60_000 })
+  await expect(points.getByTestId('important-point').first()).toHaveAttribute('data-state', /extracted|pending/)
 
   // ---- 4. INPUTS 2 and 3, CLINICAL INPUTS and STETHOSCOPE: the nurse's measurements, honestly labelled; no sound analysis. ----
   const inputs = page.locator('#tools-devices')
   await expect(inputs).toContainText('38.2')
   await expect(inputs).toContainText('92')
   await expect(inputs).toContainText(/Staff/)
-  await expect(page.getByText('No clinical sound analysis: recordings are not analysed by any model.')).toBeVisible()
+  // Premium cockpit: the stethoscope is a tile of the clinical signals; its recorder (and what it never does) opens in a sheet.
+  await page.getByTestId('stethoscope-tile').getByRole('button').click()
+  await expect(page.getByTestId('stethoscope-sheet').getByText('No clinical sound analysis: recordings are not analysed by any model.')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('stethoscope-sheet')).toBeHidden()
 
   // ---- PATIENT HISTORY inside the consultation: compact, from the record. ----
   await expect(page.locator('#tools-history')).toContainText('Penicillin')
@@ -114,8 +120,8 @@ test('the final Doctor HERO journey: Home → My consultations → Start (record
   const ink = await (await page.request.get(`/api/encounters/${encounterId}/handwriting`)).json()
   expect(ink.version).toBeGreaterThanOrEqual(1)
   expect(ink.strokeCount).toBeGreaterThanOrEqual(1)
-  // Typed notes too (the Keyboard tab keeps the note's sections).
-  await notes.getByRole('tab', { name: /Keyboard/ }).click()
+  // Typed notes too (the Structured tab, formerly Keyboard, keeps the note's sections).
+  await notes.getByRole('tab', { name: /Structured/ }).click()
   await page.getByLabel('History of present illness').fill('Sore throat and fever for two days (synthetic).')
 
   // ---- MANA, persistently available: a deterministic question answered from the records by fixed rules (no model). ----
@@ -136,7 +142,15 @@ test('the final Doctor HERO journey: Home → My consultations → Start (record
   const preparing = page.getByTestId('preparing-consultation')
   await expect(preparing).toBeVisible()
   await expect(preparing.getByTestId('preparing-line').first()).toBeVisible()
-  await expect(page).toHaveURL(new RegExp(`/doctor/encounters/${encounterId}/prescription$`), { timeout: 90_000 })
+  // Premium design: a ready draft is shown in the sheet first (its clinical summary) with [Review prescription]; with no draft to show the page
+  // opens by itself. Either way the doctor reaches the prescription page.
+  const reviewRx = preparing.getByTestId('open-prescription')
+  await expect(async () => {
+    if (page.url().endsWith('/prescription')) return
+    await expect(reviewRx).toHaveText(/Review prescription/, { timeout: 1_000 })
+    await reviewRx.click()
+  }).toPass({ timeout: 90_000 })
+  await expect(page).toHaveURL(new RegExp(`/doctor/encounters/${encounterId}/prescription$`), { timeout: 20_000 })
 
   // ---- PRESCRIPTION PAGE: clinical summary left (AI DRAFT, the doctor decides), the prescription right. ----
   // It opens its editor only once the workspace's last save is stored and the consultation read again ("Opening the latest version…"),

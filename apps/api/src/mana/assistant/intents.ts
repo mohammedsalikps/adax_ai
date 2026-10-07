@@ -24,6 +24,8 @@ export type RulesIntent =
   | { kind: 'next_patient' }
   | { kind: 'seen_today' }
   | { kind: 'waiting_longest'; mine: boolean }
+  | { kind: 'waiting_count' }
+  | { kind: 'in_consultation' }
   | { kind: 'arrival_time'; who: PatientRef }
   | { kind: 'nurse_triage'; who: PatientRef }
   | { kind: 'orders'; who: PatientRef; ask: OrdersAsk; service: string | null }
@@ -119,6 +121,17 @@ const WAITING_LONGEST = [
   /^who(?:'s|\s+is)\s+(?:been\s+)?waiting\s+(?:the\s+)?longest(?:\s+today)?(?:\s+for\s+me)?$/i,
   /^(?:my\s+|the\s+)?longest[\s-]+waiting(?:\s+patient)?$/i,
 ]
+/** Premium Mana: "How many patients are waiting?" — counted as Home counts the doctor's day (not a guess by the model). */
+const WAITING_COUNT = [
+  /^how\s+many\s+(?:patients\s+|people\s+)?(?:are\s+)?(?:still\s+)?(?:waiting|in\s+(?:the|my)\s+queue|left\s+to\s+see|remaining)(?:\s+(?:for\s+me|today|now|right\s+now|to\s+be\s+seen))*$/i,
+  /^how\s+many\s+(?:patients\s+)?(?:do\s+i\s+have|have\s+i\s+got)\s+(?:waiting|left|in\s+(?:the|my)\s+queue)(?:\s+today)?$/i,
+  /^how\s+(?:long|big)\s+is\s+(?:my|the)\s+queue(?:\s+today|\s+now)?$/i,
+]
+/** "Who is currently in consultation?" — today's visits with a doctor. */
+const IN_CONSULTATION = [
+  /^who(?:'s|\s+is|\s+are)\s+(?:currently\s+|now\s+|right\s+now\s+)?(?:in\s+(?:the\s+)?consultation|with\s+(?:me|the\s+doctor|a\s+doctor)|being\s+seen)(?:\s+(?:now|right\s+now|currently))?$/i,
+  /^which\s+patients?\s+(?:is|are)\s+(?:currently\s+|now\s+)?(?:in\s+consultation|with\s+(?:me|a\s+doctor))(?:\s+now)?$/i,
+]
 const ARRIVAL = [
   /^(?:what\s+time|when|at\s+what\s+time)\s+did\s+(.+?)\s+(?:arrive|check\s*-?\s*in|come\s+in|come|get\s+here|reach)(?:\s+(?:today|here|this\s+morning|this\s+afternoon))?$/i,
   /^(?:what\s+time|when)\s+was\s+(.+?)\s+checked\s+in(?:\s+today)?$/i,
@@ -143,9 +156,9 @@ const ORDERS_RECEIVED = [
   /^(?:was|has)\s+(?:the\s+|my\s+)?(.+?)\s+(?:request|order)\s+(?:been\s+)?(?:received|sent|placed)(?:\s+for\s+(.+?))?$/i,
 ]
 const ORDERS_PENDING = [
-  /^(?:which|what)\s+(?:service\s+|lab\s+|laboratory\s+)?(?:orders|tests|investigations|requests)\s+(?:are\s+)?(?:still\s+)?(?:pending|open|outstanding|waiting)(?:\s+for\s+(.+?))?$/i,
-  /^(?:any|are\s+there\s+any)\s+(?:pending|open|outstanding)\s+(?:service\s+|lab\s+)?(?:orders|tests|requests)(?:\s+for\s+(.+?))?$/i,
-  /^(?:pending|open)\s+(?:service\s+|lab\s+)?orders(?:\s+for\s+(.+?))?$/i,
+  /^(?:which|what)\s+(?:service\s+|lab\s+|laboratory\s+)?(?:orders|tests|investigations|requests|services)\s+(?:are\s+)?(?:still\s+)?(?:pending|open|outstanding|waiting)(?:\s+for\s+(.+?))?$/i,
+  /^(?:any|are\s+there\s+any)\s+(?:pending|open|outstanding)\s+(?:service\s+|lab\s+)?(?:orders|tests|requests|services)(?:\s+for\s+(.+?))?$/i,
+  /^(?:pending|open)\s+(?:service\s+|lab\s+)?(?:orders|services)(?:\s+for\s+(.+?))?$/i,
   /^(?:what\s+is|what's)\s+the\s+status\s+of\s+(?:the\s+|my\s+)?(?:service\s+|lab\s+)?orders(?:\s+for\s+(.+?))?$/i,
 ]
 const MODALITY = String.raw`(?<modality>mri|mr|ct|ct\s+scan|cat\s+scan|x-?\s?rays?|radiograph|ultrasound|usg|sonography|ultrasonography)`
@@ -182,6 +195,9 @@ const HISTORY = [
 ]
 const LABS = [
   new RegExp(String.raw`^(?:show(?:\s+me)?|what\s+are|list|any|give\s+me)\s+${OWNER}(?:recent\s+|latest\s+|last\s+|previous\s+)?(?:lab(?:oratory)?\s+)?(?:reports|results|investigations|labs|blood\s+tests)${OF_WHO}$`, 'iu'),
+  // "What lab reports are available?", "Which results are on record for this patient?"
+  new RegExp(String.raw`^(?:what|which)\s+(?:recent\s+|latest\s+)?(?:lab(?:oratory)?\s+)?(?:reports|results|investigations|labs|lab\s+tests|blood\s+tests)\s+(?:are|is)\s+(?:available|there|on\s+record|recorded)${OF_WHO}$`, 'iu'),
+  /^(?:what|which)\s+(?:lab(?:oratory)?\s+)?(?:reports|results|labs|lab\s+tests|investigations)\s+(?:does|do)\s+(?<who>.+?)\s+have(?:\s+on\s+record)?$/iu,
 ]
 const SURGERIES = [
   /^(?:what|which|any)\s+(?:surgeries|operations|procedures)\s+(?:has|did|have)\s+(?<who>.+?)\s+(?:had|undergone|undergo|have)$/iu,
@@ -278,6 +294,8 @@ export function matchRulesIntent(text: string, orderWords: ReadonlySet<string> =
   if (first(NEXT_PATIENT, t)) return { kind: 'next_patient' }
   if (first(SEEN_TODAY, t)) return { kind: 'seen_today' }
   if (first(WAITING_LONGEST, t)) return { kind: 'waiting_longest', mine: SAYS_MINE.test(t) }
+  if (first(WAITING_COUNT, t)) return { kind: 'waiting_count' }
+  if (first(IN_CONSULTATION, t)) return { kind: 'in_consultation' }
   const arrival = first(ARRIVAL, t)
   if (arrival) {
     const who = parseWho(arrival[1])

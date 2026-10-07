@@ -32,6 +32,7 @@ import { fmtDate, fmtDateTime } from '../../lib/format.ts'
 import { portalPollInterval, usePortalActive } from '../../lib/portalActivity.ts'
 import { courseLine, courseTone, durationLines } from '../../lib/prescriptionCourse.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
+import { plainName } from '../../lib/displayName.ts'
 
 /**
  * Portal data is never kept beyond the page session: no persistence, short cache. `live`: what changes when the doctor completes a
@@ -66,7 +67,7 @@ function RecordLink({ r }: { r: PortalRecordSummary }) {
       <span className="min-w-0 flex-1">
         <span className="block font-medium">{r.chiefComplaint || 'Consultation'}</span>
         <span className="block text-sm text-ink-muted">
-          {fmtDate(r.signedAt)} · {r.doctorName} · {r.departmentName}
+          {fmtDate(r.signedAt)} · {plainName(r.doctorName)} · {r.departmentName}
         </span>
         {r.diagnoses.length > 0 && <span className="block text-sm">{r.diagnoses.map((d) => d.description).join('; ')}</span>}
         {r.prescriptionCount > 0 && <span className="block text-xs text-ink-muted">{r.prescriptionCount} medicine{r.prescriptionCount === 1 ? '' : 's'} prescribed</span>}
@@ -124,7 +125,7 @@ function CurrentPrescriptionCard() {
       ) : (
         <>
           <p className="text-sm text-ink-muted">
-            {p.doctorName}
+            {plainName(p.doctorName)}
             {p.doctorRegistrationNumber ? ` (reg. ${p.doctorRegistrationNumber})` : ''} · {p.departmentName} · {fmtDate(p.date)}
           </p>
           <PanelGroup label="Diagnosis">
@@ -173,7 +174,7 @@ export function PortalHomePage() {
                     <span>
                       <span className="block">{u.followUp}</span>
                       <span className="text-xs text-ink-muted">
-                        From {u.doctorName}, {fmtDate(u.signedAt)} ·{' '}
+                        From {plainName(u.doctorName)}, {fmtDate(u.signedAt)} ·{' '}
                         <Link to={`/patient/records/${u.recordId}`} className="text-brand-strong underline underline-offset-2">
                           View record
                         </Link>
@@ -278,7 +279,7 @@ export function PortalRecordPage() {
           </nav>
           <PageHeader
             title={r.chiefComplaint || 'Consultation'}
-            description={`Signed ${fmtDateTime(r.signedAt)} by ${r.doctorName}${r.doctorRegistrationNumber ? ` (reg. ${r.doctorRegistrationNumber})` : ''} · ${r.departmentName}`}
+            description={`Signed ${fmtDateTime(r.signedAt)} by ${plainName(r.doctorName)}${r.doctorRegistrationNumber ? ` (reg. ${r.doctorRegistrationNumber})` : ''} · ${r.departmentName}`}
             actions={
               <button type="button" onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium print:hidden">
                 <Printer aria-hidden="true" className="size-4" /> Print
@@ -361,7 +362,7 @@ export function PortalVisitsPage() {
                   <span className="font-medium">{fmtDate(v.visitDate)}</span> · {v.departmentName} · token {v.tokenNumber}
                   <span className="block text-ink-muted">
                     {VISIT_STATUS[v.status] ?? v.status}
-                    {v.doctorName ? ` · ${v.doctorName}` : ''}
+                    {v.doctorName ? ` · ${plainName(v.doctorName)}` : ''}
                   </span>
                   {v.recordId && (
                     <Link to={`/patient/records/${v.recordId}`} className="text-brand-strong underline underline-offset-2">

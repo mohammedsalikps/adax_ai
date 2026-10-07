@@ -26,6 +26,72 @@ What the Doctor App actually does today, and the plan for its first complete con
 | Doctor HERO Step 3: the first Step 3 brief's polish (real progress while the model writes, what Mana read, a synthetic demo consultation through the real speech model, a demo patient, missing ≠ none); **the "complete redesign" brief NOT built** | the commit titled "Doctor HERO final clinical workflow UI" (see `git log`) |
 | **Doctor HERO final**: the doctor application per the owner's master specification — four-item navigation, Today/Week/Month, My consultations, the five-input workstation with recording on Start and the digital pen, Generate prescription → prescription page → Sign & print → Complete, the patient app's Today's prescription, service orders (simulated lab), documents and surgeries, a global Mana with fixed-rule answers, voice and confirmed actions, the Thermal page | the commit titled "Doctor HERO final application" (see `git log`) |
 | **Doctor HERO jury polish**: the four reference screens (Home, the patient profile with tabs and average vitals, the workspace with docked Mana and the analyze flow, the prescription page with a real server PDF), a coherent demo clinic (`npm run demo:jury`), contextual fixed-rule Mana answers with their sources, the speaker demo fallback | the commit titled "Doctor HERO jury polish" (see `git log`) |
+| **Doctor HERO premium clinical UX and Mana recovery**: Mana as a two-column clinical assistant with grouped contextual questions and new fixed-rule answers, the consultation cockpit, the converging Analyze diagram with the draft summary, the prescription document with a suggested diagnosis and inline sign checks, the thermal analysis dashboard (demo indices, not clinically validated), Home and profile per the reference | the commit titled "Doctor HERO premium clinical UX and Mana recovery" (see `git log`) |
+
+## Doctor HERO premium clinical UX and Mana recovery
+
+**Basis:** the owner's "PRODUCT POLISH + FEATURE RECOVERY" brief and the eight-screen reference image (Home, patient profile, consultation
+cockpit, Mana, Analyze, thermal analysis, prescription, prescription preview). Sequential, on the existing application: backend, safety
+checks and tests kept. Synthetic data only; no hardware used.
+
+### What changed
+
+- **Mana, the clinical intelligence assistant (recovered):** a wide two-column assistant ("Mana · Clinical Intelligence Assistant") opened
+  from the sidebar's Mana card, the consultation header's Mana button, or the floating button where the sidebar is a drawer. Left: the current
+  context (the patient, "Consultation in progress", or today's clinic) and suggested questions grouped "About Abdul" · "This consultation" ·
+  "Today's clinic" (pronouns from the record's sex). Right: the conversation (questions right, answers left with Mana's mark and time, a typing
+  indicator with the real phase, each source shown once), and "Ask Mana about this patient, today's queue, records, labs, medicines, or
+  consultation…" with the microphone and a round Send. The context follows the page (clinic, patient, consultation and its prescription).
+  New fixed-rule questions: how many patients are waiting (the same count as Home), who is in consultation, which lab reports are available,
+  which services are pending; record lists answer one item per line. Questions the rules do not cover still go to the local model's planner.
+- **Consultation cockpit:** a clean header (back, patient, allergy and condition chips, reason, "Consultation in progress", recording pill,
+  Profile, History, Mana); Live conversation (dense gradient waveform) · Important points (their own column) · Doctor's note (Structured /
+  Handwriting); Clinical signals in one row (BP, HR, SpO₂, Temp, RR, Stethoscope, Thermal); patient history and thermal details below. The
+  stethoscope's recorder opens from its tile; AI provenance lines in the note are short (the model on hover).
+- **Analyze & Generate Prescription:** the six inputs joined by dotted lines into the glowing ADAXAI clinical context, then Mana AI (the real
+  model state, tokens and time), then Clinical summary · Prescription draft · Ready for review; when the draft is ready its clinical summary
+  (AI DRAFT) is shown with [Review prescription] (the page opens by itself only when there is no draft to show).
+- **Prescription:** the document is the hero (letterhead, patient and allergies, diagnosis, medications, advice, follow-up, signature line);
+  parts with content read as the finished document with [Edit]; with no diagnosis the doctor's own assessment is offered as a draft diagnosis
+  ("Use as diagnosis", the doctor's act); what signing still needs is shown in the part it concerns (never a blocking box; never signed empty);
+  the PDF preview beside it; Back to editing · Sign · Sign & print · Complete consultation.
+- **Thermal analysis dashboard (new):** after a capture or upload on the Thermal page, and from the consultation's Thermal tile ("View
+  analysis"): the image with its temperature scale, five indices as rings (Pain pattern, Thermal asymmetry, Perfusion pattern, Temperature
+  pattern, Thermal stress), a short summary, and "Demo analysis — not clinically validated". `GET /api/thermal/:id/analysis`
+  (`apps/api/src/thermal/demoAnalysis.ts`): fixed formulas over the stored temperatures of the skin region, each with the number it comes from,
+  behind a provider interface a validated model can replace; audited. They detect, predict and diagnose nothing.
+- **Home:** greeting and date; Completed · Waiting · In consultation · Upcoming (the server's counts); today's activity by hour; today's
+  patients. **Patient profile:** header with chips and Start/Continue consultation; Last recorded vitals · Current medications · Recent labs;
+  Summary (a clinical summary in sentences by fixed rules, key history, averages of staff vitals, recent consultations, patient information)
+  and the record's tabs.
+- **Branding:** "(synthetic)" removed from people's and the clinic's names on screen, the print page and the patient app; the shell says once
+  "Demo environment · Synthetic patient data".
+- **Demo data:** Abdul Rahman gets a CBC and a lipid profile, and HR 78 as in the reference.
+
+### Verification
+
+- Typecheck and lint: clean. Web unit tests **369 passed** (the Mana suggestions test rewritten for the grouped questions). Web build: passes.
+  **API: 1,120 passed, 1 skipped, 0 failed** (adds the thermal analysis route test and the Mana intent and suggestion-wording tests).
+- **Critical browser tests** (`auth`, `doctor-hero-final`, `doctor-workflow`, `doctor-home`, `patient-portal`, `record-lifecycle`, `mana`,
+  `devices-live`, `thermal-v6`, `nurse-workflow`, `entry`; desktop): all pass (61 passed, 1 skipped) after a first two-worker run with sign-in
+  stalls and a solo rerun. Real fixes found by them: Mana's source chips disappeared under React's development double render (now computed
+  once per answer), the Mana side column was not keyboard-scrollable, a diagnosis remove button was too small. Tests updated for the intended
+  redesign (each with its reason): the Structured tab, the stethoscope sheet, the points column, the Home tiles, the Mana suggestions and
+  placeholder, [Review prescription], the prescription parts' [Edit], the plain doctor name on the printout.
+- **Real-stack walkthrough** (Chrome; Qwen3.5-4B on llama.cpp, faster-whisper-small): 19 of 19 steps — Home counts equal the server's; the
+  profile's clinical summary; Start from the profile; demo conversation with the speaker fallback; 8 important points, one confirmed and added;
+  stethoscope (simulated recording); simulated thermal capture → dashboard (scores 31 · 1 · 78 · 43 · 31, demo-labelled); Mana: 7 questions
+  (next patient, how many waiting, history, medicines, allergies, last consultation, lab reports) — 7 different answers from the records;
+  Analyze: the draft after 51 s of real model time, its summary, [Review prescription]; diagnosis accepted from the assessment; real PDF; Sign &
+  print (the visit stays in consultation); Complete; the profile and Home updated; the patient app shows "Day 1 of 5". No horizontal overflow at
+  1920, 1366, 1280, 1180 and 768 px.
+
+### Limitations
+
+- The thermal indices are demonstration formulas, not a model; nothing here is clinically validated. FLIR hardware was not used.
+- The speech model identifies no speaker: Doctor/Patient on unassigned lines is the labelled demo fallback.
+- Questions outside the fixed rules depend on the local model (about 10–20 s each); with the model down they are refused, never guessed.
+- Remaining e2e specs outdated by the earlier redesigns (listed in the sections below) were not updated in this pass.
 
 ## Doctor HERO jury polish: the four reference screens, a coherent demo clinic, a real prescription PDF
 

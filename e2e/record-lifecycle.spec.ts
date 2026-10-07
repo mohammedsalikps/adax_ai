@@ -31,7 +31,7 @@ test('a doctor finds an unsigned draft in their worklist and discards it with a 
   await expect(page).toHaveURL(/\/doctor\/encounters\//)
   const draftUrl = page.url()
   // Doctor HERO final (DESIGN §5.4): the typed note is the Keyboard tab of Doctor notes (the pen is the default tab).
-  await page.getByTestId('doctor-notes').getByRole('tab', { name: 'Keyboard' }).click()
+  await page.getByTestId('doctor-notes').getByRole('tab', { name: 'Structured' }).click()
   await page.getByLabel('History of present illness').fill('Started on the wrong patient by mistake.')
   await expect(page.getByTestId('save-state')).toContainText('Saved')
 

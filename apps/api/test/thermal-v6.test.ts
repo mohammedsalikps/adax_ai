@@ -1,3 +1,4 @@
+import { DEMO_ANALYSIS_LABEL, demoThermalAnalysis } from '../src/thermal/demoAnalysis.ts'
 import type { ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -478,6 +479,28 @@ describe.skipIf(!haveThermal)('V6 thermal simulator: SIMULATED captures', () => 
     expect((await audits('thermal.upload'))[0]!.details).toMatchObject({ captureSource: 'simulator', simulated: true, case: 'missing_data', seed: 7, encounterId: e.id, dataOrigin: 'synthetic', sha256: c.rawSha256 })
     // Experimental flags work on a matrix with missing readings.
     expect((await call(ctx.app, 'GET', `/api/thermal/${c.id}/flags`, { cookie: doctor })).statusCode).toBe(200)
+  })
+
+  it('the analysis dashboard’s demo indices are fixed formulas over the stored temperatures, labelled not clinically validated, the same every time, and audited', async () => {
+    const p = await patient()
+    const e = await consultation(p.id)
+    const c = ThermalCapture.parse((await simulate(p.id, { case: 'localized_difference', seed: 3, encounterId: e.id })).json())
+    const res = await call(ctx.app, 'GET', `/api/thermal/${c.id}/analysis`, { cookie: doctor })
+    expect(res.statusCode, res.body).toBe(200)
+    const a = res.json()
+    expect(a.engine).toEqual({ name: 'adaxai-thermal-demo-indices', version: '1', validated: false, label: DEMO_ANALYSIS_LABEL })
+    expect(a.indices.map((i: { key: string }) => i.key)).toEqual(['pain_pattern', 'thermal_asymmetry', 'perfusion_pattern', 'temperature_pattern', 'thermal_stress'])
+    for (const i of a.indices) expect(i.score >= 0 && i.score <= 100 && Number.isInteger(i.score), i.key).toBe(true)
+    // Exactly the formulas over the generated matrix (what was stored), and the same on a second read.
+    expect(a).toEqual(demoThermalAnalysis.analyse({ width: c.width, height: c.height, matrix: simulateThermalMatrix('localized_difference', 3), simulated: true }))
+    expect((await call(ctx.app, 'GET', `/api/thermal/${c.id}/analysis`, { cookie: doctor })).json()).toEqual(a)
+    expect(a.summary.join(' ')).toMatch(/SIMULATED thermal image/)
+    expect(a.summary.join(' ')).toMatch(/do not by themselves establish any clinical finding or diagnosis/)
+    expect((await audits('thermal.analysis_read')).map((x) => x.details)).toEqual([
+      { engine: 'adaxai-thermal-demo-indices', version: '1', simulated: true },
+      { engine: 'adaxai-thermal-demo-indices', version: '1', simulated: true },
+    ])
+    expect((await call(ctx.app, 'GET', '/api/thermal/00000000-0000-4000-8000-000000000000/analysis', { cookie: doctor })).statusCode).toBe(404)
   })
 
   it('is refused where the data is clinical (403, audited), and nothing is stored', async () => {

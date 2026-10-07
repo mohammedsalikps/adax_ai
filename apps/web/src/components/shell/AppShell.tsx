@@ -3,7 +3,8 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { Outlet, ScrollRestoration, useLocation, useMatches, useNavigate } from 'react-router'
 import { useLogout, useMe } from '../../lib/auth.tsx'
 import { signOutProblem } from '../../lib/signInErrors.ts'
-import { GlobalMana } from '../mana/GlobalMana.tsx'
+import { GlobalMana, ManaSidebarCard } from '../mana/GlobalMana.tsx'
+import { useMediaQuery } from '../../lib/useMediaQuery.ts'
 import { useToast } from '../ui/Toast.tsx'
 import { Sidebar } from './Sidebar.tsx'
 import { TopBar } from './TopBar.tsx'
@@ -101,6 +102,8 @@ export function AppShell({ role }: { role: Role }) {
   const [focusMode, setFocusMode] = useState<boolean | null>(null)
   const frame = FRAME[!handles.some((h) => h?.workspace) ? 'page' : (focusMode ?? handles.some((h) => h?.focus)) ? 'focus' : 'workspace']
   const [menuOpen, setMenuOpen] = useState(false)
+  // The sidebar is docked (not a drawer) at this width: for a doctor, Mana's launcher is then its card at the sidebar's foot.
+  const docked = useMediaQuery(frame.desktop)
   const menuButton = useRef<HTMLButtonElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
   const wasOpen = useRef(false)
@@ -166,6 +169,7 @@ export function AppShell({ role }: { role: Role }) {
         onNavigate={() => closeMenu('page')}
         closeRef={closeButton}
         drawerUntil={frame.drawerUntil}
+        bottom={role === 'doctor' && docked ? <ManaSidebarCard /> : undefined}
         className={`${menuOpen ? 'fixed inset-y-0 left-0 z-40 flex w-72 shadow-pop' : 'hidden'} ${frame.sidebar}`}
       />
       {/* While the drawer is open the page behind it cannot be reached by keyboard or screen reader. */}
@@ -179,7 +183,7 @@ export function AppShell({ role }: { role: Role }) {
         {/* The doctor's Mana, floating above the page (and above a page's bottom bar); inert with the page while the drawer is open, never printed. */}
         {role === 'doctor' && (
           <div className="print:hidden">
-            <GlobalMana />
+            <GlobalMana floating={!docked} />
           </div>
         )}
       </div>

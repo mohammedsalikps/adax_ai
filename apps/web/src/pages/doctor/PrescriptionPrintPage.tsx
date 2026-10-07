@@ -8,6 +8,7 @@ import { useEncounter } from '../../lib/encounters.ts'
 import { ageFrom, fmtDate, fmtDateTime } from '../../lib/format.ts'
 import { durationLines } from '../../lib/prescriptionCourse.ts'
 import { useDocumentTitle } from '../../lib/useDocumentTitle.ts'
+import { plainName } from '../../lib/displayName.ts'
 
 /** A medicine's duration: "5 days from 6 Oct 2026" when it has a structured course, else as written (and the written words when they say more). */
 function DurationCell({ p }: { p: { duration: string; durationDays?: number | null; startDate?: string | null } }) {
@@ -50,11 +51,11 @@ export function PrescriptionPrintPage() {
 
       <header className="flex flex-wrap items-start justify-between gap-4 border-b-2 border-ink pb-3">
         <div>
-          <h1 className="text-xl font-bold">{e.facilityName}</h1>
+          <h1 className="text-xl font-bold">{plainName(e.facilityName)}</h1>
           <p className="text-sm">{e.visit.departmentName}</p>
         </div>
         <div className="text-right text-sm">
-          <p className="font-semibold">{e.doctor.fullName}</p>
+          <p className="font-semibold">{plainName(e.doctor.fullName)}</p>
           {e.doctor.registrationNumber && <p>Reg. no. {e.doctor.registrationNumber}</p>}
           <p>Date: {fmtDate(e.visit.visitDate)}</p>
         </div>
@@ -158,7 +159,7 @@ export function PrescriptionPrintPage() {
       <footer className="mt-6 border-t border-line pt-3 text-xs text-ink-muted">
         {signed ? (
           <p>
-            Electronically signed by {e.doctor.fullName} on {fmtDateTime(e.signedAt)}. Record {e.id}. Integrity hash {e.contentHash?.slice(0, 16)}…
+            Electronically signed by {plainName(e.doctor.fullName)} on {fmtDateTime(e.signedAt)}. Record {e.id}. Integrity hash {e.contentHash?.slice(0, 16)}…
           </p>
         ) : (
           <p>Not signed.</p>

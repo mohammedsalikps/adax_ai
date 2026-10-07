@@ -1,6 +1,5 @@
 import {
   MANA_QUESTIONS,
-  MANA_RULES_QUESTIONS,
   MANA_VOICE_MAX_SECONDS,
   type ManaActionProposal,
   type ManaEntity,
@@ -52,21 +51,66 @@ export interface ManaChip {
   rules: boolean
 }
 
+/** What Mana is looking at: today's clinic, one patient's record, or one consultation (and its patient). */
+export type ManaContextKind = 'clinic' | 'patient' | 'consultation'
+
+/** One group of suggested questions ("About Abdul", "This consultation", "Today's clinic"). */
+export interface ManaSuggestionGroup {
+  key: 'patient' | 'consultation' | 'clinic'
+  title: string
+  chips: ManaChip[]
+}
+
+/** How a question names the patient, from the record's sex (no guess: "this patient" when it is not male or female). */
+export function pronounsFor(sex: string | null | undefined): { he: string; his: string; him: string } {
+  if (sex === 'male') return { he: 'he', his: 'his', him: 'him' }
+  if (sex === 'female') return { he: 'she', his: 'her', him: 'her' }
+  return { he: 'this patient', his: 'this patient’s', him: 'this patient' }
+}
+
 /**
- * The global Mana's buttons, in the design's order: Next patient · Seen today · Waiting longest · Allergies · Nurse triage · Lab / orders status ·
- * Summarize history. The patient's questions only when the conversation is about one patient; "Summarize history" asks the brief suggestion (the
- * model writes it, so it is offered only while the model is there).
+ * Premium Mana's suggested questions, grouped by what the conversation is about (the user's design): the patient (history, medicines, allergies,
+ * last consultation, labs — fixed rules answer them from the record — and "What should I know before seeing him?", which the local model writes
+ * from the record), the consultation (today's consultation by fixed rules; what was recorded and what still needs review, the server's own plans),
+ * and today's clinic (next patient, longest wait, how many are waiting, who is in consultation, seen today, pending orders — all fixed rules, the
+ * same counts as Home). A question the model must write is not offered while the model is down. The words are the questions as asked.
  */
-export function manaChips(o: { hasPatient: boolean; modelAvailable: boolean; inConsultation?: boolean }): ManaChip[] {
-  const q = MANA_RULES_QUESTIONS
-  const rules = (key: keyof typeof q): ManaChip => ({ key, label: q[key].chip, text: q[key].text, rules: true })
-  const chips: ManaChip[] = [rules('next_patient'), rules('seen_today'), rules('waiting_longest')]
-  if (o.hasPatient) chips.push(rules('allergies'), rules('nurse_triage'))
-  chips.push(rules('orders_status'))
-  // Jury polish: the history summary, the recent results and today's consultation are answered by fixed rules too (instant; no model needed).
-  if (o.hasPatient) chips.push({ key: 'history_summary', label: 'Summarize history', text: 'Summarize this patient’s previous history.', rules: true }, { key: 'recent_labs', label: 'Recent lab reports', text: 'Show recent lab reports', rules: true })
-  if (o.hasPatient && o.inConsultation) chips.push({ key: 'today_consultation', label: 'Today’s consultation', text: 'Summarize today’s consultation', rules: true })
-  return chips
+export function manaSuggestions(o: { kind: ManaContextKind; firstName?: string | null; sex?: string | null; modelAvailable: boolean }): ManaSuggestionGroup[] {
+  const p = pronounsFor(o.sex)
+  const rules = (key: string, text: string, label = text): ManaChip => ({ key, label, text, rules: true })
+  const groups: ManaSuggestionGroup[] = []
+  if (o.kind !== 'clinic') {
+    const chips: ManaChip[] = [
+      rules('history_summary', 'Summarize this patient’s previous history.', 'Summarize this patient’s history'),
+      rules('medicines', `What medicines is ${p.he} taking?`),
+      rules('allergies', `What are ${p.his} allergies?`),
+      rules('last_consultation', `What happened in ${p.his} last consultation?`),
+      rules('labs', 'Show recent lab results'),
+    ]
+    if (o.modelAvailable) chips.push({ key: 'before_seeing', label: `What should I know before seeing ${p.him}?`, text: `What should I know before seeing ${p.him}?`, rules: false })
+    groups.push({ key: 'patient', title: o.firstName ? `About ${o.firstName}` : 'About this patient', chips })
+  }
+  if (o.kind === 'consultation') {
+    const chips: ManaChip[] = [rules('today_consultation', 'Summarize today’s consultation')]
+    if (o.modelAvailable) {
+      chips.push({ key: 'consultation_recorded', label: MANA_QUESTIONS.consultation_recorded.label, text: MANA_QUESTIONS.consultation_recorded.label, suggestion: 'consultation_recorded', rules: false })
+      chips.push({ key: 'consultation_review', label: MANA_QUESTIONS.consultation_review.label, text: MANA_QUESTIONS.consultation_review.label, suggestion: 'consultation_review', rules: false })
+    }
+    groups.push({ key: 'consultation', title: 'This consultation', chips })
+  }
+  groups.push({
+    key: 'clinic',
+    title: 'Today’s clinic',
+    chips: [
+      rules('next_patient', 'Who is my next patient?'),
+      rules('waiting_longest', 'Who has waited the longest?'),
+      rules('waiting_count', 'How many patients are waiting?'),
+      rules('in_consultation', 'Who is currently in consultation?'),
+      rules('seen_today', 'How many patients have I seen today?'),
+      rules('orders_status', 'Any pending orders?'),
+    ],
+  })
+  return groups
 }
 
 /** A question asked from elsewhere (openMana({ask})) that is exactly a suggested question's words is asked as that suggestion (its plan is the server's own). */

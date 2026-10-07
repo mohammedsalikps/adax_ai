@@ -1,4 +1,4 @@
-import type { Encounter, NoteFields } from '@adaxai/contracts'
+import { type Encounter, type NoteFields, signIssues } from '@adaxai/contracts'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, CircleCheck, PenLine } from 'lucide-react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useState } from 'react'
@@ -11,7 +11,7 @@ import { ClinicalSummary } from '../../components/rx/ClinicalSummary.tsx'
 import { printUrl, SignedActions } from '../../components/rx/CompleteConsultation.tsx'
 import { ageSex, PrescriptionDocument } from '../../components/rx/PrescriptionDocument.tsx'
 import { PdfPreview } from '../../components/rx/PdfPreview.tsx'
-import { openInNewTab, PrintPreviewLink } from '../../components/rx/PrintPreviewLink.tsx'
+import { openInNewTab } from '../../components/rx/PrintPreviewLink.tsx'
 import { SECONDARY_CONTROL } from '../../components/rx/RepeatMedicineMenu.tsx'
 import { ReviewAndSignDialog } from '../../components/rx/ReviewAndSignDialog.tsx'
 import { allergyReviewNote, medicinesKey, type RxPageState, rxPageState, rxStatusPill } from '../../components/rx/rxModel.ts'
@@ -76,7 +76,9 @@ function Header({ e, state, onBack }: { e: Encounter; state: RxPageState; onBack
       <div className="flex min-w-0 flex-1 items-center gap-3">
         <PatientAvatar name={e.patient.fullName} />
         <div className="min-w-0">
-          <p className="text-xs font-semibold tracking-wide text-brand uppercase">Review and sign prescription</p>
+          <p className="text-xs font-medium text-ink-muted">
+            <span className="font-semibold text-brand">Prescription</span> · AI-assisted draft · review and edit before signing
+          </p>
           <h1 className="text-xl font-semibold tracking-tight [overflow-wrap:anywhere]">
             <span className="sr-only">Prescription · </span>
             {e.patient.fullName}
@@ -122,6 +124,9 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
   const allergy = useAllergyNameCheck(initial.id, { draftKey: medicinesKey(d.draft.prescription), savedKey: medicinesKey(d.savedPrescription), locked: d.locked, savedKeyNow, flushState })
   // Review and sign opens once what is pending is saved and the allergy name check has answered (or failed) for the medicines as saved.
   const [preparing, setPreparing] = useState(false)
+  // What the signing rules still need, shown in the document where it belongs once the doctor has tried to sign (and kept current as they edit).
+  const [triedToSign, setTriedToSign] = useState(false)
+  const issues = triedToSign ? signIssues(d.draft) : []
   const openReview = async (print: boolean) => {
     setPrintAfter(print)
     setPreparing(true)
@@ -131,6 +136,14 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
       if (key && !isLocked(state)) await allergy.ensure(key)
     } finally {
       setPreparing(false)
+    }
+    // Premium design: nothing is signed incomplete, and what is missing is said on the prescription itself, not in a blocking box.
+    const missing = signIssues(d.saver.getSnapshot().draft)
+    if (missing.length) {
+      setTriedToSign(true)
+      toast('warning', `${missing.length === 1 ? 'One thing' : `${missing.length} things`} to complete before signing: see the prescription.`)
+      document.querySelector('[data-testid="prescription-document"]')?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      return
     }
     setReviewing(true)
   }
@@ -180,7 +193,7 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
         </Alert>
       )}
       <Columns
-        doc={<PrescriptionDocument encounter={initial} draft={d.draft} onChange={d.update} locked={d.locked} inserting={d.inserting} allergy={allergy} />}
+        doc={<PrescriptionDocument encounter={initial} draft={d.draft} onChange={d.update} locked={d.locked} inserting={d.inserting} allergy={allergy} issues={issues} />}
         notes={
           <>
             <ClinicalSummary encounter={initial} inserter={d.inserter} editable={!d.locked} flushState={flushState} />
@@ -194,7 +207,6 @@ function DraftPrescription({ initial }: { initial: Encounter }) {
           <ArrowLeft aria-hidden="true" className="size-4" />
           Back to editing
         </Link>
-        <PrintPreviewLink encounterId={initial.id} flushState={d.flushState} />
         <Button variant="secondary" disabled={d.locked || d.inserting} loading={preparing && !printAfter} onClick={() => void openReview(false)} data-testid="sign-only">
           Sign
         </Button>

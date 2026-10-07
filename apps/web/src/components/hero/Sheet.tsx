@@ -15,8 +15,8 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
-const RIGHT_WIDTH = { narrow: 'sm:w-[min(100%,26.25rem)]', default: 'sm:w-[min(100%,32rem)]', wide: 'sm:w-[min(100%,48rem)]' } as const
-const CENTER_WIDTH = { narrow: 'sm:max-w-md', default: 'sm:max-w-lg', wide: 'sm:max-w-3xl' } as const
+const RIGHT_WIDTH = { narrow: 'sm:w-[min(100%,26.25rem)]', default: 'sm:w-[min(100%,32rem)]', wide: 'sm:w-[min(100%,48rem)]', xl: 'sm:w-[min(100%,64rem)]' } as const
+const CENTER_WIDTH = { narrow: 'sm:max-w-md', default: 'sm:max-w-lg', wide: 'sm:max-w-3xl', xl: 'sm:max-w-5xl' } as const
 
 export interface SheetProps {
   open: boolean
@@ -32,8 +32,12 @@ export interface SheetProps {
   footer?: ReactNode
   /** `right` (default): a side sheet from the right edge, full height. `center`: a centred dialog ("Preparing the consultation"). */
   placement?: 'right' | 'center'
-  /** From 640px: narrow (420px, Mana), default (32rem) or wide (48rem). Under 640px every sheet is full-screen. */
-  width?: 'narrow' | 'default' | 'wide'
+  /** From 640px: narrow (420px), default (32rem), wide (48rem) or xl (64rem: Mana, the analysis). Under 640px every sheet is full-screen. */
+  width?: 'narrow' | 'default' | 'wide' | 'xl'
+  /** The accessible description when it is not the visible subtitle (Mana: "About <patient>"); read by assistive technology only. */
+  description?: ReactNode
+  /** Replaces the header's title block visually (the h2 title stays for its accessible name, visually hidden); Mana's own header. */
+  header?: ReactNode
   /** False while something must finish (a request in flight): Escape and the close button do nothing. */
   dismissible?: boolean
   /** What takes focus when it opens (the Mana input); by default the first control (the browser's choice). */
@@ -54,7 +58,7 @@ export interface SheetProps {
  * Tab and Shift+Tab stay inside it; Escape and the close button close it; focus goes back to what had it before it opened. Its content is
  * mounted only while it is open (nothing inside it fetches before then).
  */
-export function Sheet({ open, onClose, title, subtitle, actions, children, footer, placement = 'right', width = 'default', dismissible = true, initialFocus, bodyClassName, closeLabel = 'Close dialog', testId }: SheetProps) {
+export function Sheet({ open, onClose, title, subtitle, description, header, actions, children, footer, placement = 'right', width = 'default', dismissible = true, initialFocus, bodyClassName, closeLabel = 'Close dialog', testId }: SheetProps) {
   const ref = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   const subtitleId = useId()
@@ -123,7 +127,7 @@ export function Sheet({ open, onClose, title, subtitle, actions, children, foote
       ref={ref}
       aria-modal="true"
       aria-labelledby={titleId}
-      aria-describedby={subtitle ? subtitleId : undefined}
+      aria-describedby={description || subtitle ? subtitleId : undefined}
       onKeyDown={keepTabInside}
       onClose={() => {
         const d = ref.current
@@ -146,13 +150,20 @@ export function Sheet({ open, onClose, title, subtitle, actions, children, foote
           <div className={`flex max-h-dvh flex-col ${placement === 'right' ? 'h-dvh' : 'h-dvh sm:h-auto sm:max-h-[90dvh]'}`}>
             <div className="flex shrink-0 items-start justify-between gap-3 border-b border-line px-5 py-3">
               <div className="min-w-0 py-1">
-                <h2 id={titleId} className="text-lg leading-6 font-semibold [overflow-wrap:anywhere]">
+                <h2 id={titleId} className={header ? 'sr-only' : 'text-lg leading-6 font-semibold [overflow-wrap:anywhere]'}>
                   {title}
                 </h2>
-                {subtitle && (
-                  <p id={subtitleId} className="mt-0.5 text-sm text-ink-muted [overflow-wrap:anywhere]">
-                    {subtitle}
+                {header}
+                {description ? (
+                  <p id={subtitleId} className="sr-only">
+                    {description}
                   </p>
+                ) : (
+                  subtitle && (
+                    <p id={subtitleId} className="mt-0.5 text-sm text-ink-muted [overflow-wrap:anywhere]">
+                      {subtitle}
+                    </p>
+                  )
                 )}
               </div>
               <div className="flex shrink-0 items-center gap-1">

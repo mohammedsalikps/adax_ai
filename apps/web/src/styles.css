@@ -78,6 +78,12 @@
   --spacing-topbar: 4rem;
 }
 
+/* The analysis flow: dotted lines that run towards the clinical context while inputs arrive. */
+@keyframes dash {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
 /* New content settles in gently (disabled by prefers-reduced-motion below). */
 @keyframes rise-in {
   from {

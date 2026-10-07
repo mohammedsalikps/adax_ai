@@ -1,9 +1,8 @@
 import { ROLE_LABELS, type Role } from '@adaxai/contracts'
-import { Sparkles, X } from 'lucide-react'
-import type { Ref } from 'react'
+import { X } from 'lucide-react'
+import type { ReactNode, Ref } from 'react'
 import { Link, NavLink, useLocation } from 'react-router'
 import { isSyntheticName, plainName } from '../../lib/displayName.ts'
-import { openMana } from '../../lib/manaLauncher.ts'
 import { NAV } from '../../lib/nav.ts'
 
 const navClass = (active: boolean) =>
@@ -21,7 +20,7 @@ const under = (pathname: string, prefix: string) => pathname === prefix || pathn
  * a workspace page, at every width in focus mode; the links are the same. An item is shown as the current section on its own pages and on
  * the pages it lists in `also` (My consultations in a consultation, for example).
  */
-export function Sidebar({ role, id, facilityName, className = '', onClose, onNavigate, closeRef, drawerUntil = 'lg' }: { role: Role; id: string; facilityName?: string | undefined; className?: string; onClose: () => void; onNavigate: () => void; closeRef: Ref<HTMLButtonElement>; drawerUntil?: 'lg' | 'xl' }) {
+export function Sidebar({ role, id, facilityName, className = '', onClose, onNavigate, closeRef, drawerUntil = 'lg', bottom }: { role: Role; id: string; facilityName?: string | undefined; className?: string; onClose: () => void; onNavigate: () => void; closeRef: Ref<HTMLButtonElement>; drawerUntil?: 'lg' | 'xl'; bottom?: ReactNode }) {
   const { pathname } = useLocation()
   return (
     <aside className={`flex-col border-r border-line bg-surface ${className}`}>
@@ -49,21 +48,14 @@ export function Sidebar({ role, id, facilityName, className = '', onClose, onNav
               </NavLink>
             </li>
           ))}
-          {role === 'doctor' && (
-            // Mana is not a page: it opens the doctor's assistant over whatever page is open (jury design).
-            <li>
-              <button type="button" className={`${navClass(false)} w-full`} onClick={() => { onNavigate(); openMana() }} data-testid="nav-mana">
-                <Sparkles aria-hidden="true" className="size-5 shrink-0" />
-                Mana
-              </button>
-            </li>
-          )}
         </ul>
       </nav>
-      {role === 'doctor' && (facilityName || isSyntheticName(facilityName)) && (
-        <p className="border-t border-line px-5 py-3 text-xs text-ink-muted">
-          {plainName(facilityName)}
-          {isSyntheticName(facilityName) && <span className="mt-1 block w-fit rounded border border-dashed border-ink-muted/50 px-1.5 text-[0.6875rem]">Synthetic data</span>}
+      {bottom && <div className="px-3 pb-3">{bottom}</div>}
+      {(facilityName || isSyntheticName(facilityName)) && (
+        <p className="border-t border-line px-5 py-3 text-xs leading-5 text-ink-muted">
+          <span className="block font-medium text-ink">{plainName(facilityName)}</span>
+          {/* The one place the shell says the data is synthetic (names elsewhere are shown without the mark). */}
+          {isSyntheticName(facilityName) && <span className="block" data-testid="demo-environment">Demo environment · Synthetic patient data</span>}
         </p>
       )}
     </aside>

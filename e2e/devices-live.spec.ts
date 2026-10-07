@@ -264,6 +264,9 @@ test('a stethoscope recording is made in the browser from an audio input, and a 
   await expect(mine.getByTestId('simulated-badge')).toHaveCount(0)
 
   // The simulator stethoscope is attached and its "gateway" sends generated audio: stored and shown as simulated, never as a recording of the patient.
+  // Premium cockpit: the stethoscope's sheet is closed first (the device card is in the clinical signals behind it).
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('stethoscope-sheet')).toBeHidden()
   const dlg = await attach(page, steth.label)
   await dlg.getByRole('button', { name: 'Attach' }).click()
   await expect(attached(page)).toContainText('This kind of device sends no readings.')
@@ -271,7 +274,8 @@ test('a stethoscope recording is made in the browser from an audio input, and a 
   expect(sent.status()).toBe(201)
   expect(await sent.json()).toMatchObject({ simulated: true })
   await page.reload()
-  // Doctor HERO final: this consultation's recordings are listed in the clinical inputs' stethoscope group.
+  // Doctor HERO final: this consultation's recordings are listed in the clinical inputs' stethoscope group (premium cockpit: its sheet).
+  await openModule(page, 'Stethoscope')
   const simulated = page.getByTestId('stethoscope-panel').locator('[data-testid="auscultation"][data-simulated="true"]')
   await expect(simulated.getByTestId('simulated-badge')).toHaveText('SIMULATED AUDIO')
   await expect(simulated).toContainText('Generated tones from a simulator: not a body sound')

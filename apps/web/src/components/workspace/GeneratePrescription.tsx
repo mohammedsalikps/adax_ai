@@ -10,7 +10,7 @@ import { handwritingQueryKey } from '../../lib/handwritingApi.ts'
 import { Sheet } from '../hero/Sheet.tsx'
 import { Button } from '../ui/Button.tsx'
 import { runAnalysis, useAnalysis, useAnalysisInputFacts, useForgetEndedRun } from './analysisRun.ts'
-import { MultimodalFlow } from './MultimodalFlow.tsx'
+import { ClinicalSummaryPreview, MultimodalFlow } from './MultimodalFlow.tsx'
 
 /*
  * "Generate prescription" (DESIGN §5.5), the workspace's one primary action, in its bottom bar. A click saves the doctor's notes (the page's
@@ -83,7 +83,7 @@ export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, 
   const qc = useQueryClient()
   const navigate = useNavigate()
   // The page's owner of the consultation's AI state (the model's status, the newest draft) and the poller of a draft being made.
-  useConsultationAi(id)
+  const consultAi = useConsultationAi(id)
   const generate = useGenerateDraft(id)
   const { run, ai, active } = useAnalysis(id)
   useForgetEndedRun(id)
@@ -109,10 +109,13 @@ export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, 
   const strokes = qc.getQueryData<HandwritingLatest>(handwritingQueryKey(id))?.strokeCount ?? null
   const prep = preparingChecklist({ save: run?.save ?? null, ask: run?.ask ?? null, ai, elapsedMs: run ? Math.max(0, now - run.clickedAt) : null, handwritingStrokes: strokes })
   const next = prep.next
-  // Ready (or partly ready), or the model cannot be asked: the prescription page opens by itself while the sheet is open.
+  // Premium design: a ready draft is shown here first (its clinical summary, AI DRAFT) with [Review prescription]; only when there is no draft to
+  // show (the model cannot be asked, or wrote nothing) does the prescription page open by itself while the sheet is open.
+  const items = consultAi.data?.draft?.items ?? []
+  const summaryReady = next === 'open' && items.length > 0
   useEffect(() => {
-    if (open && next === 'open') navigate(prescriptionUrl)
-  }, [open, next, navigate, prescriptionUrl])
+    if (open && next === 'open' && !summaryReady) navigate(prescriptionUrl)
+  }, [open, next, summaryReady, navigate, prescriptionUrl])
 
   return (
     <>
@@ -136,9 +139,10 @@ export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, 
       <Sheet
         open={open}
         onClose={() => setOpen(false)}
-        title="Analyzing the consultation"
+        title="Analyzing clinical context"
+        subtitle="Bringing together the consultation’s inputs to create a clinician-reviewable summary"
         placement="center"
-        width="wide"
+        width="xl"
         testId="preparing-consultation"
         footer={
           <>
@@ -146,13 +150,14 @@ export function GeneratePrescription({ encounter, flush, save, prescriptionUrl, 
               Continue consultation
             </Button>
             <Button icon={<FileText aria-hidden="true" className="size-4" />} onClick={() => navigate(prescriptionUrl)} data-testid="open-prescription">
-              Open prescription
+              {summaryReady ? 'Review prescription' : 'Open prescription'}
             </Button>
           </>
         }
       >
         <MultimodalFlow prep={prep} />
-        <ol aria-label="What Mana is given" className="mt-4 divide-y divide-line/60 border-t border-line" data-testid="preparing-checklist">
+        {summaryReady && <ClinicalSummaryPreview items={items} />}
+        <ol aria-label="What Mana is given" className="mt-5 grid grid-cols-1 gap-x-6 border-t border-line/70 pt-2 sm:grid-cols-2 [&>li]:py-1 [&>li]:text-[0.8125rem]" data-testid="preparing-checklist">
           {prep.lines.map((l) => (
             <Line key={l.key} l={l} />
           ))}

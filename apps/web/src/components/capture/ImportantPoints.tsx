@@ -213,7 +213,6 @@ function PointRow({ f, ai, encounterId, inserter, focus }: { f: ClinicalFact; ai
                 {where === 'earlier' && <span data-testid="point-earlier-recording">in an earlier recording</span>}
               </>
             )}
-            {isDemoTranscript(t) && <DemoAudioMark>From synthetic demo audio</DemoAudioMark>}
           </p>
           {state !== 'rejected' && (flags.length > 0 || f.speakerChanged) && (
             <ul className="mt-0.5 space-y-0.5 text-xs" aria-label="Review flags">
@@ -262,7 +261,8 @@ function PointRow({ f, ai, encounterId, inserter, focus }: { f: ClinicalFact; ai
       )}
       {m.isError && <p className="mt-1 ml-6 text-xs text-down">{errorMessage(m.error)}</p>}
       {state === 'confirmed' && section && (
-        <div className="ml-6">
+        // A quiet text action (premium design), not a full button: "+ Add to Chief complaint".
+        <div className="ml-6 [&_button]:min-h-7 [&_button]:border-0 [&_button]:bg-transparent [&_button]:px-0 [&_button]:text-xs [&_button]:font-semibold [&_button]:text-brand-strong [&_button]:shadow-none [&_button:hover]:underline">
           <InsertButton inserter={inserter} section={section} text={f.finalText ?? f.text} subject={{ type: 'fact', id: f.id }} />
         </div>
       )}
@@ -270,6 +270,8 @@ function PointRow({ f, ai, encounterId, inserter, focus }: { f: ClinicalFact; ai
         <details className="group/point mt-1 ml-6 text-xs">
           <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-ink-muted hover:text-ink [&::-webkit-details-marker]:hidden">Details</summary>
           <div className="mt-1.5 space-y-1.5">
+            {/* The conversation says once that it is synthetic demo audio; each point says so here, under Details. */}
+            {isDemoTranscript(t) && <DemoAudioMark>From synthetic demo audio</DemoAudioMark>}
             <p className="text-ink-muted" data-testid="point-provenance">
               {pointProvenance(f.producedBy, state === 'extracted')} · {fmtTime(f.createdAt)}
             </p>

@@ -52,3 +52,26 @@ export function onCloseMana(handler: CloseHandler): () => void {
     closeHandlers.delete(handler)
   }
 }
+
+// --- whether Mana is open (for a launcher outside GlobalMana: the sidebar's Mana card) ----------------------------------------------------
+
+let openNow = false
+const stateHandlers = new Set<() => void>()
+
+/** Called by GlobalMana when its sheet opens or closes. */
+export function publishManaOpen(open: boolean): void {
+  if (openNow === open) return
+  openNow = open
+  for (const h of Array.from(stateHandlers)) h()
+}
+
+/** For useSyncExternalStore: told whenever Mana opens or closes. */
+export function subscribeManaOpen(handler: () => void): () => void {
+  stateHandlers.add(handler)
+  return () => {
+    stateHandlers.delete(handler)
+  }
+}
+
+/** Whether the global Mana is open now. */
+export const isManaOpen = (): boolean => openNow

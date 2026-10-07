@@ -1,5 +1,5 @@
 import type { ThermalCapture, ThermalWorkspaceEventRequest } from '@adaxai/contracts'
-import { Camera, Upload, UserRound, X } from 'lucide-react'
+import { Camera, ScanHeart, Upload, UserRound, X } from 'lucide-react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { KeyValue, KeyValueList } from '../../components/hero/KeyValue.tsx'
@@ -12,6 +12,7 @@ import { ThermalPatientPicker } from '../../components/thermal/ThermalPatientPic
 import { ThermalStudy } from '../../components/thermal/ThermalStudy.tsx'
 import { ThermalUploadDialog } from '../../components/thermal/ThermalUploadDialog.tsx'
 import { CameraPane } from '../../components/thermal/ThermalWorkspace.tsx'
+import { ThermalAnalysisSheet } from '../../components/thermal/ThermalAnalysis.tsx'
 import { Button } from '../../components/ui/Button.tsx'
 import { Badge, ErrorState, LoadingState } from '../../components/ui/Feedback.tsx'
 import { PatientAvatar } from '../../components/ui/PatientAvatar.tsx'
@@ -135,6 +136,8 @@ export function ThermalPage() {
   /** The patient the camera was opened for: it shows only while that patient is the page's. */
   const [cameraFor, setCameraFor] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Premium design: after a capture or an upload the thermal analysis dashboard opens by itself (and from "View thermal analysis" later).
+  const [analysisFor, setAnalysisFor] = useState<string | null>(null)
   const busyRef = useRef(false)
   const studyRef = useRef<HTMLDivElement>(null)
   const uploadNote = useId()
@@ -284,13 +287,23 @@ export function ThermalPage() {
                     bridgePresent={bridgePresent}
                     guard={guard}
                     onBusyChange={onBusyChange}
-                    onCaptured={showStudy}
+                    onCaptured={(c) => {
+                      showStudy(c)
+                      setAnalysisFor(c.id)
+                    }}
                     onClose={() => setCameraFor(null)}
                     busy={busy}
                   />
                 )
               ) : slot === 'study' ? (
                 <div key={slot} ref={studyRef} className="min-w-0 scroll-mt-4">
+                  {params.captureId && (
+                    <div className="mb-3 flex justify-end">
+                      <Button variant="secondary" icon={<ScanHeart aria-hidden="true" className="size-4" />} onClick={() => setAnalysisFor(params.captureId)} data-testid="thermal-view-analysis">
+                        View thermal analysis
+                      </Button>
+                    </div>
+                  )}
                   {params.captureId && <ThermalStudy key={params.captureId} captureId={params.captureId} onDirtyChange={onDirtyChange} onClose={() => guard(() => go(closeStudy({ ...params, patientId })))} />}
                 </div>
               ) : (
@@ -323,9 +336,11 @@ export function ThermalPage() {
           onUploaded={(c) => {
             setUploading(false)
             showStudy(c)
+            setAnalysisFor(c.id)
           }}
         />
       )}
+      <ThermalAnalysisSheet captureId={analysisFor} patient={p ? { name: p.fullName, mrn: p.mrn } : undefined} onClose={() => setAnalysisFor(null)} />
       {discardQuestion}
     </>
   )

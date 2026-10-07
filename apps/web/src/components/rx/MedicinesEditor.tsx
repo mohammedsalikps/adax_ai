@@ -181,7 +181,7 @@ export function DiagnosesEditor({ items, onChange, readOnly }: { items: Diagnosi
             </SelectField>
             {!readOnly && (
               <div className="flex justify-end @sm/dx:col-span-2 @2xl/dx:col-span-1">
-                <Button variant="ghost" aria-label={`Remove diagnosis ${i + 1}`} icon={<Trash2 aria-hidden="true" className="size-4" />} onClick={() => onChange(items.filter((_, j) => j !== i))} />
+                <Button variant="ghost" className="min-w-control shrink-0" aria-label={`Remove diagnosis ${i + 1}`} icon={<Trash2 aria-hidden="true" className="size-4" />} onClick={() => onChange(items.filter((_, j) => j !== i))} />
               </div>
             )}
           </li>

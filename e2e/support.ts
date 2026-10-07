@@ -132,6 +132,8 @@ export const inputModule = (page: Page, name: ModuleName) => page.locator(MODULE
  */
 export async function openModule(page: Page, name: ModuleName) {
   const panel = page.locator(MODULE_PARTS[name])
+  // Premium cockpit: the stethoscope is a tile of the clinical signals; its recorder opens in a sheet from the tile.
+  if (name === 'Stethoscope' && !(await panel.isVisible())) await page.getByTestId('stethoscope-tile').getByRole('button').click()
   await panel.scrollIntoViewIfNeeded()
   await expect(panel).toBeVisible()
   if (name === 'Vitals') {

@@ -14,6 +14,7 @@ import { useToast } from '../ui/Toast.tsx'
 import { recordingLength } from '../workspace/summaries/state.ts'
 import { Waveform } from '../workspace/Waveform.tsx'
 import { SimulatedBadge } from './DeviceReadingsCard.tsx'
+import { plainName } from '../../lib/displayName.ts'
 
 /** The patient's recordings (this card reads them; the stethoscope module's summary observes the same query and never fetches it). */
 export const auscultationsKey = (patientId: string) => ['patient', patientId, 'auscultations'] as const
@@ -376,7 +377,7 @@ function Recording({ r, encounterId, consultation }: { r: AuscultationRecording;
       <audio ref={player} controls preload="none" src={`/api/files/${r.fileId}`} className="mt-1 w-full" aria-label={name} />
       <p className="text-xs text-ink-muted">
         {fmtDateTime(r.createdAt)}
-        {r.createdByName ? ` · ${r.createdByName}` : ''} · {(r.sizeBytes / 1024).toFixed(0)} KB
+        {r.createdByName ? ` · ${plainName(r.createdByName)}` : ''} · {(r.sizeBytes / 1024).toFixed(0)} KB
         {r.dataOrigin !== 'clinical' ? ' · synthetic data' : ''}
         {r.note ? ` · ${r.note}` : ''}
       </p>

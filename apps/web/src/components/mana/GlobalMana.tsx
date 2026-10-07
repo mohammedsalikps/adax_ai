@@ -1,14 +1,40 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { MessageSquarePlus, Sparkles, Volume2, VolumeX } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { AudioLines, MessageSquarePlus, Sparkles, Volume2, VolumeX } from 'lucide-react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useLocation } from 'react-router'
 import { manaConversationKey, useManaConversation, useNewManaConversation } from '../../lib/manaAssistant.ts'
 import { manaScopeForPath, scopeKey } from '../../lib/manaGlobal.ts'
-import { onCloseMana, onOpenMana } from '../../lib/manaLauncher.ts'
+import { isManaOpen, onCloseMana, onOpenMana, openMana, publishManaOpen, subscribeManaOpen } from '../../lib/manaLauncher.ts'
 import { readSpeakAnswers, writeSpeakAnswers } from '../../lib/manaSpeech.ts'
 import { Sheet } from '../hero/Sheet.tsx'
 import { Menu } from '../ui/Menu.tsx'
-import { ManaAssistant } from './ManaAssistant.tsx'
+import { ManaAssistant, ManaMark } from './ManaAssistant.tsx'
+
+/**
+ * The sidebar's Mana card (premium design: "Mana · AI Assistant" at the foot of the navigation), the launcher while the sidebar is docked;
+ * GlobalMana's floating button is the launcher otherwise. One of the two exists at a time (data-testid mana-launcher).
+ */
+export function ManaSidebarCard() {
+  const open = useSyncExternalStore(subscribeManaOpen, isManaOpen, () => false)
+  return (
+    <button
+      type="button"
+      onClick={() => openMana()}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      aria-label="Mana"
+      data-testid="mana-launcher"
+      className="group flex w-full items-center gap-3 rounded-2xl border border-line/80 bg-gradient-to-br from-surface to-ai-soft/60 px-3 py-2.5 text-left shadow-card transition-shadow hover:shadow-pop focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+    >
+      <ManaMark />
+      <span className="min-w-0 flex-1 leading-tight">
+        <span className="block text-sm font-semibold text-ink">Mana</span>
+        <span className="block text-xs text-ink-muted">AI Assistant</span>
+      </span>
+      <AudioLines aria-hidden="true" className="size-4 text-ai/70 group-hover:text-ai" />
+    </button>
+  )
+}
 
 /**
  * The global Mana (DESIGN §5.8): a floating round button bottom-right on every doctor page (above any BottomBar: `--action-bar-h`; hidden in
@@ -20,7 +46,7 @@ import { ManaAssistant } from './ManaAssistant.tsx'
  *
  * Mounted by AppShell for the doctor role only (Mana needs `ai:use`, which only doctors have).
  */
-export function GlobalMana() {
+export function GlobalMana({ floating = true }: { floating?: boolean }) {
   const { pathname } = useLocation()
   const scope = manaScopeForPath(pathname)
   const key = scopeKey(scope)
@@ -42,6 +68,8 @@ export function GlobalMana() {
     [],
   )
   useEffect(() => onCloseMana(() => setOpen(false)), [])
+  useEffect(() => publishManaOpen(open), [open])
+  useEffect(() => () => publishManaOpen(false), [])
   // Following a link out of Mana (a source's record) shows that page: Mana closes.
   const shownPath = useRef(pathname)
   useEffect(() => {
@@ -56,10 +84,11 @@ export function GlobalMana() {
   }, [open, key])
 
   const sp = conv.data?.scopePatient
-  const subtitle = sp ? `About ${sp.displayName} · MRN ${sp.mrn}` : conv.data ? 'Your clinic' : undefined
+  const about = sp ? `About ${sp.displayName} · MRN ${sp.mrn}` : conv.data ? 'Your clinic' : undefined
 
   return (
     <>
+      {floating && (
       <button
         type="button"
         onClick={() => setOpen(true)}
@@ -67,24 +96,29 @@ export function GlobalMana() {
         aria-expanded={open}
         data-testid="mana-launcher"
         style={{ bottom: 'calc(var(--action-bar-h, 0px) + 1rem)' }}
-        className="fixed right-4 z-20 inline-flex h-14 min-w-14 items-center justify-center gap-2 rounded-full border border-brand bg-brand px-4 text-base font-semibold text-white shadow-pop hover:bg-brand-strong motion-safe:transition-colors motion-safe:duration-150 print:hidden sm:px-5"
+        className="fixed right-4 z-20 inline-flex size-12 items-center justify-center rounded-full bg-gradient-to-br from-brand to-ai text-white shadow-pop ring-4 ring-surface hover:opacity-95 motion-safe:transition-opacity motion-safe:duration-150 print:hidden"
       >
         <Sparkles aria-hidden="true" className="size-5 shrink-0" />
-        <span className="sr-only sm:not-sr-only">Mana</span>
+        <span className="sr-only">Mana</span>
       </button>
+      )}
       <Sheet
         open={open}
         onClose={() => {
           setOpen(false)
           setAsk(null)
         }}
-        title={
-          <span className="inline-flex items-center gap-2">
-            <Sparkles aria-hidden="true" className="size-5 text-ai" />
-            Mana
+        title="Mana"
+        header={
+          <span className="flex items-center gap-3">
+            <ManaMark size="lg" />
+            <span className="leading-tight">
+              <span className="block text-lg font-semibold tracking-tight">Mana</span>
+              <span className="block text-sm text-ink-muted">Clinical Intelligence Assistant</span>
+            </span>
           </span>
         }
-        subtitle={subtitle}
+        description={about}
         actions={
           <Menu
             label="Mana options"
@@ -102,7 +136,7 @@ export function GlobalMana() {
             ]}
           />
         }
-        width="narrow"
+        width="xl"
         bodyClassName="flex flex-col"
         initialFocus={inputRef}
         closeLabel="Close Mana"
